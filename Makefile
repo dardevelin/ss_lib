@@ -2,6 +2,28 @@ CC = gcc
 CFLAGS = -Wall -Wextra -pedantic -std=c11 -O2 -Iinclude
 LDFLAGS = -pthread
 
+# Sanitizer flags (use with make SANITIZER=address/thread/undefined)
+ifeq ($(SANITIZER),address)
+    CFLAGS += -fsanitize=address -fno-omit-frame-pointer -g
+    LDFLAGS += -fsanitize=address
+else ifeq ($(SANITIZER),thread)
+    CFLAGS += -fsanitize=thread -g
+    LDFLAGS += -fsanitize=thread
+else ifeq ($(SANITIZER),undefined)
+    CFLAGS += -fsanitize=undefined -g
+    LDFLAGS += -fsanitize=undefined
+else ifeq ($(SANITIZER),memory)
+    CC = clang  # Memory sanitizer requires clang
+    CFLAGS += -fsanitize=memory -fno-omit-frame-pointer -g
+    LDFLAGS += -fsanitize=memory
+endif
+
+# Coverage flags (use with make COVERAGE=1)
+ifeq ($(COVERAGE),1)
+    CFLAGS += --coverage -fprofile-arcs -ftest-coverage -O0
+    LDFLAGS += --coverage
+endif
+
 # Directories
 SRC_DIR = src
 INC_DIR = include
@@ -129,6 +151,55 @@ clean:
 	rm -rf $(BUILD_DIR)
 	rm -f ss_lib_single.h
 
+# Sanitizer targets
+test-asan:
+	@echo "Running tests with AddressSanitizer..."
+	@$(MAKE) clean
+	@$(MAKE) SANITIZER=address tests
+	@ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1 $(BUILD_DIR)/test_ss_lib
+	@ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1 $(BUILD_DIR)/test_v2_simple
+
+test-tsan:
+	@echo "Running tests with ThreadSanitizer..."
+	@$(MAKE) clean
+	@$(MAKE) SANITIZER=thread tests
+	@TSAN_OPTIONS=halt_on_error=1:history_size=7 $(BUILD_DIR)/test_ss_lib
+	@TSAN_OPTIONS=halt_on_error=1:history_size=7 $(BUILD_DIR)/test_v2_simple
+
+test-ubsan:
+	@echo "Running tests with UndefinedBehaviorSanitizer..."
+	@$(MAKE) clean
+	@$(MAKE) SANITIZER=undefined tests
+	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD_DIR)/test_ss_lib
+	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD_DIR)/test_v2_simple
+
+test-msan:
+	@echo "Running tests with MemorySanitizer..."
+	@$(MAKE) clean
+	@$(MAKE) SANITIZER=memory CC=clang tests
+	@MSAN_OPTIONS=halt_on_error=1 $(BUILD_DIR)/test_ss_lib
+	@MSAN_OPTIONS=halt_on_error=1 $(BUILD_DIR)/test_v2_simple
+
+# Valgrind target
+test-valgrind: tests
+	@echo "Running tests with Valgrind..."
+	@command -v valgrind >/dev/null 2>&1 || { echo "Valgrind not installed. Please install valgrind."; exit 1; }
+	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1 $(BUILD_DIR)/test_ss_lib
+	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1 $(BUILD_DIR)/test_v2_simple
+
+# Coverage target
+coverage: clean
+	@echo "Building with coverage enabled..."
+	@$(MAKE) COVERAGE=1 tests
+	@echo "Running tests for coverage..."
+	@$(BUILD_DIR)/test_ss_lib
+	@$(BUILD_DIR)/test_v2_simple
+	@echo "Generating coverage report..."
+	@lcov --capture --directory $(BUILD_DIR) --output-file coverage.info
+	@lcov --remove coverage.info '/usr/*' '*/tests/*' --output-file coverage.info
+	@lcov --list coverage.info
+	@echo "Coverage report generated. For HTML report, run: genhtml coverage.info --output-directory coverage-report"
+
 # Help
 help:
 	@echo "SS_Lib Makefile targets:"
@@ -138,7 +209,20 @@ help:
 	@echo "  tests       - Build test programs"
 	@echo "  examples    - Build example programs"
 	@echo "  test        - Run tests"
+	@echo "  test-asan   - Run tests with AddressSanitizer"
+	@echo "  test-tsan   - Run tests with ThreadSanitizer"
+	@echo "  test-ubsan  - Run tests with UndefinedBehaviorSanitizer"
+	@echo "  test-msan   - Run tests with MemorySanitizer (clang only)"
+	@echo "  test-valgrind - Run tests with Valgrind memory checker"
+	@echo "  coverage    - Generate code coverage report"
 	@echo "  docs        - Build documentation (requires Doxygen)"
 	@echo "  install     - Install library and headers"
 	@echo "  clean       - Remove build artifacts"
 	@echo "  help        - Show this help message"
+	@echo ""
+	@echo "Build options:"
+	@echo "  make SANITIZER=address  - Build with AddressSanitizer"
+	@echo "  make SANITIZER=thread   - Build with ThreadSanitizer"
+	@echo "  make SANITIZER=undefined - Build with UndefinedBehaviorSanitizer"
+	@echo "  make COVERAGE=1         - Build with code coverage"
+	@echo "  make CC=clang           - Build with clang instead of gcc"

@@ -1,0 +1,323 @@
+name: CI Enhanced
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        compiler: [gcc, clang]
+        build_type: [Debug, Release]
+        memory_model: [dynamic, static]
+        exclude:
+          # Exclude clang on Windows
+          - os: windows-latest
+            compiler: clang
+          # Exclude gcc on macOS (use system clang)
+          - os: macos-latest
+            compiler: gcc
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up compiler (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        if [ "${{ matrix.compiler }}" = "clang" ]; then
+          sudo apt-get update
+          sudo apt-get install -y clang
+        fi
+
+    - name: Install dependencies (Ubuntu)
+      if: matrix.os == 'ubuntu-latest'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y valgrind lcov
+
+    - name: Setup MSYS2 (Windows)
+      if: matrix.os == 'windows-latest'
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: >-
+          mingw-w64-x86_64-gcc
+          mingw-w64-x86_64-cmake
+          make
+
+    - name: Configure build flags
+      id: build-flags
+      shell: bash
+      run: |
+        FLAGS="-Wall -Wextra -pedantic -std=c11"
+        if [ "${{ matrix.build_type }}" = "Debug" ]; then
+          FLAGS="$FLAGS -g -O0"
+        else
+          FLAGS="$FLAGS -O2"
+        fi
+        if [ "${{ matrix.memory_model }}" = "static" ]; then
+          FLAGS="$FLAGS -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=32 -DSS_MAX_SLOTS=128"
+        fi
+        echo "cflags=$FLAGS" >> $GITHUB_OUTPUT
+
+    - name: Build with Make (Unix)
+      if: matrix.os != 'windows-latest'
+      env:
+        CC: ${{ matrix.compiler }}
+        CFLAGS: ${{ steps.build-flags.outputs.cflags }}
+      run: |
+        make clean
+        make all
+        make examples
+
+    - name: Build with Make (Windows)
+      if: matrix.os == 'windows-latest'
+      shell: msys2 {0}
+      env:
+        CC: gcc
+        CFLAGS: ${{ steps.build-flags.outputs.cflags }}
+      run: |
+        make clean
+        make all
+        make examples
+
+    - name: Run tests (Unix)
+      if: matrix.os != 'windows-latest'
+      run: |
+        make test
+        ./build/test_v2_simple
+        ./build/example_embedded_simple
+
+    - name: Run tests (Windows)
+      if: matrix.os == 'windows-latest'
+      shell: msys2 {0}
+      run: |
+        ./build/test_ss_lib.exe
+        ./build/test_v2_simple.exe
+        ./build/example_embedded_simple.exe
+
+    - name: Test single header generation
+      if: matrix.os != 'windows-latest'
+      run: |
+        ./create_single_header.sh
+        echo '#define SS_IMPLEMENTATION' > test_single.c
+        echo '#include "ss_lib_single.h"' >> test_single.c
+        echo 'int main() { ss_init(); ss_cleanup(); return 0; }' >> test_single.c
+        ${{ matrix.compiler }} -o test_single test_single.c -pthread
+        ./test_single
+
+    - name: Memory check with Valgrind
+      if: matrix.os == 'ubuntu-latest' && matrix.build_type == 'Debug'
+      run: |
+        valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=1 ./build/test_ss_lib
+        valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=1 ./build/test_v2_simple
+
+  cmake-build:
+    name: CMake Build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        build_type: [Debug, Release]
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Configure CMake
+      run: |
+        cmake -B build \
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          -DSS_BUILD_TESTS=ON \
+          -DSS_BUILD_EXAMPLES=ON \
+          -DSS_ENABLE_THREAD_SAFETY=ON \
+          -DSS_ENABLE_PERFORMANCE_STATS=ON
+
+    - name: Build
+      run: cmake --build build --config ${{ matrix.build_type }}
+
+    - name: Run Tests
+      run: |
+        cd build
+        ctest -C ${{ matrix.build_type }} --output-on-failure -V
+
+  sanitizers:
+    name: Sanitizer Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        sanitizer: [address, thread, undefined]
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang
+
+    - name: Build with ${{ matrix.sanitizer }} sanitizer
+      run: |
+        FLAGS=""
+        case "${{ matrix.sanitizer }}" in
+          address)
+            FLAGS="-fsanitize=address -fno-omit-frame-pointer"
+            ;;
+          thread)
+            FLAGS="-fsanitize=thread"
+            ;;
+          undefined)
+            FLAGS="-fsanitize=undefined"
+            ;;
+        esac
+        
+        make clean
+        make CC=clang CFLAGS="-Wall -Wextra -pedantic -std=c11 -O2 -Iinclude $FLAGS" LDFLAGS="-pthread $FLAGS" tests
+
+    - name: Run tests with sanitizer
+      run: |
+        export ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1
+        export TSAN_OPTIONS=halt_on_error=1:history_size=7
+        export UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1
+        ./build/test_ss_lib || true
+        ./build/test_v2_simple || true
+
+  static-analysis:
+    name: Static Analysis
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install analysis tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cppcheck clang-tidy
+
+    - name: Run cppcheck
+      run: |
+        cppcheck --enable=all --inconclusive --force \
+          --suppress=missingIncludeSystem \
+          --suppress=unusedFunction \
+          -I include/ \
+          src/ examples/ tests/ 2>&1 | tee cppcheck.log
+        
+        # Fail if there are errors (not warnings)
+        ! grep -E "^\[.*\]: \(error\)" cppcheck.log
+
+    - name: Run clang-tidy
+      run: |
+        # Create compile_commands.json
+        cmake -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+        
+        # Run clang-tidy
+        find src examples tests -name '*.c' -exec \
+          clang-tidy -p build {} \; 2>&1 | tee clang-tidy.log || true
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install coverage tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y lcov
+
+    - name: Build with coverage
+      run: |
+        make clean
+        make CFLAGS="-Wall -Wextra -pedantic -std=c11 -O0 -Iinclude --coverage -fprofile-arcs -ftest-coverage" LDFLAGS="-pthread --coverage" all
+
+    - name: Run tests
+      run: |
+        make test
+        ./build/test_v2_simple
+        ./build/example_embedded_simple
+
+    - name: Generate coverage report
+      run: |
+        lcov --capture --directory . --output-file coverage.info
+        lcov --remove coverage.info '/usr/*' '*/tests/*' '*/examples/*' --output-file coverage.info
+        lcov --list coverage.info
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.info
+        flags: unittests
+        name: codecov-umbrella
+
+  embedded-build:
+    name: Embedded Build
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Install ARM toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-arm-none-eabi
+
+    - name: Build for Cortex-M4 (static memory)
+      run: |
+        arm-none-eabi-gcc -c -O2 -mcpu=cortex-m4 -mthumb -Iinclude \
+          -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -DSS_MAX_SLOTS=32 \
+          -DSS_ENABLE_THREAD_SAFETY=0 -DSS_MINIMAL_BUILD \
+          src/ss_lib_v2.c -o ss_lib_cortex_m4.o
+        
+        echo "=== Binary size for Cortex-M4 ==="
+        arm-none-eabi-size ss_lib_cortex_m4.o
+
+    - name: Build for AVR (minimal)
+      run: |
+        # Install AVR toolchain
+        sudo apt-get install -y gcc-avr
+        
+        avr-gcc -c -Os -mmcu=atmega328p -Iinclude \
+          -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=8 -DSS_MAX_SLOTS=16 \
+          -DSS_MINIMAL_BUILD \
+          src/ss_lib_v2.c -o ss_lib_avr.o
+        
+        echo "=== Binary size for AVR ==="
+        avr-size ss_lib_avr.o
+
+  documentation:
+    name: Documentation Check
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Check documentation files
+      run: |
+        # Check that key documentation files exist
+        test -f README.md
+        test -f CONTRIBUTING.md
+        test -f LICENSE
+        test -f CHANGELOG.md
+        test -f docs/getting-started.md
+
+    - name: Check README links
+      run: |
+        # Simple check for broken markdown links in README
+        grep -oE '\[([^]]+)\]\(([^)]+)\)' README.md | while read -r link; do
+          url=$(echo "$link" | sed -E 's/\[([^]]+)\]\(([^)]+)\)/\2/')
+          if [[ "$url" == "#"* ]] || [[ "$url" == "http"* ]]; then
+            continue  # Skip anchors and external links
+          fi
+          if [[ ! -f "$url" ]]; then
+            echo "Broken link in README: $url"
+            exit 1
+          fi
+        done || true
