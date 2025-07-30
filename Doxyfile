@@ -1,0 +1,135 @@
+# Doxyfile for SS_Lib
+
+# Project information
+PROJECT_NAME           = "SS_Lib"
+PROJECT_NUMBER         = "2.0.0"
+PROJECT_BRIEF          = "Lightweight Signal-Slot Library for C"
+PROJECT_LOGO           = 
+
+# Input/output directories
+INPUT                  = README.md include/ss_lib_v2.h include/ss_config.h src/ss_lib_v2.c docs/
+OUTPUT_DIRECTORY       = docs/api
+CREATE_SUBDIRS         = YES
+RECURSIVE              = YES
+
+# Build options
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = NO
+EXTRACT_STATIC         = YES
+EXTRACT_LOCAL_CLASSES  = YES
+HIDE_UNDOC_MEMBERS     = NO
+HIDE_UNDOC_CLASSES     = NO
+BRIEF_MEMBER_DESC      = YES
+REPEAT_BRIEF           = YES
+ALWAYS_DETAILED_SEC    = NO
+INLINE_INHERITED_MEMB  = NO
+FULL_PATH_NAMES        = NO
+STRIP_FROM_PATH        = 
+
+# Language options
+OPTIMIZE_OUTPUT_FOR_C  = YES
+TYPEDEF_HIDES_STRUCT   = YES
+DISTRIBUTE_GROUP_DOC   = YES
+
+# Documentation format
+GENERATE_HTML          = YES
+HTML_OUTPUT            = html
+HTML_FILE_EXTENSION    = .html
+HTML_HEADER            = 
+HTML_FOOTER            = 
+HTML_STYLESHEET        = 
+HTML_COLORSTYLE_HUE    = 220
+HTML_COLORSTYLE_SAT    = 100
+HTML_COLORSTYLE_GAMMA  = 80
+HTML_TIMESTAMP         = YES
+HTML_DYNAMIC_SECTIONS  = YES
+GENERATE_TREEVIEW      = YES
+TREEVIEW_WIDTH         = 250
+
+GENERATE_LATEX         = NO
+GENERATE_RTF           = NO
+GENERATE_MAN           = NO
+GENERATE_XML           = NO
+
+# Preprocessing
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = NO
+PREDEFINED             = SS_ENABLE_THREAD_SAFETY=1 \
+                        SS_ENABLE_INTROSPECTION=1 \
+                        SS_ENABLE_CUSTOM_DATA=1 \
+                        SS_ENABLE_PERFORMANCE_STATS=1 \
+                        SS_ENABLE_MEMORY_STATS=1 \
+                        SS_ENABLE_ISR_SAFE=1
+
+# Source browsing
+SOURCE_BROWSER         = YES
+INLINE_SOURCES         = NO
+STRIP_CODE_COMMENTS    = YES
+REFERENCED_BY_RELATION = YES
+REFERENCES_RELATION    = YES
+REFERENCES_LINK_SOURCE = YES
+SOURCE_TOOLTIPS        = YES
+USE_HTAGS              = NO
+VERBATIM_HEADERS       = YES
+
+# Index
+ALPHABETICAL_INDEX     = YES
+COLS_IN_ALPHA_INDEX    = 5
+
+# Output options
+QUIET                  = NO
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = YES
+WARN_FORMAT            = "$file:$line: $text"
+
+# Graphs
+HAVE_DOT               = YES
+DOT_NUM_THREADS        = 0
+DOT_FONTNAME           = Helvetica
+DOT_FONTSIZE           = 10
+CLASS_GRAPH            = YES
+COLLABORATION_GRAPH    = YES
+GROUP_GRAPHS           = YES
+UML_LOOK               = NO
+TEMPLATE_RELATIONS     = NO
+INCLUDE_GRAPH          = YES
+INCLUDED_BY_GRAPH      = YES
+CALL_GRAPH             = YES
+CALLER_GRAPH           = YES
+GRAPHICAL_HIERARCHY    = YES
+DIRECTORY_GRAPH        = YES
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+DOT_GRAPH_MAX_NODES    = 50
+MAX_DOT_GRAPH_DEPTH    = 0
+DOT_TRANSPARENT        = NO
+DOT_MULTI_TARGETS      = YES
+GENERATE_LEGEND        = YES
+DOT_CLEANUP            = YES
+
+# File patterns
+FILE_PATTERNS          = *.c \
+                        *.h \
+                        *.md
+EXTENSION_MAPPING      = 
+USE_MDFILE_AS_MAINPAGE = README.md
+
+# Exclusions
+EXCLUDE                = 
+EXCLUDE_SYMLINKS       = NO
+EXCLUDE_PATTERNS       = */tests/* \
+                        */build/* \
+                        *_test.c
+EXCLUDE_SYMBOLS        = 
+
+# Examples
+EXAMPLE_PATH           = examples/
+EXAMPLE_PATTERNS       = *.c
+EXAMPLE_RECURSIVE      = NO
+
+# External references
+EXTERNAL_GROUPS        = YES
+EXTERNAL_PAGES         = YES

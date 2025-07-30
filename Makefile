@@ -64,7 +64,12 @@ TEST_BINS = $(patsubst $(TEST_DIR)/%.c,$(BUILD_DIR)/%,$(TEST_SRCS))
 EXAMPLE_SRCS = $(wildcard $(EXAMPLE_DIR)/*.c)
 EXAMPLE_BINS = $(patsubst $(EXAMPLE_DIR)/%.c,$(BUILD_DIR)/%,$(EXAMPLE_SRCS))
 
-.PHONY: all clean test lib lib_v2 examples docs install shared
+# Benchmarks
+BENCH_DIR = benchmarks
+BENCH_SRC = $(BENCH_DIR)/benchmark_ss_lib.c
+BENCH_BIN = $(BUILD_DIR)/benchmark_ss_lib
+
+.PHONY: all clean test lib lib_v2 examples docs install shared benchmark
 
 all: lib_v2 tests examples
 
@@ -139,12 +144,17 @@ docs:
 # Installation
 PREFIX ?= /usr/local
 
-install: lib_v2
+install: lib_v2 ss_lib.pc
 	@echo "Installing to $(PREFIX)..."
-	@mkdir -p $(PREFIX)/lib $(PREFIX)/include/ss_lib
+	@mkdir -p $(PREFIX)/lib $(PREFIX)/include/ss_lib $(PREFIX)/lib/pkgconfig
 	@cp $(LIB_V2_NAME) $(PREFIX)/lib/
 	@cp $(INC_DIR)/*.h $(PREFIX)/include/ss_lib/
+	@sed "s|^prefix=.*|prefix=$(PREFIX)|" ss_lib.pc > $(PREFIX)/lib/pkgconfig/ss_lib.pc
 	@echo "Installation complete!"
+	@echo ""
+	@echo "To use SS_Lib in your project:"
+	@echo "  pkg-config --cflags ss_lib"
+	@echo "  pkg-config --libs ss_lib"
 
 # Clean
 clean:
@@ -184,8 +194,22 @@ test-msan:
 test-valgrind: tests
 	@echo "Running tests with Valgrind..."
 	@command -v valgrind >/dev/null 2>&1 || { echo "Valgrind not installed. Please install valgrind."; exit 1; }
-	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1 $(BUILD_DIR)/test_ss_lib
-	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes --error-exitcode=1 $(BUILD_DIR)/test_v2_simple
+	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
+	          --suppressions=valgrind.supp --error-exitcode=1 \
+	          $(BUILD_DIR)/test_ss_lib
+	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
+	          --suppressions=valgrind.supp --error-exitcode=1 \
+	          $(BUILD_DIR)/test_v2_simple
+
+# Memory check with detailed output
+memcheck: tests
+	@echo "Running detailed memory check..."
+	@command -v valgrind >/dev/null 2>&1 || { echo "Valgrind not installed. Please install valgrind."; exit 1; }
+	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
+	          --suppressions=valgrind.supp --gen-suppressions=all \
+	          --verbose --log-file=valgrind.log \
+	          $(BUILD_DIR)/test_ss_lib
+	@echo "Valgrind log saved to valgrind.log"
 
 # Coverage target
 coverage: clean
@@ -199,6 +223,19 @@ coverage: clean
 	@lcov --remove coverage.info '/usr/*' '*/tests/*' --output-file coverage.info
 	@lcov --list coverage.info
 	@echo "Coverage report generated. For HTML report, run: genhtml coverage.info --output-directory coverage-report"
+
+# Benchmark targets
+benchmark: $(BENCH_BIN)
+	@echo "Running benchmarks..."
+	@$(BENCH_BIN)
+
+$(BENCH_BIN): $(BENCH_SRC) $(LIB_V2_NAME)
+	@mkdir -p $(dir $@)
+	$(CC) -O3 -march=native $(CFLAGS) $< -L$(BUILD_DIR) -lsslib_v2 $(LDFLAGS) -o $@
+
+benchmark-all:
+	@echo "Running comprehensive benchmarks..."
+	@$(BENCH_DIR)/run_benchmarks.sh
 
 # Help
 help:
@@ -215,6 +252,8 @@ help:
 	@echo "  test-msan   - Run tests with MemorySanitizer (clang only)"
 	@echo "  test-valgrind - Run tests with Valgrind memory checker"
 	@echo "  coverage    - Generate code coverage report"
+	@echo "  benchmark   - Run basic performance benchmark"
+	@echo "  benchmark-all - Run comprehensive benchmark suite"
 	@echo "  docs        - Build documentation (requires Doxygen)"
 	@echo "  install     - Install library and headers"
 	@echo "  clean       - Remove build artifacts"

@@ -149,6 +149,17 @@ endif()
 # Package configuration
 include(CMakePackageConfigHelpers)
 
+# Generate pkg-config file
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/ss_lib.pc.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/ss_lib.pc"
+    @ONLY
+)
+
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/ss_lib.pc"
+    DESTINATION lib/pkgconfig
+)
+
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/ss_libConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}

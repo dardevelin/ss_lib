@@ -1,0 +1,99 @@
+# Valgrind suppression file for SS_Lib
+# 
+# This file suppresses known false positives and system library issues
+# that are not related to SS_Lib itself.
+
+# pthread library issues on Linux
+{
+   pthread_create_detached
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   fun:allocate_dtv
+   fun:_dl_allocate_tls
+   fun:allocate_stack
+   fun:pthread_create*
+}
+
+{
+   pthread_create_joinable
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   fun:_dl_allocate_tls
+   fun:pthread_create*
+}
+
+# glibc dlopen issues
+{
+   glibc_dlopen_leak
+   Memcheck:Leak
+   match-leak-kinds: definite
+   fun:malloc
+   fun:_dl_map_object_deps
+   fun:dl_open_worker
+   fun:_dl_catch_error
+   fun:_dl_open
+   fun:dlopen_doit
+}
+
+# macOS system library suppressions
+{
+   macos_dyld_leak
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:malloc
+   fun:*dyld*
+}
+
+{
+   macos_libsystem_leak
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:malloc
+   fun:*libsystem*
+}
+
+# Suppress leaks in system time functions
+{
+   system_time_leak
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   fun:tzset_internal
+   fun:__tzset
+}
+
+# Thread-local storage on some systems
+{
+   tls_leak
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   fun:allocate_dtv
+   fun:_dl_allocate_tls
+}
+
+# SS_Lib specific suppressions for static builds
+{
+   ss_lib_static_init
+   Memcheck:Cond
+   fun:ss_init_static
+   fun:main
+}
+
+# Suppress false positives in hash table implementation
+{
+   ss_lib_hash_table
+   Memcheck:Value8
+   fun:ss_hash_string
+   fun:ss_signal_register
+}
+
+# Thread safety mutex initialization
+{
+   ss_lib_mutex_init
+   Memcheck:Cond
+   fun:pthread_mutex_init
+   fun:ss_init
+}
