@@ -1,3 +1,8 @@
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L  /* For strdup on macOS */
+#define _GNU_SOURCE               /* For strdup on Linux */
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
