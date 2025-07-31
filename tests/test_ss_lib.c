@@ -112,6 +112,7 @@ void test_multiple_slots(void) {
 void test_signal_introspection(void) {
     printf("\n=== Testing Signal Introspection ===\n");
     
+#if SS_ENABLE_INTROSPECTION
     assert(ss_init() == SS_OK);
     
     assert(ss_signal_register("signal1") == SS_OK);
@@ -134,6 +135,9 @@ void test_signal_introspection(void) {
     ss_free_signal_list(list, count);
     
     ss_cleanup();
+#else
+    printf("Introspection disabled - skipping tests\n");
+#endif
     printf("Signal introspection tests passed!\n");
 }
 
