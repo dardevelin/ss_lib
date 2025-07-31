@@ -1,2 +1,40 @@
 ss_lib_single.h
 
+# Build artifacts
+build/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Test executables
+test_*
+example_*
+!tests/
+!examples/
+
+# Benchmark results
+benchmark_results.txt
+*.log
+
+# Coverage files
+coverage.info
+coverage-report/
+*.gcda
+*.gcno
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Personal settings
+.claude/
+
