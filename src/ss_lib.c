@@ -1085,6 +1085,7 @@ ss_error_t ss_signal_unregister(const char* signal_name) {
     return SS_OK;
 }
 
+#if SS_ENABLE_INTROSPECTION
 /* Get the number of registered signals */
 size_t ss_get_signal_count(void) {
     if (!g_context) return 0;
@@ -1154,6 +1155,7 @@ void ss_free_signal_list(ss_signal_info_t* list, size_t count) {
         SS_FREE(list);
     }
 }
+#endif
 
 /* Set maximum slots per signal */
 void ss_set_max_slots_per_signal(size_t max_slots) {
