@@ -91,6 +91,20 @@ void ADC_ISR(void) {
 
 ## 🔧 Configuration Options
 
+### Thread Safety Initialization
+
+**Important**: Thread safety is **disabled by default** and must be explicitly enabled:
+
+```c
+ss_init();                    // Thread safety disabled (default)
+ss_set_thread_safe(1);       // Enable thread safety if needed
+
+// Or compile with SS_ENABLE_THREAD_SAFETY=1 for mutex infrastructure,
+// but runtime control still requires ss_set_thread_safe(1)
+```
+
+This design ensures minimal overhead in single-threaded applications while providing opt-in thread safety when needed.
+
 ### Compile-Time Flags
 
 ```c
@@ -151,38 +165,48 @@ void ADC_ISR(void) {
 
 ### Benchmark Results
 
-Performance varies by platform and configuration. Here are typical results:
+Performance data from the latest CI runs (dynamic memory, thread-safe):
 
-#### Apple M1 (macOS)
+#### GitHub Actions - Ubuntu Latest (x86_64)
 ```
-Signal emission (dynamic memory, thread-safe):
-- Empty signal: 26 ns
-- With 1 slot: 27 ns  
-- With 5 slots: 27 ns
-- With 10 slots: 27 ns
-
 Basic operations:
-- Signal registration: 1233 ns
-- Slot connection: 1352 ns
-- Signal lookup: 150 ns
-- Disconnect by handle: 53 ns
+- Signal registration: 1731 ns avg (60-18895 ns range)
+- Slot connection: 2240 ns avg (2154-21079 ns range)  
+- Signal lookup: 185 ns avg (20-28442 ns range)
+- Disconnect by handle: 39 ns avg (29-7534 ns range)
+
+Signal emission:
+- Empty signal: 30 ns avg (20-32640 ns range)
+- With 1 slot: 31 ns avg (29-8435 ns range)
+- With 5 slots: 34 ns avg (29-8706 ns range)  
+- With 10 slots: 39 ns avg (29-6984 ns range)
+- Int data signal: 35 ns avg (29-7754 ns range)
+- Priority slots: 39 ns avg (29-7294 ns range)
 ```
 
-#### x86_64 Linux (Intel i7 @ 3.5GHz)
+#### GitHub Actions - macOS Latest (Apple Silicon)
 ```
-Signal emission (dynamic memory, thread-safe):
-- Empty signal: ~40-50 ns
-- With 1 slot: ~70-80 ns  
-- With 5 slots: ~200-250 ns
-- With 10 slots: ~350-400 ns
+Basic operations:
+- Signal registration: 1060 ns avg (0-8000 ns range)
+- Slot connection: 1116 ns avg (1000-20000 ns range)
+- Signal lookup: 140 ns avg (0-146000 ns range)  
+- Disconnect by handle: 58 ns avg (0-6000 ns range)
+
+Signal emission:
+- Empty signal: 34 ns avg (0-39000 ns range)
+- With 1 slot: 37 ns avg (0-31000 ns range)
+- With 5 slots: 36 ns avg (0-42000 ns range)
+- With 10 slots: 40 ns avg (0-10000 ns range)
+- Int data signal: 36 ns avg (0-16000 ns range)
+- Priority slots: 39 ns avg (0-4000 ns range)
 ```
 
-#### STM32F4 @ 168MHz (Cortex-M4)
+#### Embedded Reference (STM32F4 @ 168MHz, static memory, no threading)
 ```
-Signal emission (static memory, no thread safety):
-- Empty signal: 89 ns
-- With 1 slot: 124 ns  
-- With 5 slots: 287 ns
+Signal emission:
+- Empty signal: ~89 ns
+- With 1 slot: ~124 ns  
+- With 5 slots: ~287 ns
 
 Memory usage (16 signals, 32 slots):
 - Total allocation: 2.1 KB
@@ -429,6 +453,17 @@ target_link_libraries(your_app ss_lib::ss_lib)
 ```bash
 brew tap dardevelin/ss-lib
 brew install ss-lib
+```
+
+### Using AUR (Arch Linux)
+```bash
+# From AUR (when available)
+yay -S ss-lib
+
+# Or manual build
+git clone https://github.com/dardevelin/ss_lib.git
+cd ss_lib/packaging/aur
+makepkg -si
 ```
 
 ### Single Header
