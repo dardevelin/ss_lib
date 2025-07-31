@@ -83,9 +83,13 @@
 /* Debug Macros */
 #if SS_ENABLE_DEBUG_TRACE
     #include <stdio.h>
-    #define SS_TRACE(fmt, ...) fprintf(stderr, "[SS_TRACE] " fmt "\n", ##__VA_ARGS__)
+    #define SS_TRACE(...) do { \
+        fprintf(stderr, "[SS_TRACE] "); \
+        fprintf(stderr, __VA_ARGS__); \
+        fprintf(stderr, "\n"); \
+    } while(0)
 #else
-    #define SS_TRACE(fmt, ...) ((void)0)
+    #define SS_TRACE(...) ((void)0)
 #endif
 
 /* Minimal Build */

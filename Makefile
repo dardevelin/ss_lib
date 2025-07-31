@@ -88,10 +88,13 @@ $(BUILD_DIR)/ss_lib.o: $(SRC_DIR)/ss_lib.c
 	$(CC) $(CFLAGS) -fPIC -DSS_ENABLE_ISR_SAFE=1 -DSS_ENABLE_MEMORY_STATS=1 -DSS_ENABLE_PERFORMANCE_STATS=1 -c $< -o $@
 
 # Test programs
-$(BUILD_DIR)/test_ss_lib: $(TEST_DIR)/test_ss_lib.c $(LIB_NAME)
+$(BUILD_DIR)/test_basic: $(TEST_DIR)/test_basic.c $(LIB_NAME)
 	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
 
 $(BUILD_DIR)/test_simple: $(TEST_DIR)/test_simple.c $(LIB_NAME)
+	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
+
+$(BUILD_DIR)/test_ss_lib: $(TEST_DIR)/test_ss_lib.c $(LIB_NAME)
 	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
 
 # Examples
@@ -107,7 +110,7 @@ $(BUILD_DIR)/example_embedded_simple: $(EXAMPLE_DIR)/example_embedded_simple.c $
 # Run tests
 test: tests
 	@echo "Running tests..."
-	@$(BUILD_DIR)/test_ss_lib
+	@$(BUILD_DIR)/test_basic
 	@$(BUILD_DIR)/test_simple
 
 test_embedded: $(BUILD_DIR)/example_embedded_simple
@@ -199,7 +202,7 @@ test-msan:
 # Valgrind test
 test-valgrind: tests
 	@echo "Running tests with Valgrind..."
-	@valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=1 $(BUILD_DIR)/test_ss_lib
+	@valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=1 $(BUILD_DIR)/test_basic
 	@valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=1 $(BUILD_DIR)/test_simple
 
 # Coverage

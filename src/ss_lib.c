@@ -1,6 +1,6 @@
 #ifndef _WIN32
-#define _POSIX_C_SOURCE 199309L
-#define _GNU_SOURCE
+#define _POSIX_C_SOURCE 200809L  /* For strdup on macOS */
+#define _GNU_SOURCE               /* For strdup on Linux */
 #endif
 
 #include "ss_lib.h"
@@ -114,11 +114,13 @@ static uint64_t get_time_ns(void) {
 }
 #endif
 
+/* Commented out - not currently used
 static void report_error(ss_error_t error, const char* msg) {
     if (g_context && g_context->error_handler) {
         g_context->error_handler(error, msg);
     }
 }
+*/
 
 #if SS_USE_STATIC_MEMORY
 static ss_signal_t* find_signal(const char* name) {
