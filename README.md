@@ -457,12 +457,12 @@ brew install ss-lib
 
 ### Using AUR (Arch Linux)
 ```bash
-# From AUR (when available)
+# From AUR (when available)  
 yay -S ss-lib
 
-# Or manual build
-git clone https://github.com/dardevelin/ss_lib.git
-cd ss_lib/packaging/aur
+# Or manual build from AUR repository
+git clone https://github.com/dardevelin/aur-ss-lib.git
+cd aur-ss-lib
 makepkg -si
 ```
 
