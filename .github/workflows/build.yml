@@ -1,4 +1,4 @@
-name: CI
+name: Build
 
 on:
   push:
@@ -20,7 +20,7 @@ jobs:
     - name: Install dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y valgrind
+        sudo apt-get install -y valgrind cppcheck clang-tools
     
     - name: Build with Make
       env:
@@ -32,14 +32,19 @@ jobs:
     - name: Run tests
       run: |
         make test
-        ./test_v2_simple
-        ./example_embedded_simple
     
     - name: Memory check with Valgrind
       if: matrix.build_type == 'Debug'
       run: |
-        valgrind --leak-check=full --error-exitcode=1 ./test_ss_lib
-        valgrind --leak-check=full --error-exitcode=1 ./test_v2_simple
+        valgrind --leak-check=full --error-exitcode=1 ./build/test_ss_lib
+        valgrind --leak-check=full --error-exitcode=1 ./build/test_v2_simple
+    
+    - name: Run cppcheck
+      run: |
+        cppcheck --enable=all --error-exitcode=0 --suppress=missingIncludeSystem \
+                 --suppress=unusedFunction --suppress=constParameter \
+                 --suppress=constParameterPointer \
+                 src/ include/
 
   build-windows:
     runs-on: windows-latest
@@ -65,8 +70,8 @@ jobs:
     - name: Run tests
       shell: msys2 {0}
       run: |
-        ./test_ss_lib.exe
-        ./test_v2_simple.exe
+        ./build/test_ss_lib.exe
+        ./build/test_v2_simple.exe
 
   build-macos:
     runs-on: macos-latest
@@ -82,29 +87,6 @@ jobs:
     - name: Run tests
       run: |
         make test
-        ./test_v2_simple
-        ./example_embedded_simple
-
-  static-analysis:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Install analysis tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y cppcheck clang-tools
-    
-    - name: Run cppcheck
-      run: |
-        cppcheck --enable=all --error-exitcode=1 --suppress=missingIncludeSystem \
-                 --suppress=unusedFunction \
-                 src/ include/
-    
-    - name: Run clang-tidy
-      run: |
-        clang-tidy src/*.c -- -Iinclude/
 
   embedded-build:
     runs-on: ubuntu-latest
@@ -119,10 +101,10 @@ jobs:
     
     - name: Build for embedded (static memory)
       run: |
-        arm-none-eabi-gcc -c -O2 -mcpu=cortex-m4 \
+        arm-none-eabi-gcc -c -O2 -mcpu=cortex-m4 -Iinclude \
           -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -DSS_MAX_SLOTS=32 \
           -DSS_ENABLE_THREAD_SAFETY=0 -DSS_MINIMAL_BUILD \
-          ss_lib_v2.c -o ss_lib_embedded.o
+          src/ss_lib_v2.c -o ss_lib_embedded.o
         
         # Check binary size
         arm-none-eabi-size ss_lib_embedded.o

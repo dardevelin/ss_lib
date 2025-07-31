@@ -1,7 +1,7 @@
 # SS_Lib - Production-Ready Signal-Slot Library for C
 
-[![CI](https://github.com/dardevelin/ss_lib/actions/workflows/ci.yml/badge.svg)](https://github.com/dardevelin/ss_lib/actions/workflows/ci.yml)
-[![Benchmarks](https://github.com/dardevelin/ss_lib/actions/workflows/benchmark.yml/badge.svg)](https://github.com/dardevelin/ss_lib/actions/workflows/benchmark.yml)
+[![Build](https://github.com/dardevelin/ss_lib/actions/workflows/build.yml/badge.svg)](https://github.com/dardevelin/ss_lib/actions/workflows/build.yml)
+[![Benchmarks](https://github.com/dardevelin/ss_lib/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/dardevelin/ss_lib/actions/workflows/benchmarks.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A lightweight, efficient signal-slot implementation designed for embedded systems, game engines, and resource-constrained environments.
@@ -153,18 +153,28 @@ void ADC_ISR(void) {
 
 Performance varies by platform and configuration. Here are typical results:
 
+#### Apple M1 (macOS)
+```
+Signal emission (dynamic memory, thread-safe):
+- Empty signal: 26 ns
+- With 1 slot: 27 ns  
+- With 5 slots: 27 ns
+- With 10 slots: 27 ns
+
+Basic operations:
+- Signal registration: 1233 ns
+- Slot connection: 1352 ns
+- Signal lookup: 150 ns
+- Disconnect by handle: 53 ns
+```
+
 #### x86_64 Linux (Intel i7 @ 3.5GHz)
 ```
 Signal emission (dynamic memory, thread-safe):
-- Empty signal: 42 ns
-- With 1 slot: 78 ns  
-- With 5 slots: 215 ns
-- With 10 slots: 398 ns
-
-Basic operations:
-- Signal registration: 156 ns
-- Slot connection: 89 ns
-- Signal lookup: 23 ns
+- Empty signal: ~40-50 ns
+- With 1 slot: ~70-80 ns  
+- With 5 slots: ~200-250 ns
+- With 10 slots: ~350-400 ns
 ```
 
 #### STM32F4 @ 168MHz (Cortex-M4)
@@ -180,7 +190,7 @@ Memory usage (16 signals, 32 slots):
 - Per slot overhead: 24 bytes
 ```
 
-View the [latest benchmark results](https://github.com/dardevelin/ss_lib/actions/workflows/benchmark.yml) or run benchmarks locally:
+View the [latest benchmark results](https://github.com/dardevelin/ss_lib/actions/workflows/benchmarks.yml) or run benchmarks locally:
 ```bash
 make benchmark        # Quick benchmark
 make benchmark-all    # Comprehensive suite
@@ -230,14 +240,18 @@ ss_connect_ex("alarm", on_log, NULL, SS_PRIORITY_LOW, NULL);
 
 ### Standard Build
 ```bash
-make lib_v2
-make examples
+make          # Build library and tests
+make examples # Build example programs
+make test     # Run tests
 ```
 
 ### Embedded Build
 ```bash
 # Configure in ss_config.h or via compiler flags
-gcc -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -c ss_lib_v2.c
+gcc -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -c src/ss_lib_v2.c -Iinclude
+
+# Or use make with flags
+make CFLAGS="-DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16"
 ```
 
 ### Single Header
@@ -270,6 +284,8 @@ gcc -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -c ss_lib_v2.c
 | `ss_connect_ex(...)` | Connect with priority & handle |
 | `ss_disconnect(signal, func)` | Disconnect specific slot |
 | `ss_disconnect_handle(handle)` | Disconnect using handle |
+| `ss_disconnect_all(signal)` | Disconnect all slots |
+| `ss_signal_exists(name)` | Check if signal exists |
 
 ### Signal Emission
 
@@ -278,6 +294,10 @@ gcc -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -c ss_lib_v2.c
 | `ss_emit(signal, data)` | Emit with custom data |
 | `ss_emit_void(signal)` | Emit without data |
 | `ss_emit_int(signal, value)` | Emit integer |
+| `ss_emit_float(signal, value)` | Emit float |
+| `ss_emit_double(signal, value)` | Emit double |
+| `ss_emit_string(signal, str)` | Emit string |
+| `ss_emit_pointer(signal, ptr)` | Emit pointer |
 | `ss_emit_from_isr(signal, value)` | ISR-safe emission |
 
 ## 🔄 Migration from V1
@@ -347,9 +367,9 @@ void plugin_init() {
 }
 ```
 
-## 🐛 Debugging
+## 🐛 Debugging & Testing
 
-Enable debug traces:
+### Enable Debug Traces
 ```c
 #define SS_ENABLE_DEBUG_TRACE 1
 #include "ss_lib_v2.h"
@@ -362,6 +382,15 @@ Output:
 [SS_TRACE] Signal registered: button_click
 [SS_TRACE] Connected slot to signal: button_click (handle: 1)
 [SS_TRACE] Emitting signal: button_click to 1 slots
+```
+
+### Run Tests with Sanitizers
+```bash
+make test-asan     # AddressSanitizer
+make test-tsan     # ThreadSanitizer  
+make test-ubsan    # UndefinedBehaviorSanitizer
+make test-valgrind # Valgrind memory check
+make coverage      # Generate coverage report
 ```
 
 ## 📄 License
@@ -378,6 +407,32 @@ MIT License - See LICENSE file for details
 ## 🔗 See Also
 
 - [Design Rationale](docs/design.md)
-- [Performance Tuning](docs/performance.md)
-- [Embedded Examples](examples/embedded/)
-- [API Documentation](docs/api.md)
+- [API Reference](docs/api-reference.md)
+- [Getting Started Guide](docs/getting-started.md)
+- [Benchmarks](https://github.com/dardevelin/ss_lib/actions/workflows/benchmarks.yml)
+
+## 📦 Installation
+
+### Using pkg-config
+```bash
+sudo make install
+pkg-config --cflags --libs ss_lib
+```
+
+### Using CMake
+```cmake
+find_package(ss_lib REQUIRED)
+target_link_libraries(your_app ss_lib::ss_lib)
+```
+
+### Using Homebrew (macOS)
+```bash
+brew tap dardevelin/ss-lib
+brew install ss-lib
+```
+
+### Single Header
+```bash
+./create_single_header.sh
+# Copy ss_lib_single.h to your project
+```

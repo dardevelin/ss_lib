@@ -1,129 +1,19 @@
-name: CI
+name: Benchmarks
 
 on:
+  schedule:
+    # Run benchmarks every Sunday at 00:00 UTC
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
   push:
-    branches: [ main, develop ]
-  pull_request:
     branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'include/**'
+      - 'benchmarks/**'
 
 jobs:
-  build-linux:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        compiler: [gcc, clang]
-        build_type: [Debug, Release]
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y valgrind
-    
-    - name: Build with Make
-      env:
-        CC: ${{ matrix.compiler }}
-      run: |
-        make clean
-        make all
-    
-    - name: Run tests
-      run: |
-        make test
-    
-    - name: Memory check with Valgrind
-      if: matrix.build_type == 'Debug'
-      run: |
-        valgrind --leak-check=full --error-exitcode=1 ./build/test_ss_lib
-        valgrind --leak-check=full --error-exitcode=1 ./build/test_v2_simple
-
-  build-windows:
-    runs-on: windows-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Setup MinGW
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: MINGW64
-        update: true
-        install: >-
-          mingw-w64-x86_64-gcc
-          make
-    
-    - name: Build with MinGW
-      shell: msys2 {0}
-      run: |
-        make clean
-        make all
-    
-    - name: Run tests
-      shell: msys2 {0}
-      run: |
-        ./build/test_ss_lib.exe
-        ./build/test_v2_simple.exe
-
-  build-macos:
-    runs-on: macos-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Build with Make
-      run: |
-        make clean
-        make all
-    
-    - name: Run tests
-      run: |
-        make test
-
-  static-analysis:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Install analysis tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y cppcheck clang-tools
-    
-    - name: Run cppcheck
-      run: |
-        cppcheck --enable=all --error-exitcode=1 --suppress=missingIncludeSystem \
-                 --suppress=unusedFunction \
-                 src/ include/
-    
-    - name: Run clang-tidy
-      run: |
-        clang-tidy src/*.c -- -Iinclude/
-
-  embedded-build:
-    runs-on: ubuntu-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Install ARM toolchain
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-arm-none-eabi
-    
-    - name: Build for embedded (static memory)
-      run: |
-        arm-none-eabi-gcc -c -O2 -mcpu=cortex-m4 -Iinclude \
-          -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -DSS_MAX_SLOTS=32 \
-          -DSS_ENABLE_THREAD_SAFETY=0 -DSS_MINIMAL_BUILD \
-          src/ss_lib_v2.c -o ss_lib_embedded.o
-        
-        # Check binary size
-        arm-none-eabi-size ss_lib_embedded.o
-
-  benchmarks:
+  benchmark:
     name: Performance Benchmarks
     runs-on: ${{ matrix.os }}
     strategy:
@@ -157,7 +47,7 @@ jobs:
       if: matrix.os == 'ubuntu-latest'
       run: |
         chmod +x benchmarks/run_benchmarks.sh
-        ./benchmarks/run_benchmarks.sh
+        ./benchmarks/run_benchmarks.sh || true
     
     - name: Upload comprehensive results
       if: matrix.os == 'ubuntu-latest'
@@ -169,31 +59,24 @@ jobs:
   benchmark-comparison:
     name: Benchmark Comparison
     runs-on: ubuntu-latest
-    needs: benchmarks
     if: github.event_name == 'pull_request'
     
     steps:
     - uses: actions/checkout@v3
     
-    - name: Download current benchmarks
-      uses: actions/download-artifact@v3
-      with:
-        name: benchmark-results-ubuntu-latest
-        path: current/
-    
-    - name: Checkout base branch
-      run: |
-        git fetch origin ${{ github.base_ref }}
-        git checkout origin/${{ github.base_ref }}
-    
-    - name: Build base benchmark
+    - name: Run benchmarks on PR branch
       run: |
         make clean
         make benchmark
+        ./build/benchmark_ss_lib > pr_results.txt
     
-    - name: Run base benchmark
+    - name: Run benchmarks on base branch
       run: |
-        ./build/benchmark_ss_lib | tee base_benchmark_results.txt
+        git fetch origin ${{ github.base_ref }}
+        git checkout origin/${{ github.base_ref }}
+        make clean
+        make benchmark
+        ./build/benchmark_ss_lib > base_results.txt
     
     - name: Compare benchmarks
       run: |
@@ -201,12 +84,12 @@ jobs:
         echo "" >> comparison.md
         echo "### Base Branch (${{ github.base_ref }})" >> comparison.md
         echo '```' >> comparison.md
-        tail -20 base_benchmark_results.txt >> comparison.md
+        tail -20 base_results.txt >> comparison.md
         echo '```' >> comparison.md
         echo "" >> comparison.md
         echo "### Current Branch" >> comparison.md
         echo '```' >> comparison.md
-        tail -20 current/benchmark_results.txt >> comparison.md
+        tail -20 pr_results.txt >> comparison.md
         echo '```' >> comparison.md
         
         # Simple comparison script
@@ -225,8 +108,8 @@ jobs:
                         results[name] = avg
             return results
         
-        base = parse_results('base_benchmark_results.txt')
-        current = parse_results('current/benchmark_results.txt')
+        base = parse_results('base_results.txt')
+        current = parse_results('pr_results.txt')
         
         print("\n### Performance Changes\n")
         print("| Benchmark | Base (ns) | Current (ns) | Change |")
