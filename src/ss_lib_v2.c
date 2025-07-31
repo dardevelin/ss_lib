@@ -818,3 +818,124 @@ void ss_disable_trace(void) {
     }
 }
 #endif
+
+/* Signal existence check */
+int ss_signal_exists(const char* signal_name) {
+    if (!g_context || !signal_name) return 0;
+    
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_LOCK(&g_context->mutex);
+#endif
+    
+    ss_signal_t* sig = find_signal(signal_name);
+    int exists = (sig != NULL);
+    
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
+    
+    return exists;
+}
+
+/* Disconnect using handle */
+ss_error_t ss_disconnect_handle(ss_connection_t handle) {
+    if (!g_context || handle == 0) return SS_ERR_NULL_PARAM;
+    
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_LOCK(&g_context->mutex);
+#endif
+    
+    ss_error_t result = SS_ERR_NOT_FOUND;
+    
+#if SS_USE_STATIC_MEMORY
+    size_t i;
+    for (i = 0; i < SS_MAX_SIGNALS; i++) {
+        if (!g_context->signal_used[i]) continue;
+        
+        ss_signal_t* sig = &g_context->signals[i];
+        ss_slot_t* prev = NULL;
+        ss_slot_t* curr = sig->slots;
+        
+        while (curr) {
+            if (curr->handle == handle) {
+                if (prev) {
+                    prev->next = curr->next;
+                } else {
+                    sig->slots = curr->next;
+                }
+                sig->slot_count--;
+                result = SS_OK;
+                goto done;
+            }
+            prev = curr;
+            curr = curr->next;
+        }
+    }
+#else
+    ss_signal_t* sig = g_context->signals;
+    while (sig) {
+        ss_slot_t* prev = NULL;
+        ss_slot_t* curr = sig->slots;
+        
+        while (curr) {
+            if (curr->handle == handle) {
+                if (prev) {
+                    prev->next = curr->next;
+                } else {
+                    sig->slots = curr->next;
+                }
+                free(curr);
+                sig->slot_count--;
+                result = SS_OK;
+                goto done;
+            }
+            prev = curr;
+            curr = curr->next;
+        }
+        sig = sig->next;
+    }
+#endif
+
+done:
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
+    
+    return result;
+}
+
+/* Disconnect all slots from a signal */
+ss_error_t ss_disconnect_all(const char* signal_name) {
+    if (!g_context || !signal_name) return SS_ERR_NULL_PARAM;
+    
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_LOCK(&g_context->mutex);
+#endif
+    
+    ss_signal_t* sig = find_signal(signal_name);
+    if (!sig) {
+#if SS_ENABLE_THREAD_SAFETY
+        if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
+        return SS_ERR_NOT_FOUND;
+    }
+    
+#if !SS_USE_STATIC_MEMORY
+    /* Free all slots for dynamic memory */
+    ss_slot_t* curr = sig->slots;
+    while (curr) {
+        ss_slot_t* next = curr->next;
+        free(curr);
+        curr = next;
+    }
+#endif
+    
+    sig->slots = NULL;
+    sig->slot_count = 0;
+    
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
+    
+    return SS_OK;
+}

@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        compiler: [gcc, clang]
+        build_type: [Debug, Release]
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y valgrind
+    
+    - name: Build with Make
+      env:
+        CC: ${{ matrix.compiler }}
+      run: |
+        make clean
+        make all
+    
+    - name: Run tests
+      run: |
+        make test
+        ./test_v2_simple
+        ./example_embedded_simple
+    
+    - name: Memory check with Valgrind
+      if: matrix.build_type == 'Debug'
+      run: |
+        valgrind --leak-check=full --error-exitcode=1 ./test_ss_lib
+        valgrind --leak-check=full --error-exitcode=1 ./test_v2_simple
+
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Setup MinGW
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        update: true
+        install: >-
+          mingw-w64-x86_64-gcc
+          make
+    
+    - name: Build with MinGW
+      shell: msys2 {0}
+      run: |
+        make clean
+        make all
+    
+    - name: Run tests
+      shell: msys2 {0}
+      run: |
+        ./test_ss_lib.exe
+        ./test_v2_simple.exe
+
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Build with Make
+      run: |
+        make clean
+        make all
+    
+    - name: Run tests
+      run: |
+        make test
+        ./test_v2_simple
+        ./example_embedded_simple
+
+  static-analysis:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install analysis tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cppcheck clang-tools
+    
+    - name: Run cppcheck
+      run: |
+        cppcheck --enable=all --error-exitcode=1 --suppress=missingIncludeSystem \
+                 --suppress=unusedFunction \
+                 src/ include/
+    
+    - name: Run clang-tidy
+      run: |
+        clang-tidy src/*.c -- -Iinclude/
+
+  embedded-build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Install ARM toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-arm-none-eabi
+    
+    - name: Build for embedded (static memory)
+      run: |
+        arm-none-eabi-gcc -c -O2 -mcpu=cortex-m4 \
+          -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -DSS_MAX_SLOTS=32 \
+          -DSS_ENABLE_THREAD_SAFETY=0 -DSS_MINIMAL_BUILD \
+          ss_lib_v2.c -o ss_lib_embedded.o
+        
+        # Check binary size
+        arm-none-eabi-size ss_lib_embedded.o

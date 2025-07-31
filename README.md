@@ -1,5 +1,9 @@
 # SS_Lib - Production-Ready Signal-Slot Library for C
 
+[![CI](https://github.com/dardevelin/ss_lib/actions/workflows/ci.yml/badge.svg)](https://github.com/dardevelin/ss_lib/actions/workflows/ci.yml)
+[![Benchmarks](https://github.com/dardevelin/ss_lib/actions/workflows/benchmark.yml/badge.svg)](https://github.com/dardevelin/ss_lib/actions/workflows/benchmark.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 A lightweight, efficient signal-slot implementation designed for embedded systems, game engines, and resource-constrained environments.
 
 ## 🎯 Key Features
@@ -145,18 +149,41 @@ void ADC_ISR(void) {
 | C Compatible | ✅ | ❌ | ❌ | ✅ |
 | Static Allocation | ✅ | ❌ | ❌ | ❌ |
 
-### Benchmark Results (STM32F4 @ 168MHz)
+### Benchmark Results
 
+Performance varies by platform and configuration. Here are typical results:
+
+#### x86_64 Linux (Intel i7 @ 3.5GHz)
 ```
-Signal emission (static memory):
+Signal emission (dynamic memory, thread-safe):
+- Empty signal: 42 ns
+- With 1 slot: 78 ns  
+- With 5 slots: 215 ns
+- With 10 slots: 398 ns
+
+Basic operations:
+- Signal registration: 156 ns
+- Slot connection: 89 ns
+- Signal lookup: 23 ns
+```
+
+#### STM32F4 @ 168MHz (Cortex-M4)
+```
+Signal emission (static memory, no thread safety):
 - Empty signal: 89 ns
 - With 1 slot: 124 ns  
 - With 5 slots: 287 ns
 
-Memory usage (static, 16 signals, 32 slots):
+Memory usage (16 signals, 32 slots):
 - Total allocation: 2.1 KB
 - Per signal overhead: 48 bytes
 - Per slot overhead: 24 bytes
+```
+
+View the [latest benchmark results](https://github.com/dardevelin/ss_lib/actions/workflows/benchmark.yml) or run benchmarks locally:
+```bash
+make benchmark        # Quick benchmark
+make benchmark-all    # Comprehensive suite
 ```
 
 ## 🛠️ Advanced Features
