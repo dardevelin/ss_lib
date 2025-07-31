@@ -36,7 +36,7 @@ jobs:
     - name: Memory check with Valgrind
       if: matrix.build_type == 'Debug'
       run: |
-        valgrind --leak-check=full --error-exitcode=1 ./build/test_basic
+        valgrind --leak-check=full --error-exitcode=1 ./build/test_ss_lib
         valgrind --leak-check=full --error-exitcode=1 ./build/test_simple
     
     - name: Run cppcheck
@@ -70,7 +70,7 @@ jobs:
     - name: Run tests
       shell: msys2 {0}
       run: |
-        ./build/test_basic.exe
+        ./build/test_ss_lib.exe
         ./build/test_simple.exe
 
   build-macos:

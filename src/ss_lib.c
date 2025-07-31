@@ -186,7 +186,7 @@ ss_error_t ss_init(void) {
     if (!g_context) return SS_ERR_MEMORY;
     
     g_context->max_slots_per_signal = SS_DEFAULT_MAX_SLOTS_PER_SIGNAL;
-    g_context->thread_safe = SS_ENABLE_THREAD_SAFETY;
+    g_context->thread_safe = 0;  /* Thread safety disabled by default, can be enabled with ss_set_thread_safe(1) */
     g_context->next_handle = 1;
     
 #if SS_ENABLE_THREAD_SAFETY
@@ -946,4 +946,244 @@ ss_error_t ss_disconnect_all(const char* signal_name) {
 #endif
     
     return SS_OK;
+}
+
+/* Disconnect a specific slot from a signal */
+ss_error_t ss_disconnect(const char* signal_name, ss_slot_func_t slot) {
+    if (!g_context || !signal_name || !slot) return SS_ERR_NULL_PARAM;
+    
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_LOCK(&g_context->mutex);
+#endif
+    
+    ss_signal_t* sig = find_signal(signal_name);
+    if (!sig) {
+#if SS_ENABLE_THREAD_SAFETY
+        if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
+        return SS_ERR_NOT_FOUND;
+    }
+    
+    ss_slot_t* prev = NULL;
+    ss_slot_t* curr = sig->slots;
+    
+    while (curr) {
+        if (curr->func == slot) {
+            if (prev) {
+                prev->next = curr->next;
+            } else {
+                sig->slots = curr->next;
+            }
+            sig->slot_count--;
+            
+#if SS_USE_STATIC_MEMORY
+            /* Mark slot as unused in static allocation */
+            size_t i;
+            for (i = 0; i < SS_MAX_SLOTS; i++) {
+                if (&g_context->slots[i] == curr) {
+                    g_context->slot_used[i] = 0;
+                    g_context->slot_count--;
+                    break;
+                }
+            }
+#else
+            /* Free the slot in dynamic allocation */
+            SS_FREE(curr);
+#endif
+            
+#if SS_ENABLE_THREAD_SAFETY
+            if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
+            return SS_OK;
+        }
+        prev = curr;
+        curr = curr->next;
+    }
+    
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
+    
+    return SS_ERR_NOT_FOUND;
+}
+
+/* Unregister a signal */
+ss_error_t ss_signal_unregister(const char* signal_name) {
+    if (!g_context || !signal_name) return SS_ERR_NULL_PARAM;
+    
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_LOCK(&g_context->mutex);
+#endif
+    
+    ss_signal_t* sig = find_signal(signal_name);
+    if (!sig) {
+#if SS_ENABLE_THREAD_SAFETY
+        if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
+        return SS_ERR_NOT_FOUND;
+    }
+    
+    /* First disconnect all slots - do it inline to avoid deadlock */
+#if SS_USE_STATIC_MEMORY
+    /* Mark all slots as unused in static allocation */
+    ss_slot_t* curr = sig->slots;
+    while (curr) {
+        size_t i;
+        for (i = 0; i < SS_MAX_SLOTS; i++) {
+            if (&g_context->slots[i] == curr) {
+                g_context->slot_used[i] = 0;
+                g_context->slot_count--;
+                break;
+            }
+        }
+        curr = curr->next;
+    }
+#else
+    /* Free all slots for dynamic memory */
+    ss_slot_t* curr = sig->slots;
+    while (curr) {
+        ss_slot_t* next = curr->next;
+        SS_FREE(curr);
+        curr = next;
+    }
+#endif
+    
+    sig->slots = NULL;
+    sig->slot_count = 0;
+    
+#if SS_USE_STATIC_MEMORY
+    /* Mark signal as unused in static allocation */
+    size_t i;
+    for (i = 0; i < SS_MAX_SIGNALS; i++) {
+        if (&g_context->signals[i] == sig) {
+            g_context->signal_used[i] = 0;
+            g_context->signal_count--;
+            break;
+        }
+    }
+#else
+    /* Remove from linked list in dynamic allocation */
+    if (sig->name) SS_FREE(sig->name);
+    if (sig->description) SS_FREE(sig->description);
+    
+    ss_signal_t** sig_curr = &g_context->signals;
+    while (*sig_curr) {
+        if (*sig_curr == sig) {
+            *sig_curr = sig->next;
+            SS_FREE(sig);
+            g_context->signal_count--;
+            break;
+        }
+        sig_curr = &(*sig_curr)->next;
+    }
+#endif
+    
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
+    
+    return SS_OK;
+}
+
+/* Get the number of registered signals */
+size_t ss_get_signal_count(void) {
+    if (!g_context) return 0;
+    return g_context->signal_count;
+}
+
+/* Get list of registered signals */
+ss_error_t ss_get_signal_list(ss_signal_info_t** list, size_t* count) {
+    if (!g_context || !list || !count) return SS_ERR_NULL_PARAM;
+    
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_LOCK(&g_context->mutex);
+#endif
+    
+    *count = g_context->signal_count;
+    if (*count == 0) {
+        *list = NULL;
+#if SS_ENABLE_THREAD_SAFETY
+        if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
+        return SS_OK;
+    }
+    
+    *list = (ss_signal_info_t*)SS_CALLOC(*count, sizeof(ss_signal_info_t));
+    if (!*list) {
+#if SS_ENABLE_THREAD_SAFETY
+        if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
+        return SS_ERR_MEMORY;
+    }
+    
+    size_t idx = 0;
+#if SS_USE_STATIC_MEMORY
+    size_t i;
+    for (i = 0; i < SS_MAX_SIGNALS && idx < *count; i++) {
+        if (g_context->signal_used[i]) {
+            (*list)[idx].name = g_context->signals[i].name;
+            (*list)[idx].description = g_context->signals[i].description;
+            (*list)[idx].slot_count = g_context->signals[i].slot_count;
+            (*list)[idx].priority = g_context->signals[i].priority;
+            idx++;
+        }
+    }
+#else
+    ss_signal_t* sig = g_context->signals;
+    while (sig && idx < *count) {
+        (*list)[idx].name = sig->name;
+        (*list)[idx].description = sig->description;
+        (*list)[idx].slot_count = sig->slot_count;
+        (*list)[idx].priority = sig->priority;
+        sig = sig->next;
+        idx++;
+    }
+#endif
+    
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
+    
+    return SS_OK;
+}
+
+/* Free signal list allocated by ss_get_signal_list */
+void ss_free_signal_list(ss_signal_info_t* list, size_t count) {
+    (void)count; /* unused */
+    if (list) {
+        SS_FREE(list);
+    }
+}
+
+/* Set maximum slots per signal */
+void ss_set_max_slots_per_signal(size_t max_slots) {
+    if (g_context) {
+        g_context->max_slots_per_signal = max_slots;
+    }
+}
+
+/* Set thread safety */
+void ss_set_thread_safe(int enabled) {
+#if SS_ENABLE_THREAD_SAFETY
+    if (!g_context) return;
+    
+    /* If enabling thread safety for the first time, initialize mutex */
+    if (enabled && !g_context->thread_safe) {
+        SS_MUTEX_INIT(&g_context->mutex);
+    }
+    /* If disabling thread safety, destroy mutex */
+    else if (!enabled && g_context->thread_safe) {
+        SS_MUTEX_DESTROY(&g_context->mutex);
+    }
+    
+    g_context->thread_safe = enabled;
+#else
+    (void)enabled; /* unused */
+#endif
+}
+
+/* Check if thread safety is enabled */
+int ss_is_thread_safe(void) {
+    if (!g_context) return 0;
+    return g_context->thread_safe;
 }

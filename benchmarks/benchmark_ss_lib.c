@@ -376,9 +376,10 @@ int main(void) {
     
     ss_cleanup();
     
-    // Free allocated names
+    // Free allocated names (only those created with strdup)
     for (int i = 0; i < num_results; i++) {
-        if (strstr(results[i].name, "Emit void signal (") == results[i].name) {
+        if (strstr(results[i].name, "Emit void signal (") == results[i].name &&
+            strcmp(results[i].name, "Emit void signal (no slots)") != 0) {
             free((void*)results[i].name);
         }
     }

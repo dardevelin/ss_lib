@@ -6,7 +6,7 @@
 #define SS_ENABLE_THREAD_SAFETY 0
 #define SS_ENABLE_MEMORY_STATS 1
 
-#include "ss_lib_v2.h"
+#include "ss_lib.h"
 #include <stdio.h>
 
 static int temperature = 250;  /* 25.0°C */

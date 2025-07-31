@@ -38,7 +38,7 @@ jobs:
         ./build/benchmark_ss_lib | tee benchmark_results.txt
     
     - name: Upload benchmark results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: benchmark-results-${{ matrix.os }}
         path: benchmark_results.txt
@@ -51,7 +51,7 @@ jobs:
     
     - name: Upload comprehensive results
       if: matrix.os == 'ubuntu-latest'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: comprehensive-benchmark-results
         path: build/benchmarks/
