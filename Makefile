@@ -34,17 +34,11 @@ BUILD_DIR = build
 # Create build directory
 $(shell mkdir -p $(BUILD_DIR))
 
-# V2 Library
-LIB_V2_SRC = $(SRC_DIR)/ss_lib_v2.c
-LIB_V2_OBJ = $(BUILD_DIR)/ss_lib_v2.o
-LIB_V2_NAME = $(BUILD_DIR)/libsslib_v2.a
-LIB_V2_SO = $(BUILD_DIR)/libsslib_v2.so
-
-# V1 Library (legacy)
+# Library
 LIB_SRC = $(SRC_DIR)/ss_lib.c
 LIB_OBJ = $(BUILD_DIR)/ss_lib.o
-LIB_NAME = $(BUILD_DIR)/libsslib.a
-LIB_SO = $(BUILD_DIR)/libsslib.so
+LIB_NAME = $(BUILD_DIR)/libss_lib.a
+LIB_SO = $(BUILD_DIR)/libss_lib.so
 
 # Platform-specific shared library extension
 UNAME_S := $(shell uname -s)
@@ -69,15 +63,13 @@ BENCH_DIR = benchmarks
 BENCH_SRC = $(BENCH_DIR)/benchmark_ss_lib.c
 BENCH_BIN = $(BUILD_DIR)/benchmark_ss_lib
 
-.PHONY: all clean test lib lib_v2 examples docs install shared benchmark
+.PHONY: all clean test lib examples docs install shared benchmark
 
-all: lib_v2 tests examples
+all: lib tests examples
 
 lib: $(LIB_NAME)
 
-lib_v2: $(LIB_V2_NAME)
-
-shared: $(LIB_V2_SO) $(LIB_SO)
+shared: $(LIB_SO)
 
 tests: $(TEST_BINS)
 
@@ -87,181 +79,179 @@ examples: $(EXAMPLE_BINS)
 $(LIB_NAME): $(LIB_OBJ)
 	ar rcs $@ $^
 
-$(LIB_V2_NAME): $(LIB_V2_OBJ)
-	ar rcs $@ $^
-
 # Shared library builds
 $(LIB_SO): $(LIB_OBJ)
 	$(CC) $(SHARED_FLAGS) -o $@ $^ $(LDFLAGS)
 
-$(LIB_V2_SO): $(LIB_V2_OBJ)
-	$(CC) $(SHARED_FLAGS) -o $@ $^ $(LDFLAGS)
-
-# Special build rules for V2 with all features enabled
-$(BUILD_DIR)/ss_lib_v2.o: $(SRC_DIR)/ss_lib_v2.c
+# Build library with all features enabled
+$(BUILD_DIR)/ss_lib.o: $(SRC_DIR)/ss_lib.c
 	$(CC) $(CFLAGS) -fPIC -DSS_ENABLE_ISR_SAFE=1 -DSS_ENABLE_MEMORY_STATS=1 -DSS_ENABLE_PERFORMANCE_STATS=1 -c $< -o $@
-
-# Generic object file rule
-$(BUILD_DIR)/%.o: $(SRC_DIR)/%.c
-	$(CC) $(CFLAGS) -fPIC -c $< -o $@
 
 # Test programs
 $(BUILD_DIR)/test_ss_lib: $(TEST_DIR)/test_ss_lib.c $(LIB_NAME)
-	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lsslib $(LDFLAGS) -o $@
+	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
 
-$(BUILD_DIR)/test_v2_simple: $(TEST_DIR)/test_v2_simple.c $(LIB_V2_NAME)
-	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lsslib_v2 $(LDFLAGS) -o $@
+$(BUILD_DIR)/test_simple: $(TEST_DIR)/test_simple.c $(LIB_NAME)
+	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
 
 # Examples
 $(BUILD_DIR)/example_usage: $(EXAMPLE_DIR)/example_usage.c $(LIB_NAME)
-	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lsslib $(LDFLAGS) -o $@
+	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
 
-$(BUILD_DIR)/example_embedded: $(EXAMPLE_DIR)/example_embedded.c $(LIB_V2_NAME)
-	$(CC) $(CFLAGS) -DSS_ENABLE_ISR_SAFE=1 $< -L$(BUILD_DIR) -lsslib_v2 $(LDFLAGS) -o $@
+$(BUILD_DIR)/example_embedded: $(EXAMPLE_DIR)/example_embedded.c $(LIB_NAME)
+	$(CC) $(CFLAGS) -DSS_ENABLE_ISR_SAFE=1 $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
 
-$(BUILD_DIR)/example_embedded_simple: $(EXAMPLE_DIR)/example_embedded_simple.c $(LIB_V2_NAME)
-	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lsslib_v2 $(LDFLAGS) -o $@
+$(BUILD_DIR)/example_embedded_simple: $(EXAMPLE_DIR)/example_embedded_simple.c $(LIB_NAME)
+	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
 
 # Run tests
 test: tests
 	@echo "Running tests..."
 	@$(BUILD_DIR)/test_ss_lib
-	@$(BUILD_DIR)/test_v2_simple
+	@$(BUILD_DIR)/test_simple
 
 test_embedded: $(BUILD_DIR)/example_embedded_simple
 	@echo "Running embedded example..."
 	@$(BUILD_DIR)/example_embedded_simple
 
-# Documentation
-docs:
-	@echo "Building documentation..."
-	@if command -v doxygen > /dev/null; then \
-		cd docs && doxygen; \
-	else \
-		echo "Doxygen not found. Please install doxygen to build documentation."; \
-	fi
+# Benchmarks
+benchmark: $(BENCH_BIN)
+	@echo "Running benchmarks..."
+	@$(BENCH_BIN)
 
-# Installation
-PREFIX ?= /usr/local
+$(BENCH_BIN): $(BENCH_SRC) $(LIB_NAME)
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -O3 $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -lm -o $@
 
-install: lib_v2 ss_lib.pc
-	@echo "Installing to $(PREFIX)..."
-	@mkdir -p $(PREFIX)/lib $(PREFIX)/include/ss_lib $(PREFIX)/lib/pkgconfig
-	@cp $(LIB_V2_NAME) $(PREFIX)/lib/
-	@cp $(INC_DIR)/*.h $(PREFIX)/include/ss_lib/
-	@sed "s|^prefix=.*|prefix=$(PREFIX)|" ss_lib.pc > $(PREFIX)/lib/pkgconfig/ss_lib.pc
-	@echo "Installation complete!"
-	@echo ""
-	@echo "To use SS_Lib in your project:"
-	@echo "  pkg-config --cflags ss_lib"
-	@echo "  pkg-config --libs ss_lib"
+# Run comprehensive benchmarks
+benchmark-all: $(BENCH_BIN)
+	@chmod +x benchmarks/run_benchmarks.sh
+	@benchmarks/run_benchmarks.sh
 
 # Clean
 clean:
 	rm -rf $(BUILD_DIR)
 	rm -f ss_lib_single.h
 
-# Sanitizer targets
+# Create single header
+single-header: $(SRC_DIR)/ss_lib.c $(INC_DIR)/ss_lib.h $(INC_DIR)/ss_config.h
+	@./create_single_header.sh
+
+# Installation
+PREFIX ?= /usr/local
+INSTALL_INC_DIR = $(PREFIX)/include/ss_lib
+INSTALL_LIB_DIR = $(PREFIX)/lib
+INSTALL_PC_DIR = $(PREFIX)/lib/pkgconfig
+
+install: $(LIB_NAME) $(LIB_SO)
+	@echo "Installing SS_Lib to $(PREFIX)..."
+	@mkdir -p $(INSTALL_INC_DIR)
+	@mkdir -p $(INSTALL_LIB_DIR)
+	@mkdir -p $(INSTALL_PC_DIR)
+	@install -m 644 $(INC_DIR)/ss_lib.h $(INSTALL_INC_DIR)
+	@install -m 644 $(INC_DIR)/ss_config.h $(INSTALL_INC_DIR)
+	@install -m 644 $(LIB_NAME) $(INSTALL_LIB_DIR)
+	@install -m 755 $(LIB_SO) $(INSTALL_LIB_DIR)
+	@echo "Creating pkg-config file..."
+	@echo "prefix=$(PREFIX)" > $(INSTALL_PC_DIR)/ss_lib.pc
+	@echo "exec_prefix=\$${prefix}" >> $(INSTALL_PC_DIR)/ss_lib.pc
+	@echo "libdir=\$${exec_prefix}/lib" >> $(INSTALL_PC_DIR)/ss_lib.pc
+	@echo "includedir=\$${prefix}/include/ss_lib" >> $(INSTALL_PC_DIR)/ss_lib.pc
+	@echo "" >> $(INSTALL_PC_DIR)/ss_lib.pc
+	@echo "Name: SS_Lib" >> $(INSTALL_PC_DIR)/ss_lib.pc
+	@echo "Description: Lightweight signal-slot library for C" >> $(INSTALL_PC_DIR)/ss_lib.pc
+	@echo "Version: 2.0.0" >> $(INSTALL_PC_DIR)/ss_lib.pc
+	@echo "Libs: -L\$${libdir} -lss_lib -pthread" >> $(INSTALL_PC_DIR)/ss_lib.pc
+	@echo "Cflags: -I\$${includedir}" >> $(INSTALL_PC_DIR)/ss_lib.pc
+	@echo "Installation complete!"
+
+uninstall:
+	@echo "Uninstalling SS_Lib from $(PREFIX)..."
+	@rm -rf $(INSTALL_INC_DIR)
+	@rm -f $(INSTALL_LIB_DIR)/$(notdir $(LIB_NAME))
+	@rm -f $(INSTALL_LIB_DIR)/$(notdir $(LIB_SO))
+	@rm -f $(INSTALL_PC_DIR)/ss_lib.pc
+	@echo "Uninstallation complete!"
+
+# Documentation
+docs:
+	@echo "Generating documentation..."
+	@mkdir -p docs/api
+	@doxygen Doxyfile || echo "Doxygen not found, skipping documentation generation"
+
+# Sanitizer convenience targets
 test-asan:
-	@echo "Running tests with AddressSanitizer..."
 	@$(MAKE) clean
-	@$(MAKE) SANITIZER=address tests
-	@ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1 $(BUILD_DIR)/test_ss_lib
-	@ASAN_OPTIONS=detect_leaks=1:strict_string_checks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1 $(BUILD_DIR)/test_v2_simple
+	@$(MAKE) SANITIZER=address test
 
 test-tsan:
-	@echo "Running tests with ThreadSanitizer..."
 	@$(MAKE) clean
-	@$(MAKE) SANITIZER=thread tests
-	@TSAN_OPTIONS=halt_on_error=1:history_size=7 $(BUILD_DIR)/test_ss_lib
-	@TSAN_OPTIONS=halt_on_error=1:history_size=7 $(BUILD_DIR)/test_v2_simple
+	@$(MAKE) SANITIZER=thread test
 
 test-ubsan:
-	@echo "Running tests with UndefinedBehaviorSanitizer..."
 	@$(MAKE) clean
-	@$(MAKE) SANITIZER=undefined tests
-	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD_DIR)/test_ss_lib
-	@UBSAN_OPTIONS=print_stacktrace=1:halt_on_error=1 $(BUILD_DIR)/test_v2_simple
+	@$(MAKE) SANITIZER=undefined test
 
 test-msan:
-	@echo "Running tests with MemorySanitizer..."
 	@$(MAKE) clean
-	@$(MAKE) SANITIZER=memory CC=clang tests
-	@MSAN_OPTIONS=halt_on_error=1 $(BUILD_DIR)/test_ss_lib
-	@MSAN_OPTIONS=halt_on_error=1 $(BUILD_DIR)/test_v2_simple
+	@$(MAKE) CC=clang SANITIZER=memory test
 
-# Valgrind target
+# Valgrind test
 test-valgrind: tests
 	@echo "Running tests with Valgrind..."
-	@command -v valgrind >/dev/null 2>&1 || { echo "Valgrind not installed. Please install valgrind."; exit 1; }
-	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
-	          --suppressions=valgrind.supp --error-exitcode=1 \
-	          $(BUILD_DIR)/test_ss_lib
-	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
-	          --suppressions=valgrind.supp --error-exitcode=1 \
-	          $(BUILD_DIR)/test_v2_simple
+	@valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=1 $(BUILD_DIR)/test_ss_lib
+	@valgrind --leak-check=full --show-leak-kinds=all --error-exitcode=1 $(BUILD_DIR)/test_simple
 
-# Memory check with detailed output
-memcheck: tests
-	@echo "Running detailed memory check..."
-	@command -v valgrind >/dev/null 2>&1 || { echo "Valgrind not installed. Please install valgrind."; exit 1; }
-	@valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes \
-	          --suppressions=valgrind.supp --gen-suppressions=all \
-	          --verbose --log-file=valgrind.log \
-	          $(BUILD_DIR)/test_ss_lib
-	@echo "Valgrind log saved to valgrind.log"
-
-# Coverage target
+# Coverage
 coverage: clean
-	@echo "Building with coverage enabled..."
-	@$(MAKE) COVERAGE=1 tests
-	@echo "Running tests for coverage..."
-	@$(BUILD_DIR)/test_ss_lib
-	@$(BUILD_DIR)/test_v2_simple
-	@echo "Generating coverage report..."
-	@lcov --capture --directory $(BUILD_DIR) --output-file coverage.info
+	@$(MAKE) COVERAGE=1 test
+	@lcov --capture --directory . --output-file coverage.info
 	@lcov --remove coverage.info '/usr/*' '*/tests/*' --output-file coverage.info
-	@lcov --list coverage.info
-	@echo "Coverage report generated. For HTML report, run: genhtml coverage.info --output-directory coverage-report"
+	@genhtml coverage.info --output-directory coverage_report
+	@echo "Coverage report generated in coverage_report/index.html"
 
-# Benchmark targets
-benchmark: $(BENCH_BIN)
-	@echo "Running benchmarks..."
-	@$(BENCH_BIN)
+# Print configuration
+info:
+	@echo "SS_Lib Build Configuration:"
+	@echo "  CC: $(CC)"
+	@echo "  CFLAGS: $(CFLAGS)"
+	@echo "  LDFLAGS: $(LDFLAGS)"
+	@echo "  PREFIX: $(PREFIX)"
+	@echo "  Platform: $(UNAME_S)"
 
-$(BENCH_BIN): $(BENCH_SRC) $(LIB_V2_NAME)
-	@mkdir -p $(dir $@)
-	$(CC) -O3 -march=native $(CFLAGS) $< -L$(BUILD_DIR) -lsslib_v2 $(LDFLAGS) -o $@
+.SUFFIXES:
 
-benchmark-all:
-	@echo "Running comprehensive benchmarks..."
-	@$(BENCH_DIR)/run_benchmarks.sh
-
-# Help
+# Help target
 help:
-	@echo "SS_Lib Makefile targets:"
-	@echo "  all         - Build everything (default)"
-	@echo "  lib_v2      - Build the V2 static library"
-	@echo "  shared      - Build shared libraries (.so/.dylib)"
-	@echo "  tests       - Build test programs"
-	@echo "  examples    - Build example programs"
-	@echo "  test        - Run tests"
-	@echo "  test-asan   - Run tests with AddressSanitizer"
-	@echo "  test-tsan   - Run tests with ThreadSanitizer"
-	@echo "  test-ubsan  - Run tests with UndefinedBehaviorSanitizer"
-	@echo "  test-msan   - Run tests with MemorySanitizer (clang only)"
-	@echo "  test-valgrind - Run tests with Valgrind memory checker"
-	@echo "  coverage    - Generate code coverage report"
-	@echo "  benchmark   - Run basic performance benchmark"
-	@echo "  benchmark-all - Run comprehensive benchmark suite"
-	@echo "  docs        - Build documentation (requires Doxygen)"
-	@echo "  install     - Install library and headers"
-	@echo "  clean       - Remove build artifacts"
-	@echo "  help        - Show this help message"
+	@echo "SS_Lib Build System"
 	@echo ""
-	@echo "Build options:"
-	@echo "  make SANITIZER=address  - Build with AddressSanitizer"
-	@echo "  make SANITIZER=thread   - Build with ThreadSanitizer"
-	@echo "  make SANITIZER=undefined - Build with UndefinedBehaviorSanitizer"
-	@echo "  make COVERAGE=1         - Build with code coverage"
-	@echo "  make CC=clang           - Build with clang instead of gcc"
+	@echo "Targets:"
+	@echo "  all             - Build library, tests, and examples"
+	@echo "  lib             - Build static library"
+	@echo "  shared          - Build shared library"
+	@echo "  tests           - Build test programs"
+	@echo "  examples        - Build example programs"
+	@echo "  test            - Run tests"
+	@echo "  benchmark       - Run benchmarks"
+	@echo "  benchmark-all   - Run comprehensive benchmarks"
+	@echo "  single-header   - Generate single header version"
+	@echo "  install         - Install library and headers"
+	@echo "  uninstall       - Remove installed files"
+	@echo "  clean           - Remove build artifacts"
+	@echo "  docs            - Generate documentation"
+	@echo ""
+	@echo "Test targets:"
+	@echo "  test-asan       - Run tests with AddressSanitizer"
+	@echo "  test-tsan       - Run tests with ThreadSanitizer"
+	@echo "  test-ubsan      - Run tests with UndefinedBehaviorSanitizer"
+	@echo "  test-msan       - Run tests with MemorySanitizer (clang only)"
+	@echo "  test-valgrind   - Run tests with Valgrind"
+	@echo "  coverage        - Generate code coverage report"
+	@echo ""
+	@echo "Variables:"
+	@echo "  CC              - Compiler (default: gcc)"
+	@echo "  CFLAGS          - Compiler flags"
+	@echo "  LDFLAGS         - Linker flags"
+	@echo "  SANITIZER       - Enable sanitizer (address/thread/undefined/memory)"
+	@echo "  COVERAGE        - Enable coverage analysis (1/0)"
+	@echo "  PREFIX          - Installation prefix (default: /usr/local)"

@@ -1,15 +1,15 @@
 #!/bin/bash
 
-# Script to create a single header file from ss_lib_v2
+# Script to create a single header file from ss_lib
 # This combines the header and implementation into one file for easy integration
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 OUTPUT_FILE="$SCRIPT_DIR/ss_lib_single.h"
-HEADER_FILE="$SCRIPT_DIR/include/ss_lib_v2.h"
+HEADER_FILE="$SCRIPT_DIR/include/ss_lib.h"
 CONFIG_FILE="$SCRIPT_DIR/include/ss_config.h"
-SOURCE_FILE="$SCRIPT_DIR/src/ss_lib_v2.c"
+SOURCE_FILE="$SCRIPT_DIR/src/ss_lib.c"
 
 # Check if required files exist
 if [ ! -f "$HEADER_FILE" ]; then
@@ -34,7 +34,7 @@ cat > "$OUTPUT_FILE" << 'EOF'
 /*
  * SS_Lib - Single Header Signal-Slot Library for C
  * 
- * This is an automatically generated single-header version of SS_Lib v2.
+ * This is an automatically generated single-header version of SS_Lib.
  * 
  * Usage:
  *   #define SS_IMPLEMENTATION
@@ -65,9 +65,9 @@ echo "/* ===== Header Section ===== */" >> "$OUTPUT_FILE"
 echo "" >> "$OUTPUT_FILE"
 
 # Add header file content (without guards and without config include)
-sed -n '/^#ifndef SS_LIB_V2_H/,/^#endif.*SS_LIB_V2_H/{
-/^#ifndef SS_LIB_V2_H/d
-/^#endif.*SS_LIB_V2_H/d
+sed -n '/^#ifndef SS_LIB_H/,/^#endif.*SS_LIB_H/{
+/^#ifndef SS_LIB_H/d
+/^#endif.*SS_LIB_H/d
 p
 }' "$HEADER_FILE" | grep -v '#include "ss_config.h"' >> "$OUTPUT_FILE"
 

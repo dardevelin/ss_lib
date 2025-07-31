@@ -22,7 +22,7 @@ A lightweight, efficient signal-slot implementation designed for embedded system
 ### Basic Usage
 
 ```c
-#include "ss_lib_v2.h"
+#include "ss_lib.h"
 
 void on_button_click(const ss_data_t* data, void* user_data) {
     printf("Button clicked!\n");
@@ -50,7 +50,7 @@ int main() {
 #define SS_MAX_SLOTS 32
 #define SS_ENABLE_THREAD_SAFETY 0
 
-#include "ss_lib_v2.h"
+#include "ss_lib.h"
 
 // In your ISR
 void ADC_ISR(void) {
@@ -248,7 +248,7 @@ make test     # Run tests
 ### Embedded Build
 ```bash
 # Configure in ss_config.h or via compiler flags
-gcc -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -c src/ss_lib_v2.c -Iinclude
+gcc -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -c src/ss_lib.c -Iinclude
 
 # Or use make with flags
 make CFLAGS="-DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16"
@@ -310,14 +310,14 @@ make CFLAGS="-DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16"
    #include "ss_lib.h"
    
    // V2
-   #include "ss_lib_v2.h"
+   #include "ss_lib.h"
    ```
 
 2. **Configuration**
    ```c
    // V2: Configure before including
    #define SS_USE_STATIC_MEMORY 1
-   #include "ss_lib_v2.h"
+   #include "ss_lib.h"
    ```
 
 3. **New Features**
@@ -372,7 +372,7 @@ void plugin_init() {
 ### Enable Debug Traces
 ```c
 #define SS_ENABLE_DEBUG_TRACE 1
-#include "ss_lib_v2.h"
+#include "ss_lib.h"
 
 ss_enable_trace(stderr);
 ```

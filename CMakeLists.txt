@@ -81,11 +81,11 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
 # Library sources
 set(LIB_SOURCES
-    src/ss_lib_v2.c
+    src/ss_lib.c
 )
 
 set(LIB_HEADERS
-    include/ss_lib_v2.h
+    include/ss_lib.h
     include/ss_config.h
 )
 

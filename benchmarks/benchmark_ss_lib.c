@@ -3,7 +3,7 @@
 #include <time.h>
 #include <string.h>
 #include <sys/time.h>
-#include "ss_lib_v2.h"
+#include "ss_lib.h"
 
 #define BENCHMARK_ITERATIONS 1000000
 #define NUM_SLOTS 10

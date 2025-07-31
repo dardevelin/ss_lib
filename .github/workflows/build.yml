@@ -37,7 +37,7 @@ jobs:
       if: matrix.build_type == 'Debug'
       run: |
         valgrind --leak-check=full --error-exitcode=1 ./build/test_ss_lib
-        valgrind --leak-check=full --error-exitcode=1 ./build/test_v2_simple
+        valgrind --leak-check=full --error-exitcode=1 ./build/test_simple
     
     - name: Run cppcheck
       run: |
@@ -71,7 +71,7 @@ jobs:
       shell: msys2 {0}
       run: |
         ./build/test_ss_lib.exe
-        ./build/test_v2_simple.exe
+        ./build/test_simple.exe
 
   build-macos:
     runs-on: macos-latest
@@ -104,7 +104,7 @@ jobs:
         arm-none-eabi-gcc -c -O2 -mcpu=cortex-m4 -Iinclude \
           -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -DSS_MAX_SLOTS=32 \
           -DSS_ENABLE_THREAD_SAFETY=0 -DSS_MINIMAL_BUILD \
-          src/ss_lib_v2.c -o ss_lib_embedded.o
+          src/ss_lib.c -o ss_lib_embedded.o
         
         # Check binary size
         arm-none-eabi-size ss_lib_embedded.o
