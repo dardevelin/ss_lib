@@ -243,16 +243,9 @@ ss_error_t ss_init(void) {
     if (!g_context) return SS_ERR_MEMORY;
     
     g_context->max_slots_per_signal = SS_DEFAULT_MAX_SLOTS_PER_SIGNAL;
-    g_context->thread_safe = 0;  /* Thread safety disabled by default, can be enabled with ss_set_thread_safe(1) */
+    g_context->thread_safe = 0;  /* Thread safety disabled by default, enable with ss_set_thread_safe(1) */
     g_context->next_handle = 1;
-    
-#if SS_ENABLE_THREAD_SAFETY
-    if (g_context->thread_safe) {
-        SS_MUTEX_INIT(&g_context->mutex);
-    }
-#endif
 
-    
     SS_TRACE("Signal-slot library initialized");
     return SS_OK;
 }
