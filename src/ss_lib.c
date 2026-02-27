@@ -1490,3 +1490,77 @@ ss_error_t ss_flush_deferred(void) {
 
     return result;
 }
+
+/* Batch operations */
+#ifndef SS_BATCH_MAX_ENTRIES
+#define SS_BATCH_MAX_ENTRIES SS_DEFERRED_QUEUE_SIZE
+#endif
+
+struct ss_batch {
+    ss_deferred_entry_t entries[SS_BATCH_MAX_ENTRIES];
+    size_t count;
+};
+
+ss_batch_t* ss_batch_create(void) {
+    return (ss_batch_t*)SS_CALLOC(1, sizeof(ss_batch_t));
+}
+
+void ss_batch_destroy(ss_batch_t* batch) {
+    size_t i;
+    if (!batch) return;
+
+    for (i = 0; i < batch->count; i++) {
+        if (batch->entries[i].has_string) {
+            SS_FREE((void*)batch->entries[i].data.value.s_val);
+        }
+    }
+    SS_FREE(batch);
+}
+
+ss_error_t ss_batch_add(ss_batch_t* batch, const char* signal_name,
+                        const ss_data_t* data) {
+    ss_deferred_entry_t* entry;
+
+    if (!batch || !signal_name) return SS_ERR_NULL_PARAM;
+    if (batch->count >= SS_BATCH_MAX_ENTRIES) return SS_ERR_WOULD_OVERFLOW;
+
+    entry = &batch->entries[batch->count];
+    ss_strscpy(entry->signal_name, signal_name, SS_MAX_SIGNAL_NAME_LENGTH);
+    entry->has_string = 0;
+
+    if (data) {
+        entry->data = *data;
+        if (data->type == SS_TYPE_STRING && data->value.s_val) {
+            entry->data.value.s_val = SS_STRDUP(data->value.s_val);
+            if (!entry->data.value.s_val) return SS_ERR_MEMORY;
+            entry->has_string = 1;
+        }
+    } else {
+        memset(&entry->data, 0, sizeof(ss_data_t));
+        entry->data.type = SS_TYPE_VOID;
+    }
+
+    batch->count++;
+    return SS_OK;
+}
+
+ss_error_t ss_batch_emit(ss_batch_t* batch) {
+    size_t i;
+    ss_error_t result = SS_OK;
+
+    if (!batch) return SS_ERR_NULL_PARAM;
+
+    for (i = 0; i < batch->count; i++) {
+        ss_deferred_entry_t* entry = &batch->entries[i];
+        ss_error_t err = ss_emit(entry->signal_name, &entry->data);
+        if (err != SS_OK) result = err;
+
+        if (entry->has_string) {
+            SS_FREE((void*)entry->data.value.s_val);
+            entry->has_string = 0;
+        }
+    }
+
+    batch->count = 0;
+    return result;
+}
