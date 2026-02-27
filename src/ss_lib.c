@@ -101,6 +101,25 @@ typedef struct {
 static ss_context_t* g_context = NULL;
 
 /* Helper functions */
+
+/*
+ * ss_strscpy - Safe string copy with guaranteed null-termination
+ *
+ * Copies up to (count - 1) characters from src to dst, always
+ * null-terminates. Does not pad with zeroes (unlike strncpy).
+ * Returns number of characters copied, or -1 if truncated.
+ */
+static long ss_strscpy(char* dst, const char* src, size_t count) {
+    size_t i;
+    if (count == 0) return -1;
+    for (i = 0; i < count - 1 && src[i] != '\0'; i++) {
+        dst[i] = src[i];
+    }
+    dst[i] = '\0';
+    if (src[i] != '\0') return -1;
+    return (long)i;
+}
+
 #if SS_ENABLE_PERFORMANCE_STATS
 static uint64_t get_time_ns(void) {
 #ifdef _WIN32
@@ -308,9 +327,8 @@ ss_error_t ss_signal_register_ex(const char* signal_name,
             g_context->signal_used[i] = 1;
             
             /* Use pre-allocated name buffer */
-            strncpy(g_context->signal_names[i], signal_name, 
-                    SS_MAX_SIGNAL_NAME_LENGTH - 1);
-            g_context->signal_names[i][SS_MAX_SIGNAL_NAME_LENGTH - 1] = '\0';
+            ss_strscpy(g_context->signal_names[i], signal_name,
+                        SS_MAX_SIGNAL_NAME_LENGTH);
             new_sig->name = g_context->signal_names[i];
             break;
         }
@@ -584,7 +602,7 @@ ss_error_t ss_emit_double(const char* signal_name, double value) {
 ss_error_t ss_emit_string(const char* signal_name, const char* value) {
     ss_data_t data = {0};
     data.type = SS_TYPE_STRING;
-    data.value.s_val = (char*)value;
+    data.value.s_val = value;
     return ss_emit(signal_name, &data);
 }
 
@@ -618,9 +636,8 @@ ss_error_t ss_emit_from_isr(const char* signal_name, int value) {
     if (!signal_name) return SS_ERR_NULL_PARAM;
     for (i = 0; i < SS_ISR_QUEUE_SIZE; i++) {
         if (!g_isr_queue[i].pending) {
-            strncpy((char*)g_isr_queue[i].signal_name, signal_name,
-                    SS_MAX_SIGNAL_NAME_LENGTH - 1);
-            g_isr_queue[i].signal_name[SS_MAX_SIGNAL_NAME_LENGTH - 1] = '\0';
+            ss_strscpy((char*)g_isr_queue[i].signal_name, signal_name,
+                       SS_MAX_SIGNAL_NAME_LENGTH);
             g_isr_queue[i].value = value;
             SS_WRITE_BARRIER();
             g_isr_queue[i].pending = 1;
@@ -642,9 +659,9 @@ ss_data_t* ss_data_create(ss_data_type_t type) {
 
 void ss_data_destroy(ss_data_t* data) {
     if (!data) return;
-    
+
     if (data->type == SS_TYPE_STRING && data->value.s_val) {
-        SS_FREE(data->value.s_val);
+        SS_FREE((void*)data->value.s_val);
     }
 #if SS_ENABLE_CUSTOM_DATA
     else if (data->type == SS_TYPE_CUSTOM && data->custom_data) {
@@ -680,9 +697,9 @@ ss_error_t ss_data_set_string(ss_data_t* data, const char* value) {
     if (!data) return SS_ERR_NULL_PARAM;
     
     if (data->type == SS_TYPE_STRING && data->value.s_val) {
-        SS_FREE(data->value.s_val);
+        SS_FREE((void*)data->value.s_val);
     }
-    
+
     data->type = SS_TYPE_STRING;
     data->value.s_val = value ? SS_STRDUP(value) : NULL;
     return SS_OK;

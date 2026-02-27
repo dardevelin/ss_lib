@@ -74,7 +74,7 @@ typedef struct ss_data {
         int i_val;              /**< Integer value */
         float f_val;            /**< Float value */
         double d_val;           /**< Double value */
-        char* s_val;            /**< String value */
+        const char* s_val;      /**< String value */
         void* p_val;            /**< Pointer value */
     } value;                    /**< Data value union */
 #if SS_ENABLE_CUSTOM_DATA
