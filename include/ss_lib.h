@@ -66,6 +66,12 @@ typedef enum {
 } ss_priority_t;
 
 /**
+ * @brief Cleanup function for user data
+ * @param data User data to clean up
+ */
+typedef void (*ss_cleanup_func_t)(void* data);
+
+/**
  * @brief Data structure passed to slot functions
  */
 typedef struct ss_data {
@@ -80,6 +86,7 @@ typedef struct ss_data {
 #if SS_ENABLE_CUSTOM_DATA
     size_t size;                /**< Size of custom data */
     void* custom_data;          /**< Pointer to custom data */
+    ss_cleanup_func_t custom_cleanup; /**< Optional cleanup for custom data */
 #endif
 } ss_data_t;
 
@@ -89,12 +96,6 @@ typedef struct ss_data {
  * @param user_data User data passed during connection
  */
 typedef void (*ss_slot_func_t)(const ss_data_t* data, void* user_data);
-
-/**
- * @brief Cleanup function for user data
- * @param data User data to clean up
- */
-typedef void (*ss_cleanup_func_t)(void* data);
 
 /**
  * @brief Opaque handle for a signal-slot connection
