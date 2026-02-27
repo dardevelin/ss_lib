@@ -135,14 +135,6 @@ static uint64_t get_time_ns(void) {
 }
 #endif
 
-/* Commented out - not currently used
-static void report_error(ss_error_t error, const char* msg) {
-    if (g_context && g_context->error_handler) {
-        g_context->error_handler(error, msg);
-    }
-}
-*/
-
 #if SS_USE_STATIC_MEMORY
 static ss_signal_t* find_signal(const char* name) {
     size_t i;
@@ -256,7 +248,15 @@ void ss_cleanup(void) {
     if (!g_context) return;
     
 #if SS_USE_STATIC_MEMORY
-    /* Clear all static memory */
+    /* Free dynamically-allocated description strings before clearing */
+    {
+        size_t i;
+        for (i = 0; i < SS_MAX_SIGNALS; i++) {
+            if (g_context->signal_used[i] && g_context->signals[i].description) {
+                SS_FREE(g_context->signals[i].description);
+            }
+        }
+    }
     memset(g_context, 0, sizeof(ss_context_t));
 #else
     /* Free dynamic memory */
