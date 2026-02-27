@@ -708,12 +708,11 @@ void ss_data_destroy(ss_data_t* data) {
     else if (data->type == SS_TYPE_CUSTOM && data->custom_data) {
         if (data->custom_cleanup) {
             data->custom_cleanup(data->custom_data);
-        } else {
-            SS_FREE(data->custom_data);
         }
+        SS_FREE(data->custom_data);
     }
 #endif
-    
+
     SS_FREE(data);
 }
 
@@ -770,9 +769,8 @@ ss_error_t ss_data_set_custom(ss_data_t* data, void* value, size_t size,
     if (data->type == SS_TYPE_CUSTOM && data->custom_data) {
         if (data->custom_cleanup) {
             data->custom_cleanup(data->custom_data);
-        } else {
-            SS_FREE(data->custom_data);
         }
+        SS_FREE(data->custom_data);
     }
 
     data->type = SS_TYPE_CUSTOM;
