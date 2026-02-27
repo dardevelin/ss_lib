@@ -71,6 +71,10 @@
     #define SS_DEFAULT_MAX_SLOTS_PER_SIGNAL 100
 #endif
 
+#ifndef SS_DEFERRED_QUEUE_SIZE
+    #define SS_DEFERRED_QUEUE_SIZE 64
+#endif
+
 /* Custom Memory Functions */
 #ifndef SS_MALLOC
     #define SS_MALLOC(size) malloc(size)
