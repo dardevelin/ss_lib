@@ -36,6 +36,7 @@ typedef struct ss_slot {
     ss_priority_t priority;
     ss_connection_t handle;
     struct ss_slot* next;  /* Always needed for slot chains */
+    int removed;           /* Deferred removal flag for safe emit iteration */
 } ss_slot_t;
 
 typedef struct ss_signal {
@@ -44,6 +45,7 @@ typedef struct ss_signal {
     ss_slot_t* slots;
     size_t slot_count;
     ss_priority_t priority;
+    int emitting;          /* Non-zero while slots are being invoked */
 #if SS_ENABLE_PERFORMANCE_STATS
     ss_perf_stats_t perf_stats;
 #endif
@@ -177,6 +179,30 @@ static ss_signal_t* find_signal(const char* name) {
 }
 #endif
 
+/* Sweep slots marked as removed after emission completes */
+static void sweep_removed_slots(ss_signal_t* sig) {
+    ss_slot_t* prev = NULL;
+    ss_slot_t* curr = sig->slots;
+    while (curr) {
+        ss_slot_t* next = curr->next;
+        if (curr->removed) {
+            if (prev) {
+                prev->next = next;
+            } else {
+                sig->slots = next;
+            }
+            sig->slot_count--;
+#if SS_USE_STATIC_MEMORY
+            free_slot(curr);
+#else
+            SS_FREE(curr);
+#endif
+        } else {
+            prev = curr;
+        }
+        curr = next;
+    }
+}
 
 /* Core implementation */
 ss_error_t ss_init(void) {
@@ -488,22 +514,20 @@ ss_error_t ss_emit(const char* signal_name, const ss_data_t* data) {
     
     SS_TRACE("Emitting signal: %s to %zu slots", signal_name, sig->slot_count);
     
+    sig->emitting++;
     slot = sig->slots;
     while (slot) {
-        slot->func(data, slot->user_data);
-#if SS_USE_STATIC_MEMORY
-        /* For static memory, need to find next valid slot */
-        if (slot->next) {
-            slot = slot->next;
-        } else {
-            break;
+        ss_slot_t* next_slot = slot->next;
+        if (!slot->removed) {
+            slot->func(data, slot->user_data);
         }
-#else
-        slot = slot->next;
-#endif
-
+        slot = next_slot;
     }
-    
+    sig->emitting--;
+    if (sig->emitting == 0) {
+        sweep_removed_slots(sig);
+    }
+
 #if SS_ENABLE_PERFORMANCE_STATS
     if (g_context->profiling_enabled) {
         uint64_t elapsed = get_time_ns() - start_time;
@@ -848,30 +872,35 @@ int ss_signal_exists(const char* signal_name) {
 /* Disconnect using handle */
 ss_error_t ss_disconnect_handle(ss_connection_t handle) {
     if (!g_context || handle == 0) return SS_ERR_NULL_PARAM;
-    
+
 #if SS_ENABLE_THREAD_SAFETY
     if (g_context->thread_safe) SS_MUTEX_LOCK(&g_context->mutex);
 #endif
-    
+
     ss_error_t result = SS_ERR_NOT_FOUND;
-    
+
 #if SS_USE_STATIC_MEMORY
     size_t i;
     for (i = 0; i < SS_MAX_SIGNALS; i++) {
         if (!g_context->signal_used[i]) continue;
-        
+
         ss_signal_t* sig = &g_context->signals[i];
         ss_slot_t* prev = NULL;
         ss_slot_t* curr = sig->slots;
-        
+
         while (curr) {
             if (curr->handle == handle) {
-                if (prev) {
-                    prev->next = curr->next;
+                if (sig->emitting) {
+                    curr->removed = 1;
                 } else {
-                    sig->slots = curr->next;
+                    if (prev) {
+                        prev->next = curr->next;
+                    } else {
+                        sig->slots = curr->next;
+                    }
+                    sig->slot_count--;
+                    free_slot(curr);
                 }
-                sig->slot_count--;
                 result = SS_OK;
                 goto done;
             }
@@ -884,16 +913,20 @@ ss_error_t ss_disconnect_handle(ss_connection_t handle) {
     while (sig) {
         ss_slot_t* prev = NULL;
         ss_slot_t* curr = sig->slots;
-        
+
         while (curr) {
             if (curr->handle == handle) {
-                if (prev) {
-                    prev->next = curr->next;
+                if (sig->emitting) {
+                    curr->removed = 1;
                 } else {
-                    sig->slots = curr->next;
+                    if (prev) {
+                        prev->next = curr->next;
+                    } else {
+                        sig->slots = curr->next;
+                    }
+                    SS_FREE(curr);
+                    sig->slot_count--;
                 }
-                free(curr);
-                sig->slot_count--;
                 result = SS_OK;
                 goto done;
             }
@@ -908,7 +941,7 @@ done:
 #if SS_ENABLE_THREAD_SAFETY
     if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
 #endif
-    
+
     return result;
 }
 
@@ -927,24 +960,38 @@ ss_error_t ss_disconnect_all(const char* signal_name) {
 #endif
         return SS_ERR_NOT_FOUND;
     }
-    
-#if !SS_USE_STATIC_MEMORY
-    /* Free all slots for dynamic memory */
-    ss_slot_t* curr = sig->slots;
-    while (curr) {
-        ss_slot_t* next = curr->next;
-        free(curr);
-        curr = next;
-    }
+
+    if (sig->emitting) {
+        /* Defer removal: mark all slots as removed */
+        ss_slot_t* curr = sig->slots;
+        while (curr) {
+            curr->removed = 1;
+            curr = curr->next;
+        }
+    } else {
+#if SS_USE_STATIC_MEMORY
+        ss_slot_t* curr = sig->slots;
+        while (curr) {
+            ss_slot_t* next = curr->next;
+            free_slot(curr);
+            curr = next;
+        }
+#else
+        ss_slot_t* curr = sig->slots;
+        while (curr) {
+            ss_slot_t* next = curr->next;
+            SS_FREE(curr);
+            curr = next;
+        }
 #endif
-    
-    sig->slots = NULL;
-    sig->slot_count = 0;
-    
+        sig->slots = NULL;
+        sig->slot_count = 0;
+    }
+
 #if SS_ENABLE_THREAD_SAFETY
     if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
 #endif
-    
+
     return SS_OK;
 }
 
@@ -966,31 +1013,25 @@ ss_error_t ss_disconnect(const char* signal_name, ss_slot_func_t slot) {
     
     ss_slot_t* prev = NULL;
     ss_slot_t* curr = sig->slots;
-    
+
     while (curr) {
-        if (curr->func == slot) {
-            if (prev) {
-                prev->next = curr->next;
+        if (curr->func == slot && !curr->removed) {
+            if (sig->emitting) {
+                curr->removed = 1;
             } else {
-                sig->slots = curr->next;
-            }
-            sig->slot_count--;
-            
-#if SS_USE_STATIC_MEMORY
-            /* Mark slot as unused in static allocation */
-            size_t i;
-            for (i = 0; i < SS_MAX_SLOTS; i++) {
-                if (&g_context->slots[i] == curr) {
-                    g_context->slot_used[i] = 0;
-                    g_context->slot_count--;
-                    break;
+                if (prev) {
+                    prev->next = curr->next;
+                } else {
+                    sig->slots = curr->next;
                 }
-            }
+                sig->slot_count--;
+#if SS_USE_STATIC_MEMORY
+                free_slot(curr);
 #else
-            /* Free the slot in dynamic allocation */
-            SS_FREE(curr);
+                SS_FREE(curr);
 #endif
-            
+            }
+
 #if SS_ENABLE_THREAD_SAFETY
             if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
 #endif

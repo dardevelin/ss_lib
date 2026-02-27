@@ -169,6 +169,58 @@ void test_error_handling(void) {
     printf("Error handling tests passed!\n");
 }
 
+/* Globals for disconnect-during-emit test */
+static ss_connection_t g_handle_to_disconnect = 0;
+static int g_disconnect_slot_called = 0;
+static int g_other_slot_called = 0;
+
+void disconnect_other_slot(const ss_data_t* data, void* user_data) {
+    (void)data;
+    (void)user_data;
+    g_disconnect_slot_called++;
+    /* Disconnect the other slot during emission */
+    ss_disconnect_handle(g_handle_to_disconnect);
+}
+
+void other_slot(const ss_data_t* data, void* user_data) {
+    (void)data;
+    (void)user_data;
+    g_other_slot_called++;
+}
+
+void test_disconnect_during_emit(void) {
+    printf("\n=== Testing Disconnect During Emit ===\n");
+
+    assert(ss_init() == SS_OK);
+
+    assert(ss_signal_register("emit_test") == SS_OK);
+
+    /* Connect other_slot first, then disconnect_other_slot.
+       Head insertion means disconnect_other_slot fires first during emit. */
+    assert(ss_connect_ex("emit_test", other_slot, NULL,
+                         SS_PRIORITY_NORMAL, &g_handle_to_disconnect) == SS_OK);
+    ss_connection_t handle1;
+    assert(ss_connect_ex("emit_test", disconnect_other_slot, NULL,
+                         SS_PRIORITY_NORMAL, &handle1) == SS_OK);
+
+    g_disconnect_slot_called = 0;
+    g_other_slot_called = 0;
+
+    /* Emit — first slot disconnects second, but iteration should not crash */
+    assert(ss_emit_void("emit_test") == SS_OK);
+    assert(g_disconnect_slot_called == 1);
+
+    /* Emit again — only first slot should fire now */
+    g_disconnect_slot_called = 0;
+    g_other_slot_called = 0;
+    assert(ss_emit_void("emit_test") == SS_OK);
+    assert(g_disconnect_slot_called == 1);
+    assert(g_other_slot_called == 0);
+
+    ss_cleanup();
+    printf("Disconnect during emit tests passed!\n");
+}
+
 void test_thread_safety_config(void) {
     printf("\n=== Testing Thread Safety Configuration ===\n");
     
@@ -198,6 +250,7 @@ int main(void) {
     test_multiple_slots();
     test_signal_introspection();
     test_error_handling();
+    test_disconnect_during_emit();
     test_thread_safety_config();
     
     printf("\n==================================\n");
