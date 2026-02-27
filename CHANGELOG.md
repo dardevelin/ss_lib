@@ -7,32 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-02-27
+
 ### Added
-- Initial public release
-- Core signal-slot functionality
-- Static memory allocation option for embedded systems
-- Thread-safe operations (optional)
-- ISR-safe signal emission
-- Performance profiling support
-- Memory usage diagnostics
-- Single-header distribution option
-- Comprehensive test suite
-- Examples for embedded systems
+- Namespace support for signal emission (`ss_set_namespace`, `ss_get_namespace`, `ss_emit_namespaced`)
+- Deferred emission with configurable queue size (`ss_emit_deferred`, `ss_flush_deferred`)
+- Batch operations for grouped signal emission (`ss_batch_create`, `ss_batch_destroy`, `ss_batch_add`, `ss_batch_emit`)
+- Getter and setter functions (`ss_get_max_slots_per_signal`, `ss_set_error_handler`)
+- Stats reset functions (`ss_reset_memory_stats`, `ss_reset_perf_stats`)
+- Error handler with `report_error` support
+- Signal name length validation (`SS_MAX_SIGNAL_NAME_LENGTH`)
+- Custom data size validation for zero-size payloads
+- ISR queue NULL check and portable write barrier
+- Configurable ISR queue constants (`SS_ISR_QUEUE_SIZE`)
 
 ### Changed
-- N/A (initial release)
-
-### Deprecated
-- N/A (initial release)
-
-### Removed
-- N/A (initial release)
+- String field in `ss_data_t` changed from `char*` to `const char*` for const-correctness
+- Replaced `strncpy` with `ss_strscpy` for safer string handling
+- `ss_get_signal_list` now returns duplicated names via `SS_STRDUP` instead of raw internal pointers
+- Custom cleanup callbacks are now stored and invoked via `ss_data_t`
 
 ### Fixed
-- N/A (initial release)
+- Use-after-free in `ss_emit` when callbacks call `ss_disconnect` during iteration
+- Static-mode slot chaining only running last-connected slot
+- Priority-sorted insertion not applied during `ss_connect`
+- Raw `free()` calls breaking custom allocator support (replaced with `SS_FREE()`)
+- Static-mode `ss_disconnect_all` and `ss_disconnect_handle` leaking slots (missing `free_slot()`)
+- `ss_cleanup` not freeing description strings in static memory mode
+- Dead code block with commented-out `report_error()` removed
+- `SS_STRDUP` failure silently ignored in `ss_data_set_string`
+- Memory stats `string_bytes` counter accumulating without reset
+- Peak memory calculation using wrong byte count
+- Single-header generator stripping conditional include guards for platform headers
 
 ### Security
-- N/A (initial release)
+- Fixed use-after-free vulnerability in signal emission during slot disconnection
+- Added ISR queue bounds checking and NULL signal name validation
 
 ## [2.0.0] - 2024-01-XX
 
@@ -64,6 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Signal introspection
 - Basic examples and tests
 
-[Unreleased]: https://github.com/username/ss_lib/compare/v2.0.0...HEAD
-[2.0.0]: https://github.com/username/ss_lib/compare/v1.0.0...v2.0.0
-[1.0.0]: https://github.com/username/ss_lib/releases/tag/v1.0.0
+[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/dardevelin/ss_lib/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/dardevelin/ss_lib/compare/v1.0.0...v2.0.0
+[1.0.0]: https://github.com/dardevelin/ss_lib/releases/tag/v1.0.0
