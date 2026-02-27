@@ -80,15 +80,9 @@ cat >> "$OUTPUT_FILE" << 'EOF'
 
 EOF
 
-# Add source file content (without includes of project headers)
-# First, let's see what includes we need to preserve
-echo "/* Standard library includes */" >> "$OUTPUT_FILE"
-grep '^#include <' "$SOURCE_FILE" >> "$OUTPUT_FILE" || true
-
-echo "" >> "$OUTPUT_FILE"
-
-# Add the actual implementation without includes
-sed '/^#include/d' "$SOURCE_FILE" >> "$OUTPUT_FILE"
+# Add source file content, stripping only project-local includes
+# System includes remain in place with their #ifdef guards
+sed '/#include "ss_lib.h"/d; /#include "ss_config.h"/d' "$SOURCE_FILE" >> "$OUTPUT_FILE"
 
 # Close implementation guard
 echo "" >> "$OUTPUT_FILE"
