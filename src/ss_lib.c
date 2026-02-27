@@ -1362,3 +1362,53 @@ int ss_is_thread_safe(void) {
     if (!g_context) return 0;
     return g_context->thread_safe;
 }
+
+/* Namespace support */
+ss_error_t ss_set_namespace(const char* ns) {
+    if (!g_context) return SS_ERR_NULL_PARAM;
+
+    if (g_context->namespace) {
+        SS_FREE(g_context->namespace);
+        g_context->namespace = NULL;
+    }
+
+    if (ns) {
+        g_context->namespace = SS_STRDUP(ns);
+        if (!g_context->namespace) return SS_ERR_MEMORY;
+    }
+
+    return SS_OK;
+}
+
+const char* ss_get_namespace(void) {
+    if (!g_context) return NULL;
+    return g_context->namespace;
+}
+
+ss_error_t ss_emit_namespaced(const char* ns, const char* signal_name,
+                              const ss_data_t* data) {
+    char buf[SS_MAX_SIGNAL_NAME_LENGTH];
+    size_t ns_len, name_len;
+
+    if (!ns || !signal_name) {
+        report_error(SS_ERR_NULL_PARAM, "namespace and signal name required");
+        return SS_ERR_NULL_PARAM;
+    }
+
+    ns_len = strlen(ns);
+    name_len = strlen(signal_name);
+
+    /* "ns::signal" needs ns_len + 2 + name_len + 1 */
+    if (ns_len + 2 + name_len + 1 > SS_MAX_SIGNAL_NAME_LENGTH) {
+        report_error(SS_ERR_WOULD_OVERFLOW, "namespaced signal name too long");
+        return SS_ERR_WOULD_OVERFLOW;
+    }
+
+    memcpy(buf, ns, ns_len);
+    buf[ns_len] = ':';
+    buf[ns_len + 1] = ':';
+    memcpy(buf + ns_len + 2, signal_name, name_len);
+    buf[ns_len + 2 + name_len] = '\0';
+
+    return ss_emit(buf, data);
+}

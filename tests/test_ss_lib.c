@@ -372,6 +372,40 @@ void test_isr_null_signal(void) {
 }
 #endif
 
+void test_namespace(void) {
+    printf("\n=== Testing Namespace Support ===\n");
+
+    assert(ss_init() == SS_OK);
+
+    /* Register a namespaced signal */
+    assert(ss_signal_register("ui::button") == SS_OK);
+
+    int counter = 0;
+    assert(ss_connect("ui::button", test_slot_void, &counter) == SS_OK);
+
+    /* Emit via namespace helper using a void data payload */
+    ss_data_t* ns_data = ss_data_create(SS_TYPE_VOID);
+    assert(ns_data != NULL);
+    assert(ss_emit_namespaced("ui", "button", ns_data) == SS_OK);
+    assert(counter == 1);
+    ss_data_destroy(ns_data);
+
+    /* Set/get namespace */
+    assert(ss_set_namespace("app") == SS_OK);
+    assert(strcmp(ss_get_namespace(), "app") == 0);
+
+    /* Clear namespace */
+    assert(ss_set_namespace(NULL) == SS_OK);
+    assert(ss_get_namespace() == NULL);
+
+    /* NULL params */
+    assert(ss_emit_namespaced(NULL, "x", NULL) == SS_ERR_NULL_PARAM);
+    assert(ss_emit_namespaced("x", NULL, NULL) == SS_ERR_NULL_PARAM);
+
+    ss_cleanup();
+    printf("Namespace support tests passed!\n");
+}
+
 int main(void) {
     printf("Starting Signal-Slot Library Tests\n");
     printf("==================================\n");
@@ -388,12 +422,13 @@ int main(void) {
     test_custom_cleanup();
 #endif
     test_thread_safety_config();
+    test_namespace();
 #if SS_ENABLE_ISR_SAFE
     test_isr_null_signal();
 #endif
-    
+
     printf("\n==================================\n");
     printf("All tests passed successfully!\n");
-    
+
     return 0;
 }
