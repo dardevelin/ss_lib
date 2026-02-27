@@ -1,7 +1,7 @@
 /**
  * @file ss_lib_v2.h
  * @brief SS_Lib - Lightweight Signal-Slot Library for C
- * @version 2.0.0
+ * @version 2.1.0
  * 
  * SS_Lib provides a simple, efficient signal-slot mechanism for C programs.
  * It's designed to work in resource-constrained environments while still
