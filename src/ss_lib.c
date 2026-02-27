@@ -603,13 +603,25 @@ static volatile struct {
     volatile int pending;
 } g_isr_queue[16];
 
+/* Portable compiler write barrier for ISR safety */
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_ATOMICS__)
+#include <stdatomic.h>
+#define SS_WRITE_BARRIER() atomic_signal_fence(memory_order_release)
+#elif defined(__GNUC__)
+#define SS_WRITE_BARRIER() __asm__ volatile("" ::: "memory")
+#else
+#define SS_WRITE_BARRIER() ((void)0)
+#endif
+
 ss_error_t ss_emit_from_isr(const char* signal_name, int value) {
     int i;
+    if (!signal_name) return SS_ERR_NULL_PARAM;
     for (i = 0; i < 16; i++) {
         if (!g_isr_queue[i].pending) {
             strncpy((char*)g_isr_queue[i].signal_name, signal_name, 31);
             g_isr_queue[i].signal_name[31] = '\0';
             g_isr_queue[i].value = value;
+            SS_WRITE_BARRIER();
             g_isr_queue[i].pending = 1;
             return SS_OK;
         }

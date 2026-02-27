@@ -241,10 +241,22 @@ void test_thread_safety_config(void) {
     printf("Thread safety configuration tests passed!\n");
 }
 
+#if SS_ENABLE_ISR_SAFE
+void test_isr_null_signal(void) {
+    printf("\n=== Testing ISR NULL Signal ===\n");
+
+    assert(ss_init() == SS_OK);
+    assert(ss_emit_from_isr(NULL, 42) == SS_ERR_NULL_PARAM);
+    ss_cleanup();
+
+    printf("ISR NULL signal tests passed!\n");
+}
+#endif
+
 int main(void) {
     printf("Starting Signal-Slot Library Tests\n");
     printf("==================================\n");
-    
+
     test_basic_functionality();
     test_data_types();
     test_multiple_slots();
@@ -252,6 +264,9 @@ int main(void) {
     test_error_handling();
     test_disconnect_during_emit();
     test_thread_safety_config();
+#if SS_ENABLE_ISR_SAFE
+    test_isr_null_signal();
+#endif
     
     printf("\n==================================\n");
     printf("All tests passed successfully!\n");

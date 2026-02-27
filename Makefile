@@ -89,7 +89,7 @@ $(BUILD_DIR)/ss_lib.o: $(SRC_DIR)/ss_lib.c
 
 # Test programs
 $(BUILD_DIR)/test_ss_lib: $(TEST_DIR)/test_ss_lib.c $(LIB_NAME)
-	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
+	$(CC) $(CFLAGS) -DSS_ENABLE_ISR_SAFE=1 -DSS_ENABLE_MEMORY_STATS=1 -DSS_ENABLE_PERFORMANCE_STATS=1 $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
 
 $(BUILD_DIR)/test_simple: $(TEST_DIR)/test_simple.c $(LIB_NAME)
 	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
