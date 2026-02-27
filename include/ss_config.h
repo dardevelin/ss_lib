@@ -58,6 +58,10 @@
     #define SS_ENABLE_ISR_SAFE 0
 #endif
 
+#ifndef SS_ISR_QUEUE_SIZE
+    #define SS_ISR_QUEUE_SIZE 16
+#endif
+
 #ifndef SS_CACHE_LINE_SIZE
     #define SS_CACHE_LINE_SIZE 64
 #endif
