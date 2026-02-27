@@ -5,42 +5,36 @@ on:
     tags:
       - 'v*'
 
+permissions:
+  contents: write
+
 jobs:
   create-release:
     runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-    
     steps:
-    - uses: actions/checkout@v3
-    
+    - uses: actions/checkout@v4
+
     - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
-        draft: false
-        prerelease: false
+        GH_TOKEN: ${{ github.token }}
+      run: gh release create "${{ github.ref_name }}" --generate-notes --verify-tag
 
   build-artifacts:
     needs: create-release
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-    
+
     runs-on: ${{ matrix.os }}
-    
+
     steps:
-    - uses: actions/checkout@v3
-    
+    - uses: actions/checkout@v4
+
     - name: Create single header
       run: |
         chmod +x create_single_header.sh
         ./create_single_header.sh
-    
+
     - name: Package release
       run: |
         mkdir -p ss_lib-${{ github.ref_name }}
@@ -49,33 +43,22 @@ jobs:
         cp -r examples/ ss_lib-${{ github.ref_name }}/
         cp ss_lib_single.h ss_lib-${{ github.ref_name }}/
         cp README.md LICENSE CHANGELOG.md ss_lib-${{ github.ref_name }}/
-        
+
     - name: Create archive (Unix)
       if: runner.os != 'Windows'
       run: tar -czf ss_lib-${{ github.ref_name }}-${{ runner.os }}.tar.gz ss_lib-${{ github.ref_name }}
-    
+
     - name: Create archive (Windows)
       if: runner.os == 'Windows'
       run: Compress-Archive -Path ss_lib-${{ github.ref_name }} -DestinationPath ss_lib-${{ github.ref_name }}-${{ runner.os }}.zip
-    
-    - name: Upload Release Asset (Unix)
-      if: runner.os != 'Windows'
-      uses: actions/upload-release-asset@v1
+
+    - name: Upload Release Asset
       env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ./ss_lib-${{ github.ref_name }}-${{ runner.os }}.tar.gz
-        asset_name: ss_lib-${{ github.ref_name }}-${{ runner.os }}.tar.gz
-        asset_content_type: application/gzip
-    
-    - name: Upload Release Asset (Windows)
-      if: runner.os == 'Windows'
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: ./ss_lib-${{ github.ref_name }}-${{ runner.os }}.zip
-        asset_name: ss_lib-${{ github.ref_name }}-${{ runner.os }}.zip
-        asset_content_type: application/zip
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          gh release upload "${{ github.ref_name }}" "./ss_lib-${{ github.ref_name }}-${{ runner.os }}.zip"
+        else
+          gh release upload "${{ github.ref_name }}" "./ss_lib-${{ github.ref_name }}-${{ runner.os }}.tar.gz"
+        fi
+      shell: bash
