@@ -598,10 +598,10 @@ ss_error_t ss_emit_pointer(const char* signal_name, void* value) {
 #if SS_ENABLE_ISR_SAFE
 /* ISR-safe emission - minimal overhead, no locks */
 static volatile struct {
-    char signal_name[32];  /* Fixed size for ISR safety */
+    char signal_name[SS_MAX_SIGNAL_NAME_LENGTH];
     int value;
     volatile int pending;
-} g_isr_queue[16];
+} g_isr_queue[SS_ISR_QUEUE_SIZE];
 
 /* Portable compiler write barrier for ISR safety */
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_ATOMICS__)
@@ -616,10 +616,11 @@ static volatile struct {
 ss_error_t ss_emit_from_isr(const char* signal_name, int value) {
     int i;
     if (!signal_name) return SS_ERR_NULL_PARAM;
-    for (i = 0; i < 16; i++) {
+    for (i = 0; i < SS_ISR_QUEUE_SIZE; i++) {
         if (!g_isr_queue[i].pending) {
-            strncpy((char*)g_isr_queue[i].signal_name, signal_name, 31);
-            g_isr_queue[i].signal_name[31] = '\0';
+            strncpy((char*)g_isr_queue[i].signal_name, signal_name,
+                    SS_MAX_SIGNAL_NAME_LENGTH - 1);
+            g_isr_queue[i].signal_name[SS_MAX_SIGNAL_NAME_LENGTH - 1] = '\0';
             g_isr_queue[i].value = value;
             SS_WRITE_BARRIER();
             g_isr_queue[i].pending = 1;
