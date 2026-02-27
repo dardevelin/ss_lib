@@ -14,13 +14,17 @@
     #ifndef SS_MAX_SIGNALS
         #define SS_MAX_SIGNALS 32
     #endif
-    
+
     #ifndef SS_MAX_SLOTS
         #define SS_MAX_SLOTS 128
     #endif
-    
-    #ifndef SS_MAX_SIGNAL_NAME_LENGTH
+#endif
+
+#ifndef SS_MAX_SIGNAL_NAME_LENGTH
+    #if SS_USE_STATIC_MEMORY
         #define SS_MAX_SIGNAL_NAME_LENGTH 32
+    #else
+        #define SS_MAX_SIGNAL_NAME_LENGTH 256
     #endif
 #endif
 

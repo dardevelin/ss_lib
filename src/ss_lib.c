@@ -285,12 +285,12 @@ ss_error_t ss_signal_register_ex(const char* signal_name,
     
     if (!g_context) return SS_ERR_NULL_PARAM;
     if (!signal_name || strlen(signal_name) == 0) return SS_ERR_NULL_PARAM;
-    
+    if (strlen(signal_name) >= SS_MAX_SIGNAL_NAME_LENGTH) return SS_ERR_WOULD_OVERFLOW;
+
 #if SS_ENABLE_THREAD_SAFETY
     if (g_context->thread_safe) SS_MUTEX_LOCK(&g_context->mutex);
 #endif
 
-    
     if (find_signal(signal_name)) {
 #if SS_ENABLE_THREAD_SAFETY
         if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
@@ -698,7 +698,7 @@ ss_error_t ss_data_set_pointer(ss_data_t* data, void* value) {
 ss_error_t ss_data_set_custom(ss_data_t* data, void* value, size_t size, 
                              ss_cleanup_func_t cleanup) {
     (void)cleanup; /* Reserved for future use */
-    if (!data || !value) return SS_ERR_NULL_PARAM;
+    if (!data || !value || size == 0) return SS_ERR_NULL_PARAM;
     
     if (data->type == SS_TYPE_CUSTOM && data->custom_data) {
         SS_FREE(data->custom_data);

@@ -1,5 +1,6 @@
 #include "ss_lib.h"
 #include <stdio.h>
+#include <string.h>
 #include <assert.h>
 
 static int g_test_counter = 0;
@@ -221,6 +222,30 @@ void test_disconnect_during_emit(void) {
     printf("Disconnect during emit tests passed!\n");
 }
 
+void test_input_validation(void) {
+    printf("\n=== Testing Input Validation ===\n");
+
+    assert(ss_init() == SS_OK);
+
+    /* Signal name too long */
+    char long_name[300];
+    memset(long_name, 'a', sizeof(long_name) - 1);
+    long_name[sizeof(long_name) - 1] = '\0';
+    assert(ss_signal_register(long_name) == SS_ERR_WOULD_OVERFLOW);
+
+    /* Custom data with zero size */
+#if SS_ENABLE_CUSTOM_DATA
+    ss_data_t* data = ss_data_create(SS_TYPE_CUSTOM);
+    assert(data != NULL);
+    int dummy = 42;
+    assert(ss_data_set_custom(data, &dummy, 0, NULL) == SS_ERR_NULL_PARAM);
+    ss_data_destroy(data);
+#endif
+
+    ss_cleanup();
+    printf("Input validation tests passed!\n");
+}
+
 void test_thread_safety_config(void) {
     printf("\n=== Testing Thread Safety Configuration ===\n");
     
@@ -263,6 +288,7 @@ int main(void) {
     test_signal_introspection();
     test_error_handling();
     test_disconnect_during_emit();
+    test_input_validation();
     test_thread_safety_config();
 #if SS_ENABLE_ISR_SAFE
     test_isr_null_signal();
