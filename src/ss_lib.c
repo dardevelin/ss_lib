@@ -460,12 +460,18 @@ ss_error_t ss_connect_ex(const char* signal_name, ss_slot_func_t slot,
         *handle = new_slot->handle;
     }
     
-#if !SS_USE_STATIC_MEMORY
-    /* Insert at head for dynamic memory (simpler) */
-    new_slot->next = sig->slots;
-#endif
-
-    sig->slots = new_slot;
+    /* Priority-sorted insertion: higher priority slots execute first */
+    if (!sig->slots || priority > sig->slots->priority) {
+        new_slot->next = sig->slots;
+        sig->slots = new_slot;
+    } else {
+        ss_slot_t* s = sig->slots;
+        while (s->next && s->next->priority >= priority) {
+            s = s->next;
+        }
+        new_slot->next = s->next;
+        s->next = new_slot;
+    }
     
     sig->slot_count++;
     
