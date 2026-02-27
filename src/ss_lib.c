@@ -674,7 +674,11 @@ void ss_data_destroy(ss_data_t* data) {
     }
 #if SS_ENABLE_CUSTOM_DATA
     else if (data->type == SS_TYPE_CUSTOM && data->custom_data) {
-        SS_FREE(data->custom_data);
+        if (data->custom_cleanup) {
+            data->custom_cleanup(data->custom_data);
+        } else {
+            SS_FREE(data->custom_data);
+        }
     }
 #endif
     
@@ -729,16 +733,20 @@ ss_error_t ss_data_set_pointer(ss_data_t* data, void* value) {
 #if SS_ENABLE_CUSTOM_DATA
 ss_error_t ss_data_set_custom(ss_data_t* data, void* value, size_t size, 
                              ss_cleanup_func_t cleanup) {
-    (void)cleanup; /* Reserved for future use */
     if (!data || !value || size == 0) return SS_ERR_NULL_PARAM;
-    
+
     if (data->type == SS_TYPE_CUSTOM && data->custom_data) {
-        SS_FREE(data->custom_data);
+        if (data->custom_cleanup) {
+            data->custom_cleanup(data->custom_data);
+        } else {
+            SS_FREE(data->custom_data);
+        }
     }
-    
+
     data->type = SS_TYPE_CUSTOM;
     data->custom_data = SS_MALLOC(size);
     if (!data->custom_data) return SS_ERR_MEMORY;
+    data->custom_cleanup = cleanup;
     
     memcpy(data->custom_data, value, size);
     data->size = size;
@@ -1208,7 +1216,7 @@ ss_error_t ss_get_signal_list(ss_signal_info_t** list, size_t* count) {
     size_t i;
     for (i = 0; i < SS_MAX_SIGNALS && idx < *count; i++) {
         if (g_context->signal_used[i]) {
-            (*list)[idx].name = g_context->signals[i].name;
+            (*list)[idx].name = SS_STRDUP(g_context->signals[i].name);
             (*list)[idx].description = g_context->signals[i].description;
             (*list)[idx].slot_count = g_context->signals[i].slot_count;
             (*list)[idx].priority = g_context->signals[i].priority;
@@ -1218,7 +1226,7 @@ ss_error_t ss_get_signal_list(ss_signal_info_t** list, size_t* count) {
 #else
     ss_signal_t* sig = g_context->signals;
     while (sig && idx < *count) {
-        (*list)[idx].name = sig->name;
+        (*list)[idx].name = SS_STRDUP(sig->name);
         (*list)[idx].description = sig->description;
         (*list)[idx].slot_count = sig->slot_count;
         (*list)[idx].priority = sig->priority;
@@ -1236,8 +1244,11 @@ ss_error_t ss_get_signal_list(ss_signal_info_t** list, size_t* count) {
 
 /* Free signal list allocated by ss_get_signal_list */
 void ss_free_signal_list(ss_signal_info_t* list, size_t count) {
-    (void)count; /* unused */
     if (list) {
+        size_t i;
+        for (i = 0; i < count; i++) {
+            if (list[i].name) SS_FREE(list[i].name);
+        }
         SS_FREE(list);
     }
 }

@@ -311,6 +311,35 @@ void test_input_validation(void) {
     printf("Input validation tests passed!\n");
 }
 
+#if SS_ENABLE_CUSTOM_DATA
+static int g_custom_cleanup_called = 0;
+
+void custom_cleanup_fn(void* data) {
+    (void)data;
+    g_custom_cleanup_called++;
+}
+
+void test_custom_cleanup(void) {
+    printf("\n=== Testing Custom Cleanup Callback ===\n");
+
+    assert(ss_init() == SS_OK);
+
+    ss_data_t* data = ss_data_create(SS_TYPE_CUSTOM);
+    assert(data != NULL);
+
+    int dummy = 99;
+    g_custom_cleanup_called = 0;
+    assert(ss_data_set_custom(data, &dummy, sizeof(dummy), custom_cleanup_fn) == SS_OK);
+
+    /* Destroying should call our cleanup function */
+    ss_data_destroy(data);
+    assert(g_custom_cleanup_called == 1);
+
+    ss_cleanup();
+    printf("Custom cleanup callback tests passed!\n");
+}
+#endif
+
 void test_thread_safety_config(void) {
     printf("\n=== Testing Thread Safety Configuration ===\n");
     
@@ -355,6 +384,9 @@ int main(void) {
     test_disconnect_during_emit();
     test_priority_ordering();
     test_input_validation();
+#if SS_ENABLE_CUSTOM_DATA
+    test_custom_cleanup();
+#endif
     test_thread_safety_config();
 #if SS_ENABLE_ISR_SAFE
     test_isr_null_signal();
