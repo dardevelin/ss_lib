@@ -196,13 +196,12 @@ void test_disconnect_during_emit(void) {
 
     assert(ss_signal_register("emit_test") == SS_OK);
 
-    /* Connect other_slot first, then disconnect_other_slot.
-       Head insertion means disconnect_other_slot fires first during emit. */
+    /* Connect disconnect_other_slot at higher priority so it fires first */
     assert(ss_connect_ex("emit_test", other_slot, NULL,
                          SS_PRIORITY_NORMAL, &g_handle_to_disconnect) == SS_OK);
     ss_connection_t handle1;
     assert(ss_connect_ex("emit_test", disconnect_other_slot, NULL,
-                         SS_PRIORITY_NORMAL, &handle1) == SS_OK);
+                         SS_PRIORITY_HIGH, &handle1) == SS_OK);
 
     g_disconnect_slot_called = 0;
     g_other_slot_called = 0;
@@ -220,6 +219,60 @@ void test_disconnect_during_emit(void) {
 
     ss_cleanup();
     printf("Disconnect during emit tests passed!\n");
+}
+
+/* Priority ordering test helpers */
+static int g_priority_order[4];
+static int g_priority_idx = 0;
+
+void priority_slot_critical(const ss_data_t* data, void* user_data) {
+    (void)data; (void)user_data;
+    g_priority_order[g_priority_idx++] = SS_PRIORITY_CRITICAL;
+}
+
+void priority_slot_high(const ss_data_t* data, void* user_data) {
+    (void)data; (void)user_data;
+    g_priority_order[g_priority_idx++] = SS_PRIORITY_HIGH;
+}
+
+void priority_slot_normal(const ss_data_t* data, void* user_data) {
+    (void)data; (void)user_data;
+    g_priority_order[g_priority_idx++] = SS_PRIORITY_NORMAL;
+}
+
+void priority_slot_low(const ss_data_t* data, void* user_data) {
+    (void)data; (void)user_data;
+    g_priority_order[g_priority_idx++] = SS_PRIORITY_LOW;
+}
+
+void test_priority_ordering(void) {
+    printf("\n=== Testing Priority Ordering ===\n");
+
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("prio_test") == SS_OK);
+
+    /* Connect in scrambled order */
+    assert(ss_connect_ex("prio_test", priority_slot_normal, NULL,
+                         SS_PRIORITY_NORMAL, NULL) == SS_OK);
+    assert(ss_connect_ex("prio_test", priority_slot_critical, NULL,
+                         SS_PRIORITY_CRITICAL, NULL) == SS_OK);
+    assert(ss_connect_ex("prio_test", priority_slot_low, NULL,
+                         SS_PRIORITY_LOW, NULL) == SS_OK);
+    assert(ss_connect_ex("prio_test", priority_slot_high, NULL,
+                         SS_PRIORITY_HIGH, NULL) == SS_OK);
+
+    g_priority_idx = 0;
+    assert(ss_emit_void("prio_test") == SS_OK);
+    assert(g_priority_idx == 4);
+
+    /* Verify execution order: CRITICAL > HIGH > NORMAL > LOW */
+    assert(g_priority_order[0] == SS_PRIORITY_CRITICAL);
+    assert(g_priority_order[1] == SS_PRIORITY_HIGH);
+    assert(g_priority_order[2] == SS_PRIORITY_NORMAL);
+    assert(g_priority_order[3] == SS_PRIORITY_LOW);
+
+    ss_cleanup();
+    printf("Priority ordering tests passed!\n");
 }
 
 void test_input_validation(void) {
@@ -288,6 +341,7 @@ int main(void) {
     test_signal_introspection();
     test_error_handling();
     test_disconnect_during_emit();
+    test_priority_ordering();
     test_input_validation();
     test_thread_safety_config();
 #if SS_ENABLE_ISR_SAFE
