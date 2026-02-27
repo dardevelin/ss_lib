@@ -448,6 +448,50 @@ void test_deferred_emission(void) {
     printf("Deferred emission tests passed!\n");
 }
 
+void test_batch_operations(void) {
+    printf("\n=== Testing Batch Operations ===\n");
+
+    assert(ss_init() == SS_OK);
+
+    assert(ss_signal_register("batch_a") == SS_OK);
+    assert(ss_signal_register("batch_b") == SS_OK);
+
+    g_test_counter = 0;
+    assert(ss_connect("batch_a", test_slot_int, NULL) == SS_OK);
+    assert(ss_connect("batch_b", test_slot_int, NULL) == SS_OK);
+
+    ss_batch_t* batch = ss_batch_create();
+    assert(batch != NULL);
+
+    ss_data_t* d1 = ss_data_create(SS_TYPE_INT);
+    assert(d1 != NULL);
+    assert(ss_data_set_int(d1, 5) == SS_OK);
+    assert(ss_batch_add(batch, "batch_a", d1) == SS_OK);
+    ss_data_destroy(d1);
+
+    ss_data_t* d2 = ss_data_create(SS_TYPE_INT);
+    assert(d2 != NULL);
+    assert(ss_data_set_int(d2, 15) == SS_OK);
+    assert(ss_batch_add(batch, "batch_b", d2) == SS_OK);
+    ss_data_destroy(d2);
+
+    ss_data_t* d3 = ss_data_create(SS_TYPE_INT);
+    assert(d3 != NULL);
+    assert(ss_data_set_int(d3, 25) == SS_OK);
+    assert(ss_batch_add(batch, "batch_a", d3) == SS_OK);
+    ss_data_destroy(d3);
+
+    /* Nothing emitted until batch_emit */
+    assert(g_test_counter == 0);
+
+    assert(ss_batch_emit(batch) == SS_OK);
+    assert(g_test_counter == 45);
+
+    ss_batch_destroy(batch);
+    ss_cleanup();
+    printf("Batch operations tests passed!\n");
+}
+
 int main(void) {
     printf("Starting Signal-Slot Library Tests\n");
     printf("==================================\n");
@@ -466,6 +510,7 @@ int main(void) {
     test_thread_safety_config();
     test_namespace();
     test_deferred_emission();
+    test_batch_operations();
 #if SS_ENABLE_ISR_SAFE
     test_isr_null_signal();
 #endif
