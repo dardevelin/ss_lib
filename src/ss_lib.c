@@ -218,6 +218,13 @@ static void sweep_removed_slots(ss_signal_t* sig) {
     }
 }
 
+/* Error handler */
+static void report_error(ss_error_t error, const char* msg) {
+    if (g_context && g_context->error_handler) {
+        g_context->error_handler(error, msg);
+    }
+}
+
 /* Core implementation */
 ss_error_t ss_init(void) {
     if (g_context) return SS_OK;
@@ -306,8 +313,14 @@ ss_error_t ss_signal_register_ex(const char* signal_name,
     ss_signal_t* new_sig;
     
     if (!g_context) return SS_ERR_NULL_PARAM;
-    if (!signal_name || strlen(signal_name) == 0) return SS_ERR_NULL_PARAM;
-    if (strlen(signal_name) >= SS_MAX_SIGNAL_NAME_LENGTH) return SS_ERR_WOULD_OVERFLOW;
+    if (!signal_name || strlen(signal_name) == 0) {
+        report_error(SS_ERR_NULL_PARAM, "signal name is NULL or empty");
+        return SS_ERR_NULL_PARAM;
+    }
+    if (strlen(signal_name) >= SS_MAX_SIGNAL_NAME_LENGTH) {
+        report_error(SS_ERR_WOULD_OVERFLOW, "signal name exceeds maximum length");
+        return SS_ERR_WOULD_OVERFLOW;
+    }
 
 #if SS_ENABLE_THREAD_SAFETY
     if (g_context->thread_safe) SS_MUTEX_LOCK(&g_context->mutex);
@@ -317,7 +330,7 @@ ss_error_t ss_signal_register_ex(const char* signal_name,
 #if SS_ENABLE_THREAD_SAFETY
         if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
 #endif
-
+        report_error(SS_ERR_ALREADY_EXISTS, signal_name);
         return SS_ERR_ALREADY_EXISTS;
     }
     
@@ -409,27 +422,30 @@ ss_error_t ss_connect_ex(const char* signal_name, ss_slot_func_t slot,
     ss_signal_t* sig;
     ss_slot_t* new_slot;
     
-    if (!g_context || !signal_name || !slot) return SS_ERR_NULL_PARAM;
-    
+    if (!g_context || !signal_name || !slot) {
+        report_error(SS_ERR_NULL_PARAM, "connect requires signal name and slot");
+        return SS_ERR_NULL_PARAM;
+    }
+
 #if SS_ENABLE_THREAD_SAFETY
     if (g_context->thread_safe) SS_MUTEX_LOCK(&g_context->mutex);
 #endif
 
-    
+
     sig = find_signal(signal_name);
     if (!sig) {
 #if SS_ENABLE_THREAD_SAFETY
         if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
 #endif
-
+        report_error(SS_ERR_NOT_FOUND, signal_name);
         return SS_ERR_NOT_FOUND;
     }
-    
+
     if (sig->slot_count >= g_context->max_slots_per_signal) {
 #if SS_ENABLE_THREAD_SAFETY
         if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
 #endif
-
+        report_error(SS_ERR_MAX_SLOTS, signal_name);
         return SS_ERR_MAX_SLOTS;
     }
     
@@ -516,26 +532,29 @@ ss_error_t ss_emit(const char* signal_name, const ss_data_t* data) {
     uint64_t start_time = 0;
 #endif
     
-    if (!g_context || !signal_name) return SS_ERR_NULL_PARAM;
-    
+    if (!g_context || !signal_name) {
+        report_error(SS_ERR_NULL_PARAM, "emit requires signal name");
+        return SS_ERR_NULL_PARAM;
+    }
+
 #if SS_ENABLE_PERFORMANCE_STATS
     if (g_context->profiling_enabled) {
         start_time = get_time_ns();
     }
 #endif
 
-    
+
 #if SS_ENABLE_THREAD_SAFETY
     if (g_context->thread_safe) SS_MUTEX_LOCK(&g_context->mutex);
 #endif
 
-    
+
     sig = find_signal(signal_name);
     if (!sig) {
 #if SS_ENABLE_THREAD_SAFETY
         if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
 #endif
-
+        report_error(SS_ERR_NOT_FOUND, signal_name);
         return SS_ERR_NOT_FOUND;
     }
     
@@ -825,6 +844,20 @@ ss_error_t ss_get_memory_stats(ss_memory_stats_t* stats) {
     
     return SS_OK;
 }
+
+void ss_reset_memory_stats(void) {
+    if (!g_context) return;
+
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_LOCK(&g_context->mutex);
+#endif
+
+    memset(&g_context->memory_stats, 0, sizeof(ss_memory_stats_t));
+
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
+}
 #endif
 
 
@@ -862,6 +895,37 @@ ss_error_t ss_enable_profiling(int enabled) {
     if (!g_context) return SS_ERR_NULL_PARAM;
     g_context->profiling_enabled = enabled;
     return SS_OK;
+}
+
+void ss_reset_perf_stats(void) {
+    if (!g_context) return;
+
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_LOCK(&g_context->mutex);
+#endif
+
+#if SS_USE_STATIC_MEMORY
+    {
+        size_t i;
+        for (i = 0; i < SS_MAX_SIGNALS; i++) {
+            if (g_context->signal_used[i]) {
+                memset(&g_context->signals[i].perf_stats, 0, sizeof(ss_perf_stats_t));
+            }
+        }
+    }
+#else
+    {
+        ss_signal_t* sig = g_context->signals;
+        while (sig) {
+            memset(&sig->perf_stats, 0, sizeof(ss_perf_stats_t));
+            sig = sig->next;
+        }
+    }
+#endif
+
+#if SS_ENABLE_THREAD_SAFETY
+    if (g_context->thread_safe) SS_MUTEX_UNLOCK(&g_context->mutex);
+#endif
 }
 #else
 /* Stub when profiling is disabled */
@@ -1258,6 +1322,18 @@ void ss_free_signal_list(ss_signal_info_t* list, size_t count) {
 void ss_set_max_slots_per_signal(size_t max_slots) {
     if (g_context) {
         g_context->max_slots_per_signal = max_slots;
+    }
+}
+
+/* Get maximum slots per signal */
+size_t ss_get_max_slots_per_signal(void) {
+    if (!g_context) return 0;
+    return g_context->max_slots_per_signal;
+}
+
+void ss_set_error_handler(void (*handler)(ss_error_t error, const char* msg)) {
+    if (g_context) {
+        g_context->error_handler = handler;
     }
 }
 
