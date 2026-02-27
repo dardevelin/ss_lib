@@ -57,6 +57,12 @@ typedef struct ss_signal {
 } ss_signal_t;
 
 typedef struct {
+    char signal_name[SS_MAX_SIGNAL_NAME_LENGTH];
+    ss_data_t data;
+    int has_string;  /* Non-zero if data.value.s_val was duplicated */
+} ss_deferred_entry_t;
+
+typedef struct {
 #if SS_USE_STATIC_MEMORY
     /* Static allocation */
     ss_signal_t signals[SS_MAX_SIGNALS];
@@ -90,6 +96,10 @@ typedef struct {
     
     void (*error_handler)(ss_error_t, const char*);
     ss_connection_t next_handle;
+
+    /* Deferred emission queue */
+    ss_deferred_entry_t deferred_queue[SS_DEFERRED_QUEUE_SIZE];
+    size_t deferred_count;
     
 #if SS_ENABLE_DEBUG_TRACE
     FILE* trace_output;
@@ -296,6 +306,16 @@ void ss_cleanup(void) {
 #endif
 
     
+    /* Free pending deferred emission strings */
+    {
+        size_t i;
+        for (i = 0; i < g_context->deferred_count; i++) {
+            if (g_context->deferred_queue[i].has_string) {
+                SS_FREE((void*)g_context->deferred_queue[i].data.value.s_val);
+            }
+        }
+    }
+
     if (g_context->namespace) SS_FREE(g_context->namespace);
     SS_FREE(g_context);
     g_context = NULL;
@@ -1411,4 +1431,62 @@ ss_error_t ss_emit_namespaced(const char* ns, const char* signal_name,
     buf[ns_len + 2 + name_len] = '\0';
 
     return ss_emit(buf, data);
+}
+
+/* Deferred emission */
+ss_error_t ss_emit_deferred(const char* signal_name, const ss_data_t* data) {
+    ss_deferred_entry_t* entry;
+
+    if (!g_context || !signal_name) {
+        report_error(SS_ERR_NULL_PARAM, "deferred emit requires signal name");
+        return SS_ERR_NULL_PARAM;
+    }
+
+    if (g_context->deferred_count >= SS_DEFERRED_QUEUE_SIZE) {
+        report_error(SS_ERR_WOULD_OVERFLOW, "deferred queue full");
+        return SS_ERR_WOULD_OVERFLOW;
+    }
+
+    entry = &g_context->deferred_queue[g_context->deferred_count];
+    ss_strscpy(entry->signal_name, signal_name, SS_MAX_SIGNAL_NAME_LENGTH);
+    entry->has_string = 0;
+
+    if (data) {
+        entry->data = *data;
+        /* Duplicate string data to avoid dangling pointer */
+        if (data->type == SS_TYPE_STRING && data->value.s_val) {
+            entry->data.value.s_val = SS_STRDUP(data->value.s_val);
+            if (!entry->data.value.s_val) return SS_ERR_MEMORY;
+            entry->has_string = 1;
+        }
+    } else {
+        memset(&entry->data, 0, sizeof(ss_data_t));
+        entry->data.type = SS_TYPE_VOID;
+    }
+
+    g_context->deferred_count++;
+    return SS_OK;
+}
+
+ss_error_t ss_flush_deferred(void) {
+    size_t i, count;
+    ss_error_t result = SS_OK;
+
+    if (!g_context) return SS_ERR_NULL_PARAM;
+
+    /* Snapshot count to avoid infinite loops if slots enqueue more */
+    count = g_context->deferred_count;
+    g_context->deferred_count = 0;
+
+    for (i = 0; i < count; i++) {
+        ss_deferred_entry_t* entry = &g_context->deferred_queue[i];
+        ss_error_t err = ss_emit(entry->signal_name, &entry->data);
+        if (err != SS_OK) result = err;
+
+        if (entry->has_string) {
+            SS_FREE((void*)entry->data.value.s_val);
+        }
+    }
+
+    return result;
 }

@@ -406,6 +406,48 @@ void test_namespace(void) {
     printf("Namespace support tests passed!\n");
 }
 
+void test_deferred_emission(void) {
+    printf("\n=== Testing Deferred Emission ===\n");
+
+    assert(ss_init() == SS_OK);
+
+    assert(ss_signal_register("deferred1") == SS_OK);
+    assert(ss_signal_register("deferred2") == SS_OK);
+
+    g_test_counter = 0;
+    assert(ss_connect("deferred1", test_slot_int, NULL) == SS_OK);
+    assert(ss_connect("deferred2", test_slot_int, NULL) == SS_OK);
+
+    /* Enqueue 3 deferred emissions */
+    ss_data_t* d1 = ss_data_create(SS_TYPE_INT);
+    assert(d1 != NULL);
+    assert(ss_data_set_int(d1, 10) == SS_OK);
+    assert(ss_emit_deferred("deferred1", d1) == SS_OK);
+    ss_data_destroy(d1);
+
+    ss_data_t* d2 = ss_data_create(SS_TYPE_INT);
+    assert(d2 != NULL);
+    assert(ss_data_set_int(d2, 20) == SS_OK);
+    assert(ss_emit_deferred("deferred2", d2) == SS_OK);
+    ss_data_destroy(d2);
+
+    ss_data_t* d3 = ss_data_create(SS_TYPE_INT);
+    assert(d3 != NULL);
+    assert(ss_data_set_int(d3, 30) == SS_OK);
+    assert(ss_emit_deferred("deferred1", d3) == SS_OK);
+    ss_data_destroy(d3);
+
+    /* Counter should be 0 — nothing emitted yet */
+    assert(g_test_counter == 0);
+
+    /* Flush — all 3 should fire */
+    assert(ss_flush_deferred() == SS_OK);
+    assert(g_test_counter == 60);
+
+    ss_cleanup();
+    printf("Deferred emission tests passed!\n");
+}
+
 int main(void) {
     printf("Starting Signal-Slot Library Tests\n");
     printf("==================================\n");
@@ -423,6 +465,7 @@ int main(void) {
 #endif
     test_thread_safety_config();
     test_namespace();
+    test_deferred_emission();
 #if SS_ENABLE_ISR_SAFE
     test_isr_null_signal();
 #endif
