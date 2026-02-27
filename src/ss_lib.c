@@ -156,8 +156,11 @@ static ss_slot_t* allocate_slot(void) {
             g_context->slot_used[i] = 1;
             g_context->slot_count++;
 #if SS_ENABLE_MEMORY_STATS
-            if (g_context->slot_count > g_context->memory_stats.peak_bytes_allocated) {
-                g_context->memory_stats.peak_bytes_allocated = g_context->slot_count;
+            {
+                size_t peak = g_context->slot_count * sizeof(ss_slot_t);
+                if (peak > g_context->memory_stats.peak_bytes_allocated) {
+                    g_context->memory_stats.peak_bytes_allocated = peak;
+                }
             }
 #endif
 
@@ -707,7 +710,12 @@ ss_error_t ss_data_set_string(ss_data_t* data, const char* value) {
     }
 
     data->type = SS_TYPE_STRING;
-    data->value.s_val = value ? SS_STRDUP(value) : NULL;
+    if (value) {
+        data->value.s_val = SS_STRDUP(value);
+        if (!data->value.s_val) return SS_ERR_MEMORY;
+    } else {
+        data->value.s_val = NULL;
+    }
     return SS_OK;
 }
 
@@ -790,6 +798,7 @@ ss_error_t ss_get_memory_stats(ss_memory_stats_t* stats) {
     stats->total_bytes_allocated = sizeof(ss_context_t);
 #else
     /* Calculate dynamic memory usage */
+    stats->string_bytes = 0;
     ss_signal_t* sig = g_context->signals;
     while (sig) {
         stats->string_bytes += strlen(sig->name) + 1;

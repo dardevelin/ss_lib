@@ -295,6 +295,18 @@ void test_input_validation(void) {
     ss_data_destroy(data);
 #endif
 
+    /* Memory stats: string_bytes should not accumulate across calls */
+#if SS_ENABLE_MEMORY_STATS
+    assert(ss_signal_register("stats_test") == SS_OK);
+
+    ss_memory_stats_t stats1, stats2;
+    assert(ss_get_memory_stats(&stats1) == SS_OK);
+    assert(ss_get_memory_stats(&stats2) == SS_OK);
+    assert(stats1.string_bytes == stats2.string_bytes);
+
+    ss_signal_unregister("stats_test");
+#endif
+
     ss_cleanup();
     printf("Input validation tests passed!\n");
 }
