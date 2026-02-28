@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Custom data size validation for zero-size payloads
 - ISR queue NULL check and portable write barrier
 - Configurable ISR queue constants (`SS_ISR_QUEUE_SIZE`)
+- C89-compatible implementation with full feature parity (`src/ss_lib_c89.c`)
+- Complete documentation suite: architecture, configuration, embedded guide, performance, examples
 
 ### Changed
 - String field in `ss_data_t` changed from `char*` to `const char*` for const-correctness
@@ -39,6 +41,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Memory stats `string_bytes` counter accumulating without reset
 - Peak memory calculation using wrong byte count
 - Single-header generator stripping conditional include guards for platform headers
+
+### Documentation
+- Rewrote README with complete API overview and no emoji formatting
+- Expanded API reference from ~30% to 100% coverage
+- Fixed incorrect filenames in getting-started guide (`ss_lib_v2.h` → `ss_lib.h`)
+- Created 5 new documentation files (architecture, configuration, embedded guide, performance, examples)
+- Fixed broken links in docs index
+
+### Maintenance
+- Removed stale v2 references from CMakeLists.txt, Doxyfile, benchmarks, pkg-config files, CONTRIBUTING.md, test_simple.c
+- Fixed C89 SS_TRACE macro compatibility (variadic macros are C99)
+- Include docs/ directory in release archives
 
 ### Security
 - Fixed use-after-free vulnerability in signal emission during slot disconnection

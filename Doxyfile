@@ -2,12 +2,12 @@
 
 # Project information
 PROJECT_NAME           = "SS_Lib"
-PROJECT_NUMBER         = "2.0.0"
+PROJECT_NUMBER         = "2.1.0"
 PROJECT_BRIEF          = "Lightweight Signal-Slot Library for C"
 PROJECT_LOGO           = 
 
 # Input/output directories
-INPUT                  = README.md include/ss_lib_v2.h include/ss_config.h src/ss_lib_v2.c docs/
+INPUT                  = README.md include/ss_lib.h include/ss_config.h src/ss_lib.c docs/
 OUTPUT_DIRECTORY       = docs/api
 CREATE_SUBDIRS         = YES
 RECURSIVE              = YES

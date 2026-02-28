@@ -6,10 +6,10 @@ includedir=${prefix}/include
 Name: SS_Lib
 Description: Lightweight signal-slot library for C - designed for embedded systems and performance-critical applications
 Version: @PROJECT_VERSION@
-URL: https://github.com/yourusername/ss_lib
-Requires: 
-Requires.private: 
-Conflicts: 
-Libs: -L${libdir} -lsslib_v2 @CMAKE_THREAD_LIBS_INIT@
+URL: https://github.com/dardevelin/ss_lib
+Requires:
+Requires.private:
+Conflicts:
+Libs: -L${libdir} -lss_lib @CMAKE_THREAD_LIBS_INIT@
 Libs.private: 
 Cflags: -I${includedir}/ss_lib

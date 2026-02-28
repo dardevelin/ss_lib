@@ -4,19 +4,20 @@ Welcome to the SS_Lib documentation. This directory contains detailed informatio
 
 ## Documentation Structure
 
-- [Getting Started](getting-started.md) - Quick introduction and setup
-- [API Reference](api-reference.md) - Complete API documentation
-- [Configuration Guide](configuration.md) - Compile-time options explained
-- [Embedded Usage](embedded-guide.md) - Guide for embedded systems
-- [Performance Tuning](performance.md) - Optimization tips
-- [Examples](examples.md) - Detailed example walkthroughs
-- [Architecture](architecture.md) - Internal design documentation
+- [Getting Started](getting-started.md) — Quick introduction and setup
+- [API Reference](api-reference.md) — Complete API documentation
+- [Configuration Guide](configuration.md) — Compile-time options explained
+- [Embedded Guide](embedded-guide.md) — Guide for embedded systems
+- [Performance Tuning](performance.md) — Profiling and optimization
+- [Examples](examples.md) — Detailed example walkthroughs
+- [Architecture](architecture.md) — Internal design documentation
+- [Design Rationale](design.md) — Design decisions and trade-offs
 
 ## Quick Links
 
 - [Main README](../README.md)
-- [Contributing Guide](../CONTRIBUTING.md)
 - [Changelog](../CHANGELOG.md)
+- [License](../LICENSE)
 
 ## Building Documentation
 
