@@ -25,7 +25,7 @@ run_benchmark() {
     gcc -O3 -march=native $flags \
         -I"$PROJECT_DIR/include" \
         "$SCRIPT_DIR/benchmark_ss_lib.c" \
-        "$PROJECT_DIR/src/ss_lib_v2.c" \
+        "$PROJECT_DIR/src/ss_lib.c" \
         -pthread -lm \
         -o "$output"
     

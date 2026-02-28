@@ -1,5 +1,5 @@
 /**
- * @file ss_lib_v2.h
+ * @file ss_lib.h
  * @brief SS_Lib - Lightweight Signal-Slot Library for C
  * @version 2.1.0
  * 

@@ -122,16 +122,16 @@ if(SS_BUILD_TESTS)
     enable_testing()
     
     add_executable(test_ss_lib tests/test_ss_lib.c src/ss_lib.c)
-    add_executable(test_v2_simple tests/test_v2_simple.c)
-    
-    target_link_libraries(test_v2_simple ss_lib)
-    
+    add_executable(test_simple tests/test_simple.c)
+
+    target_link_libraries(test_simple ss_lib)
+
     if(SS_ENABLE_THREAD_SAFETY)
         target_link_libraries(test_ss_lib Threads::Threads)
     endif()
-    
+
     add_test(NAME test_basic COMMAND test_ss_lib)
-    add_test(NAME test_v2 COMMAND test_v2_simple)
+    add_test(NAME test_simple COMMAND test_simple)
 endif()
 
 # Examples

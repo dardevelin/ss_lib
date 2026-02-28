@@ -6,7 +6,7 @@ void on_test(const ss_data_t* data, void* user_data) {
 }
 
 int main(void) {
-    printf("Testing V2 Library\n");
+    printf("Testing SS_Lib\n");
     
     if (ss_init() != SS_OK) {
         printf("Failed to init\n");

@@ -93,15 +93,21 @@
 #endif
 
 /* Debug Macros */
-#if SS_ENABLE_DEBUG_TRACE
-    #include <stdio.h>
-    #define SS_TRACE(...) do { \
-        fprintf(stderr, "[SS_TRACE] "); \
-        fprintf(stderr, __VA_ARGS__); \
-        fprintf(stderr, "\n"); \
-    } while(0)
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
+    /* C99+: use variadic macros */
+    #if SS_ENABLE_DEBUG_TRACE
+        #include <stdio.h>
+        #define SS_TRACE(...) do { \
+            fprintf(stderr, "[SS_TRACE] "); \
+            fprintf(stderr, __VA_ARGS__); \
+            fprintf(stderr, "\n"); \
+        } while(0)
+    #else
+        #define SS_TRACE(...) ((void)0)
+    #endif
 #else
-    #define SS_TRACE(...) ((void)0)
+    /* C89: no variadic macros available, use cast-to-void approach */
+    #define SS_TRACE (void)sizeof
 #endif
 
 /* Minimal Build */

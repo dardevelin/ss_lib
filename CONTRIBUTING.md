@@ -4,7 +4,7 @@ Thank you for your interest in contributing to SS_Lib! This document provides gu
 
 ## Code of Conduct
 
-By participating in this project, you agree to abide by our [Code of Conduct](CODE_OF_CONDUCT.md).
+By participating in this project, you agree to maintain a respectful and constructive environment.
 
 ## How Can I Contribute?
 
@@ -46,7 +46,7 @@ git clone https://github.com/YOUR-USERNAME/ss_lib.git
 cd ss_lib
 
 # Build the library
-make clean && make all_v2
+make clean && make all
 
 # Run tests
 make test
@@ -101,13 +101,13 @@ Fixes #123
 
 ```bash
 # Run all tests
-make test_all
+make test
 
 # Run specific test suite
-./test_ss_lib
+./build/test_ss_lib
 
 # Run with valgrind (memory checks)
-valgrind --leak-check=full ./test_ss_lib
+make test-valgrind
 ```
 
 ### Writing Tests

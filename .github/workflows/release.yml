@@ -41,6 +41,7 @@ jobs:
         cp -r include/ ss_lib-${{ github.ref_name }}/
         cp -r src/ ss_lib-${{ github.ref_name }}/
         cp -r examples/ ss_lib-${{ github.ref_name }}/
+        cp -r docs/ ss_lib-${{ github.ref_name }}/
         cp ss_lib_single.h ss_lib-${{ github.ref_name }}/
         cp README.md LICENSE CHANGELOG.md ss_lib-${{ github.ref_name }}/
 
