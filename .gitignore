@@ -36,5 +36,6 @@ coverage-report/
 .DS_Store
 
 # Personal settings
-.claude/
+.claude/*
+!.claude/skills/
 

@@ -482,6 +482,23 @@ make benchmark-all  # Comprehensive suite
 - [Architecture](docs/architecture.md)
 - [Design Rationale](docs/design.md)
 
+## LLM Skills (Claude Code)
+
+This repository includes [Claude Code skills](https://docs.anthropic.com/en/docs/claude-code/skills) that teach LLMs to write and review SS_Lib code correctly. They live in `.claude/skills/` and activate automatically when relevant.
+
+| Skill | Trigger | What it does |
+|-------|---------|--------------|
+| `ss-lib` | Code includes `ss_lib.h` or asks about SS_Lib | Complete API reference, lifecycle rules, string handling pitfalls, configuration, and canonical examples |
+| `ss-lib-review` | Asks to review/debug SS_Lib code | 14-item checklist, 5 anti-pattern corrections, feature-flag validation, memory model verification |
+
+### Using the skills
+
+**With Claude Code (CLI):** The skills activate automatically when you work on SS_Lib code in this repository. No setup needed — Claude Code reads `.claude/skills/` on its own.
+
+**With other Claude Code projects that use SS_Lib:** Copy the `.claude/skills/ss-lib/` and `.claude/skills/ss-lib-review/` directories into your project's `.claude/skills/` folder.
+
+**Invoking manually:** Type `/ss-lib` for API guidance or `/ss-lib-review` to review code for common mistakes.
+
 ## Contributing
 
 1. Fork the repository
