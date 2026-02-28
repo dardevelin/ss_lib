@@ -93,7 +93,8 @@ echo "" >> "$OUTPUT_FILE"
 echo "#endif /* SS_LIB_SINGLE_H */" >> "$OUTPUT_FILE"
 
 # Make the output prettier by removing multiple blank lines
-sed -i '' -e '/^$/N;/^\n$/d' "$OUTPUT_FILE"
+# Use temp file for portability (macOS and GNU sed have different -i syntax)
+sed -e '/^$/N;/^\n$/d' "$OUTPUT_FILE" > "${OUTPUT_FILE}.tmp" && mv "${OUTPUT_FILE}.tmp" "$OUTPUT_FILE"
 
 echo "Single header file created successfully!"
 echo ""
