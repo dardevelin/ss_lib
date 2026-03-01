@@ -160,7 +160,7 @@ install: $(LIB_NAME) $(LIB_SO)
 	@echo "" >> $(INSTALL_PC_DIR)/ss_lib.pc
 	@echo "Name: SS_Lib" >> $(INSTALL_PC_DIR)/ss_lib.pc
 	@echo "Description: Lightweight signal-slot library for C" >> $(INSTALL_PC_DIR)/ss_lib.pc
-	@echo "Version: 2.1.0" >> $(INSTALL_PC_DIR)/ss_lib.pc
+	@echo "Version: 2.1.1" >> $(INSTALL_PC_DIR)/ss_lib.pc
 	@echo "Libs: -L\$${libdir} -lss_lib -pthread" >> $(INSTALL_PC_DIR)/ss_lib.pc
 	@echo "Cflags: -I\$${includedir}" >> $(INSTALL_PC_DIR)/ss_lib.pc
 	@echo "Installation complete!"
