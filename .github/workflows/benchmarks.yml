@@ -20,6 +20,7 @@ jobs:
     name: Performance Benchmarks (${{ matrix.os }})
     if: github.event_name != 'pull_request'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       matrix:
         include:
@@ -54,6 +55,7 @@ jobs:
     name: Benchmark Comparison
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write
