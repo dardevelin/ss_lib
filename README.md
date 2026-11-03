@@ -53,6 +53,15 @@ find_package(ss_lib 2 REQUIRED)   # accepts any 2.x
 target_link_libraries(your_app ss_lib::ss_lib)
 ```
 
+### Using Homebrew (macOS, Linux)
+
+```bash
+brew tap dardevelin/ss-lib
+brew install ss-lib
+```
+
+The formula installs the shared library (thread safety and performance statistics enabled), `ss_lib.pc`, the CMake package and `ss_lib_single.h`. Compile with `pkg-config --cflags --libs ss_lib` so your program uses the same configuration.
+
 ### Single Header
 
 ```bash
