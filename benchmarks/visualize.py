@@ -16,9 +16,9 @@ try:
     HAS_MATPLOTLIB = True
 except ImportError:
     HAS_MATPLOTLIB = False
-    print("Warning: matplotlib not installed; plots are skipped. Install it in a "
-          "virtual environment: python3 -m venv .venv && "
-          ".venv/bin/pip install -r benchmarks/requirements.txt")
+    # Plots are optional: the project has no dependencies, and the JSON
+    # report below uses the standard library only
+    print("matplotlib not installed; writing the JSON report without plots")
 
 def parse_benchmark_output(filename):
     """Parse benchmark output file and extract results"""

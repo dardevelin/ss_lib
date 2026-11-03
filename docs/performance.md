@@ -156,7 +156,7 @@ make benchmark        # Quick run
 make benchmark-all    # Comprehensive suite (benchmarks/run_benchmarks.sh, output in build/benchmarks/)
 ```
 
-Compare two runs with `python3 benchmarks/compare.py BASE_RESULTS CURRENT_RESULTS` (standard library only); `benchmarks/visualize.py` plots results and needs the packages in `benchmarks/requirements.txt`.
+Compare two runs with `python3 benchmarks/compare.py BASE_RESULTS CURRENT_RESULTS`. `benchmarks/visualize.py` writes a JSON report. Both use only the Python standard library; `visualize.py` also draws plots if you happen to have matplotlib installed, but nothing requires it.
 
 Benchmark results from CI are available in the [GitHub Actions workflow](https://github.com/dardevelin/ss_lib/actions/workflows/benchmarks.yml).
 

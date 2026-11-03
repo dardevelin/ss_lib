@@ -178,17 +178,12 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
           allow-prereleases: true
-          cache: pip
-          cache-dependency-path: benchmarks/requirements.txt
-      - name: Install plotting dependencies
-        run: python -m pip install -r benchmarks/requirements.txt
+      # Standard library only: no packages are installed (zero dependencies)
       - name: Run scripts with warnings as errors
-        env:
-          MPLBACKEND: Agg
         run: |
           python -W error benchmarks/compare.py benchmarks/fixtures/sample_results.txt \
             benchmarks/fixtures/sample_results.txt
           cd "$RUNNER_TEMP"
           python -W error "$GITHUB_WORKSPACE/benchmarks/visualize.py" \
             "$GITHUB_WORKSPACE/benchmarks/fixtures/sample_results.txt"
-          test -f plots/emission_performance.png
+          test -f benchmark_results.json
