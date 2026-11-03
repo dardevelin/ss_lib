@@ -72,7 +72,7 @@ BENCH_BIN = $(BUILD_DIR)/benchmark_ss_lib
 .PHONY: all lib shared tests examples test test_embedded test-static test-minimal \
         test-c89 test-newest test-all test-asan test-tsan test-ubsan test-msan \
         test-valgrind coverage benchmark benchmark-all single-header \
-        check-standards check-single-header check-version release-notes install uninstall \
+        check-standards check-single-header check-version cppcheck release-notes install uninstall \
         docs info help clean
 
 all: lib tests examples
@@ -208,6 +208,17 @@ check-single-header: | $(BUILD_DIR)
 check-version:
 	@scripts/check_version.sh
 
+# Static analysis, as CI runs it. SS_ISR_CRITICAL_ENTER/EXIT are function-like
+# macros supplied by the user, so that branch is checked with them defined
+# that way (cppcheck would otherwise try them as plain values: "1();").
+CPPCHECK_FLAGS = --enable=warning,performance,portability --error-exitcode=1 \
+    --inline-suppr --suppress=missingIncludeSystem -q -Iinclude
+cppcheck:
+	cppcheck $(CPPCHECK_FLAGS) -USS_ISR_CRITICAL_ENTER -USS_ISR_CRITICAL_EXIT \
+	    src/ss_lib.c include/
+	cppcheck $(CPPCHECK_FLAGS) -DSS_ENABLE_ISR_SAFE=1 \
+	    "-DSS_ISR_CRITICAL_ENTER()=" "-DSS_ISR_CRITICAL_EXIT()=" src/ss_lib.c
+
 # The CHANGELOG section that becomes the GitHub release notes
 release-notes:
 	@scripts/release_notes.sh $(VERSION)
@@ -268,6 +279,7 @@ help:
 	@echo "  check-single-header fail if the committed single header is stale"
 	@echo "  check-version       fail if version numbers disagree"
 	@echo "  release-notes       print this version's CHANGELOG section"
+	@echo "  cppcheck            static analysis, as CI runs it"
 	@echo "  install/uninstall   PREFIX=$(PREFIX)"
 	@echo ""
 	@echo "Variables: CC CSTD FEATURES IMPL BUILD_DIR SANITIZER COVERAGE PREFIX"

@@ -70,8 +70,8 @@ jobs:
       - name: cppcheck
         run: |
           sudo apt-get update && sudo apt-get install -y cppcheck
-          cppcheck --enable=warning,performance,portability --error-exitcode=1 \
-            --inline-suppr --suppress=missingIncludeSystem -q -Iinclude src/ss_lib.c include/
+          cppcheck --version
+          make cppcheck
       - name: Newer gcc (C23 needs gcc 14, C2y gcc 15)
         run: sudo apt-get install -y gcc-14 || echo "gcc-14 not available"
       - name: C89 to newest standard (-Werror)

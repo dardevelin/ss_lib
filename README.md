@@ -16,7 +16,7 @@ void on_button_click(const ss_data_t* data, void* user_data) {
     printf("Button clicked!\n");
 }
 
-int main() {
+int main(void) {
     /* ss_init() also works; ss_init_abi() additionally detects a library
      * built with different configuration flags */
     if (ss_init_abi(SS_ABI_TAG) != SS_OK) return 1;
@@ -33,6 +33,10 @@ int main() {
 
 ## Installation
 
+### Release Downloads
+
+Each [GitHub release](https://github.com/dardevelin/ss_lib/releases) has the source as `.tar.gz` and `.zip` (builds with make or CMake as shipped), `ss_lib_single.h`, and `SHA256SUMS` to verify them (`sha256sum -c SHA256SUMS --ignore-missing`). The release notes are the version's [CHANGELOG](CHANGELOG.md) section.
+
 ### Using pkg-config
 
 ```bash
@@ -40,12 +44,12 @@ sudo make install
 pkg-config --cflags --libs ss_lib
 ```
 
-`make install` builds the library with the Makefile's `FEATURES`; see [Configuration](#configuration) for why your program must be compiled with the same flags.
+`make install` installs the static library and the shared library and builds them with the Makefile's `FEATURES`; pkg-config hands those flags to your program, which must be compiled with the same ones (see [Configuration](#configuration)). Versions follow [semantic versioning](https://semver.org/): on Linux the shared library's soname is `libss_lib.so.2`, and only a new major version changes it.
 
 ### Using CMake
 
 ```cmake
-find_package(ss_lib REQUIRED)
+find_package(ss_lib 2 REQUIRED)   # accepts any 2.x
 target_link_libraries(your_app ss_lib::ss_lib)
 ```
 
@@ -65,19 +69,6 @@ make single-header
 ```
 
 Configuration macros must be identical in every file that includes the header; pass them on the command line.
-
-### Using Homebrew (macOS)
-
-```bash
-brew tap dardevelin/ss-lib
-brew install ss-lib
-```
-
-### Using AUR (Arch Linux)
-
-```bash
-yay -S ss-lib
-```
 
 ## Features
 
@@ -347,7 +338,8 @@ ss_enable_profiling(1);
 /* After running... */
 ss_perf_stats_t stats;
 ss_get_perf_stats("render_frame", &stats);
-printf("Avg: %llu ns, Max: %llu ns\n", stats.avg_time_ns, stats.max_time_ns);
+printf("Avg: %llu ns, Max: %llu ns\n",
+       (unsigned long long)stats.avg_time_ns, (unsigned long long)stats.max_time_ns);
 ```
 
 ### Memory Diagnostics
@@ -440,9 +432,10 @@ make test-static    # ... with SS_USE_STATIC_MEMORY=1
 make test-minimal   # ... with SS_MINIMAL_BUILD
 make test-c89       # ... against src/ss_lib_c89.c built as C89
 make test-newest    # ... built as the newest C standard the compiler supports
-make check-standards # Compile as C89, C99, C11, C17, C23 and C2y with -Werror
+make check-standards  # Compile as C89, C99, C11, C17, C23 and C2y with -Werror
 make test-all       # All of the above plus check-single-header and check-version
 make test_embedded  # Embedded examples against an SS_EMBEDDED_BUILD library
+make cppcheck       # Static analysis, as CI runs it
 make test-asan      # AddressSanitizer
 make test-tsan      # ThreadSanitizer
 make test-ubsan     # UndefinedBehaviorSanitizer
@@ -545,7 +538,7 @@ This repository includes [Claude Code skills](https://docs.anthropic.com/en/docs
 3. Ensure tests pass (`make test-all` and the sanitizer targets)
 4. Submit pull request
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the rules on the C89 copy, the single header and the version number.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the rules on the C89 copy, the single header, versioning and releasing.
 
 ## License
 
