@@ -111,7 +111,7 @@ SS_Lib follows [semantic versioning](https://semver.org/). Pick the next version
 
 | Change | Bump |
 |---|---|
-| Removed or changed public function, macro, enum value or struct layout; changed meaning of an existing call | **major** (also the shared library's soname, `libss_lib.so.MAJOR`) |
+| Removed or changed public function, macro, enum value or struct layout; changed meaning of an existing call | **major** (also the shared library's name, `libss_lib.so.MAJOR` / `libss_lib.MAJOR.dylib`) |
 | New function, enum value appended at the end, new configuration macro, deprecation | **minor** |
 | Bug fix with no API change | **patch** |
 

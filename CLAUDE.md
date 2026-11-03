@@ -15,6 +15,7 @@ make all              # library, tests (build/test_*), examples
 make test             # test_ss_lib, test_simple, test_memory, test_threads
 make test-all         # test + test-static + test-minimal + test-c89 + test-newest
                       #   + check-standards + check-single-header + check-version
+                      #   + check-install (make install into build/, run, uninstall)
                       #   (run before finishing)
 make test-asan        # also test-ubsan, test-tsan, test-msan (clang), test-valgrind
 make test_embedded    # embedded examples against an SS_EMBEDDED_BUILD library
@@ -62,7 +63,7 @@ Everything lives in `src/ss_lib.c` behind one global context: heap-allocated by 
 
 - `src/ss_lib.c` is written in the common subset of C89 and C11 (no `//`, declarations at block top, no variadic macros; trace calls use `SS_TRACE((fmt, ...))`). `src/ss_lib_c89.c` is the C89 copy with an identical body: after editing `ss_lib.c` run `scripts/check_c89_sync.sh --fix`; CI runs the check.
 - `include/ss_lib_single.h` is generated: run `make single-header` after changing the header, config or source; `make check-single-header` fails when it is stale.
-- The version lives only in `include/ss_lib.h` (`SS_VERSION_*`, `@version`). Bump it there, add a `CHANGELOG.md` section, regenerate the single header; `make check-version` verifies. `scripts/version.sh` prints it for the Makefile, CMake (including the shared library's soname, `libss_lib.so.MAJOR`) and scripts. Releases are tags `vX.Y.Z` on `main`; the release notes are the CHANGELOG section (`scripts/release_notes.sh`). The steps and the semver bump rules are in CONTRIBUTING.md under "Releasing".
+- The version lives only in `include/ss_lib.h` (`SS_VERSION_*`, `@version`). Bump it there, add a `CHANGELOG.md` section, regenerate the single header; `make check-version` verifies. `scripts/version.sh` prints it for the Makefile, CMake (including the shared library's name, `libss_lib.so.MAJOR` / `libss_lib.MAJOR.dylib`; on macOS `make install` relinks the dylib with its absolute install path as install name) and scripts. Releases are tags `vX.Y.Z` on `main`; the release notes are the CHANGELOG section (`scripts/release_notes.sh`). The steps and the semver bump rules are in CONTRIBUTING.md under "Releasing".
 
 ### Project skills
 

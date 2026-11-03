@@ -44,7 +44,7 @@ sudo make install
 pkg-config --cflags --libs ss_lib
 ```
 
-`make install` installs the static library and the shared library and builds them with the Makefile's `FEATURES`; pkg-config hands those flags to your program, which must be compiled with the same ones (see [Configuration](#configuration)). Versions follow [semantic versioning](https://semver.org/): on Linux the shared library's soname is `libss_lib.so.2`, and only a new major version changes it.
+`make install` installs the static library and the shared library and builds them with the Makefile's `FEATURES`; pkg-config hands those flags to your program, which must be compiled with the same ones (see [Configuration](#configuration)). Versions follow [semantic versioning](https://semver.org/): programs link against `libss_lib.so.2` (Linux) or `libss_lib.2.dylib` (macOS), and only a new major version changes that name. Use an absolute `PREFIX`: on macOS the installed dylib records its installed path, so programs find it without `DYLD_*` variables.
 
 ### Using CMake
 
@@ -441,9 +441,10 @@ make test-minimal   # ... with SS_MINIMAL_BUILD
 make test-c89       # ... against src/ss_lib_c89.c built as C89
 make test-newest    # ... built as the newest C standard the compiler supports
 make check-standards  # Compile as C89, C99, C11, C17, C23 and C2y with -Werror
-make test-all       # All of the above plus check-single-header and check-version
+make test-all       # All of the above plus check-single-header, check-version, check-install
 make test_embedded  # Embedded examples against an SS_EMBEDDED_BUILD library
 make cppcheck       # Static analysis, as CI runs it
+make check-install  # make install into build/, run a program against it, uninstall
 make test-asan      # AddressSanitizer
 make test-tsan      # ThreadSanitizer
 make test-ubsan     # UndefinedBehaviorSanitizer
