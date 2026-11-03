@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- `benchmarks/requirements.txt` and the Dependabot updates for it: the project
+  keeps zero external dependencies, including in its tooling. The benchmark
+  scripts use only the Python standard library; `visualize.py` draws plots only
+  when matplotlib is already installed.
+
 ## [2.2.0] - 2026-11-03
 
 Security, robustness and maintenance release. Existing code keeps compiling;

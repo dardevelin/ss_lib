@@ -5,8 +5,3 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  # Benchmark plotting dependencies (benchmarks/requirements.txt)
-  - package-ecosystem: pip
-    directory: /benchmarks
-    schedule:
-      interval: weekly
