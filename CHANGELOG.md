@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `make install` on macOS: programs linked against the installed library failed
+  to start with "Library not loaded: @rpath/libss_lib.dylib" (since 2.1). The
+  installed dylib now carries its absolute install path as install name, and is
+  named by major version like on Linux and in the CMake build:
+  `libss_lib.dylib` -> `libss_lib.2.dylib` -> `libss_lib.2.2.0.dylib`.
+- `make test-all` includes `check-install`, which installs into `build/`, runs
+  a program against the installed shared library and checks `make uninstall`.
+
 ### Removed
 - `benchmarks/requirements.txt` and the Dependabot updates for it: the project
   keeps zero external dependencies, including in its tooling. The benchmark

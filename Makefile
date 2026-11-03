@@ -38,24 +38,30 @@ ifeq ($(COVERAGE),1)
 endif
 
 # Shared library versioning follows semver: the major version is the ABI.
-# Linux: libss_lib.so -> libss_lib.so.MAJOR (soname) -> libss_lib.so.VERSION
+#   Linux: libss_lib.so -> libss_lib.so.MAJOR (soname) -> libss_lib.so.VERSION
+#   macOS: libss_lib.dylib -> libss_lib.MAJOR.dylib -> libss_lib.VERSION.dylib
+# On macOS the installed dylib is relinked with its absolute installed path as
+# install name, so programs linked against it start without DYLD_* variables.
 UNAME_S := $(shell uname -s)
-SHARED_LINKS =
 ifeq ($(UNAME_S),Darwin)
     SHARED_EXT = dylib
-    SHARED_REAL = libss_lib.dylib
-    SHARED_FLAGS = -dynamiclib -install_name @rpath/libss_lib.dylib \
-        -current_version $(VERSION) -compatibility_version $(MAJOR).0.0
+    SHARED_REAL = libss_lib.$(VERSION).dylib
+    SHARED_SONAME = libss_lib.$(MAJOR).dylib
+    SHARED_FLAGS = -dynamiclib -current_version $(VERSION) -compatibility_version $(MAJOR).0.0
+    SHARED_BUILD_ID = -install_name @rpath/$(SHARED_SONAME)
+    INSTALL_SHARED = $(CC) $(SHARED_FLAGS) -install_name $(INSTALL_LIB_DIR)/$(SHARED_SONAME) \
+        -o $(INSTALL_LIB_DIR)/$(SHARED_REAL) $(LIB_OBJ) $(LDFLAGS)
 else ifeq ($(UNAME_S),Linux)
     SHARED_EXT = so
     SHARED_REAL = libss_lib.so.$(VERSION)
-    SHARED_LINKS = libss_lib.so.$(MAJOR) libss_lib.so
-    SHARED_FLAGS = -shared -Wl,-soname,libss_lib.so.$(MAJOR)
+    SHARED_SONAME = libss_lib.so.$(MAJOR)
+    SHARED_FLAGS = -shared -Wl,-soname,$(SHARED_SONAME)
 else
     SHARED_EXT = so
     SHARED_REAL = libss_lib.so
     SHARED_FLAGS = -shared
 endif
+INSTALL_SHARED ?= install -m 755 $(BUILD_DIR)/$(SHARED_REAL) $(INSTALL_LIB_DIR)
 
 LIB_OBJ = $(BUILD_DIR)/ss_lib.o
 LIB_NAME = $(BUILD_DIR)/libss_lib.a
@@ -72,8 +78,8 @@ BENCH_BIN = $(BUILD_DIR)/benchmark_ss_lib
 .PHONY: all lib shared tests examples test test_embedded test-static test-minimal \
         test-c89 test-newest test-all test-asan test-tsan test-ubsan test-msan \
         test-valgrind coverage benchmark benchmark-all single-header \
-        check-standards check-single-header check-version cppcheck release-notes install uninstall \
-        docs info help clean
+        check-standards check-single-header check-version cppcheck release-notes install \
+        check-install uninstall docs info help clean
 
 all: lib tests examples
 
@@ -92,12 +98,12 @@ $(LIB_NAME): $(LIB_OBJ)
 	ar rcs $@ $^
 
 $(BUILD_DIR)/$(SHARED_REAL): $(LIB_OBJ)
-	$(CC) $(SHARED_FLAGS) -o $@ $^ $(LDFLAGS)
+	$(CC) $(SHARED_FLAGS) $(SHARED_BUILD_ID) -o $@ $^ $(LDFLAGS)
 
-ifneq ($(SHARED_LINKS),)
+ifneq ($(SHARED_SONAME),)
 $(LIB_SO): $(BUILD_DIR)/$(SHARED_REAL)
-	ln -sf $(SHARED_REAL) $(BUILD_DIR)/libss_lib.so.$(MAJOR)
-	ln -sf libss_lib.so.$(MAJOR) $@
+	ln -sf $(SHARED_REAL) $(BUILD_DIR)/$(SHARED_SONAME)
+	ln -sf $(SHARED_SONAME) $@
 endif
 
 $(BUILD_DIR)/test_%: tests/test_%.c $(LIB_NAME)
@@ -154,7 +160,7 @@ check-standards:
 	@scripts/check_standards.sh $(CC)
 
 test-all: test test-static test-minimal test-c89 test-newest check-standards \
-          check-single-header check-version
+          check-single-header check-version check-install
 
 test-asan:
 	@$(MAKE) --no-print-directory test SANITIZER=address BUILD_DIR=build/asan
@@ -234,20 +240,31 @@ install: $(LIB_NAME) $(LIB_SO)
 	@mkdir -p $(INSTALL_INC_DIR) $(INSTALL_LIB_DIR) $(INSTALL_PC_DIR)
 	@install -m 644 include/ss_lib.h include/ss_config.h $(INSTALL_INC_DIR)
 	@install -m 644 $(LIB_NAME) $(INSTALL_LIB_DIR)
-	@install -m 755 $(BUILD_DIR)/$(SHARED_REAL) $(INSTALL_LIB_DIR)
-	@if [ -n "$(SHARED_LINKS)" ]; then \
-	    ln -sf $(SHARED_REAL) $(INSTALL_LIB_DIR)/libss_lib.so.$(MAJOR); \
-	    ln -sf libss_lib.so.$(MAJOR) $(INSTALL_LIB_DIR)/libss_lib.so; fi
+	@$(INSTALL_SHARED)
+	@if [ -n "$(SHARED_SONAME)" ]; then \
+	    ln -sf $(SHARED_REAL) $(INSTALL_LIB_DIR)/$(SHARED_SONAME); \
+	    ln -sf $(SHARED_SONAME) $(INSTALL_LIB_DIR)/libss_lib.$(SHARED_EXT); fi
 	@# Callers must use the library's FEATURES; pkg-config hands them on
 	@sed -e 's|@CMAKE_INSTALL_PREFIX@|$(PREFIX)|' -e 's|@PROJECT_VERSION@|$(VERSION)|' \
 	     -e 's|@CMAKE_THREAD_LIBS_INIT@|-pthread|' -e 's|@SS_FEATURE_CFLAGS@|$(strip $(FEATURES))|' \
 	     ss_lib.pc.in > $(INSTALL_PC_DIR)/ss_lib.pc
 	@echo "Installed SS_Lib $(VERSION) to $(PREFIX)"
 
+# Install into build/, run a program linked against the installed shared
+# library, then check that uninstall leaves no library file or header behind
+INSTALL_CHECK = $(abspath $(BUILD_DIR))/install-check
+check-install:
+	@$(MAKE) --no-print-directory install PREFIX=$(INSTALL_CHECK) > /dev/null
+	@scripts/check_install.sh $(INSTALL_CHECK) "$(CC)"
+	@$(MAKE) --no-print-directory uninstall PREFIX=$(INSTALL_CHECK)
+	@left=$$(find $(INSTALL_CHECK)/lib $(INSTALL_CHECK)/include -type f -o -type l); \
+	    [ -z "$$left" ] || { echo "uninstall left behind: $$left"; exit 1; }
+	@echo "make install and uninstall work"
+
 uninstall:
 	@rm -rf $(INSTALL_INC_DIR)
-	@rm -f $(INSTALL_LIB_DIR)/libss_lib.a $(INSTALL_LIB_DIR)/libss_lib.$(SHARED_EXT)
-	@rm -f $(INSTALL_LIB_DIR)/$(SHARED_REAL) $(INSTALL_LIB_DIR)/libss_lib.so.$(MAJOR)
+	@rm -f $(addprefix $(INSTALL_LIB_DIR)/,libss_lib.a libss_lib.$(SHARED_EXT) \
+	    $(SHARED_REAL) $(SHARED_SONAME))
 	@rm -f $(INSTALL_PC_DIR)/ss_lib.pc
 
 docs:
@@ -281,5 +298,6 @@ help:
 	@echo "  release-notes       print this version's CHANGELOG section"
 	@echo "  cppcheck            static analysis, as CI runs it"
 	@echo "  install/uninstall   PREFIX=$(PREFIX)"
+	@echo "  check-install       install into build/, run a program against it, uninstall"
 	@echo ""
 	@echo "Variables: CC CSTD FEATURES IMPL BUILD_DIR SANITIZER COVERAGE PREFIX"
