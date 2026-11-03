@@ -105,6 +105,9 @@ set(LIB_HEADERS
 # Build library
 if(SS_BUILD_SHARED)
     add_library(ss_lib SHARED ${LIB_SOURCES})
+    # semver: the major version is the ABI (libss_lib.so.MAJOR)
+    set_target_properties(ss_lib PROPERTIES
+        VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
 else()
     add_library(ss_lib STATIC ${LIB_SOURCES})
 endif()
@@ -188,7 +191,7 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/ss_lib.pc"
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/ss_libConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
-    COMPATIBILITY AnyNewerVersion
+    COMPATIBILITY SameMajorVersion
 )
 
 install(EXPORT ss_libTargets

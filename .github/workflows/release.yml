@@ -1,5 +1,8 @@
 name: Release
 
+# Pushing a tag vMAJOR.MINOR.PATCH publishes a release; vX.Y.Z-rc.N (any
+# tag with a '-') publishes a pre-release. CONTRIBUTING.md has the steps.
+
 on:
   push:
     tags:
@@ -8,50 +11,57 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref_name }}
+
 env:
   TAG: ${{ github.ref_name }}
 
 jobs:
-  create-release:
+  release:
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
 
-    - name: Check version and generated files
+    - name: Check tag, version and release notes
       run: |
         scripts/check_version.sh "$TAG"
-        make check-single-header
+        scripts/release_notes.sh "$TAG" > release-notes.md
+        case "$TAG" in
+          *-*) ;;  # pre-releases may come from a release branch
+          *) git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
+               { echo "$TAG does not point at a commit on main" >&2; exit 1; } ;;
+        esac
 
-    - name: Create Release
+    - name: Test every configuration
+      run: make -j4 all && make test-all
+
+    - name: Package
+      # The archives are the tagged tree (minus export-ignore paths in
+      # .gitattributes), so they build with make or CMake as shipped
+      run: |
+        mkdir dist
+        git archive --format=tar.gz --prefix="ss_lib-$TAG/" -o "dist/ss_lib-$TAG.tar.gz" "$TAG"
+        git archive --format=zip --prefix="ss_lib-$TAG/" -o "dist/ss_lib-$TAG.zip" "$TAG"
+        cp include/ss_lib_single.h dist/
+        (cd dist && sha256sum -- * > SHA256SUMS)
+        cat dist/SHA256SUMS
+
+    - name: Publish
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
         if gh release view "$TAG" > /dev/null 2>&1; then
-          echo "Release $TAG already exists, skipping creation"
+          echo "Release $TAG exists; replacing its assets"
+          gh release upload "$TAG" dist/* --clobber
         else
-          gh release create "$TAG" --generate-notes --verify-tag
+          prerelease=""
+          case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+          # shellcheck disable=SC2086
+          gh release create "$TAG" dist/* --verify-tag $prerelease \
+            --title "SS_Lib ${TAG#v}" --notes-file release-notes.md
         fi
-
-  # The archives hold sources only, so one runner builds both formats
-  build-artifacts:
-    needs: create-release
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-    - name: Package release
-      run: |
-        mkdir -p "ss_lib-$TAG"
-        cp -r include/ src/ examples/ docs/ "ss_lib-$TAG/"
-        cp include/ss_lib_single.h README.md LICENSE CHANGELOG.md "ss_lib-$TAG/"
-        tar -czf "ss_lib-$TAG.tar.gz" "ss_lib-$TAG"
-        zip -qr "ss_lib-$TAG.zip" "ss_lib-$TAG"
-
-    - name: Upload Release Assets
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: gh release upload "$TAG" "ss_lib-$TAG.tar.gz" "ss_lib-$TAG.zip" --clobber

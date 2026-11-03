@@ -67,15 +67,13 @@ public struct layouts are unchanged.
   before); a NULL or smaller pool still behaves like `ss_init()`.
 - The default namespace set by `ss_set_namespace()` now applies: names without
   `::` resolve as `ns::name` in every function that takes a signal name (it was
-  stored but had no effect). The prototype's parameter is renamed `ns`; callers are unaffected.
+  stored but had no effect). The prototype's parameter is renamed `ns`;
+  callers are unaffected.
 - Static memory mode uses no heap in register, connect, emit, deferred,
   namespace, disconnect, unregister and cleanup paths, as documented.
   Descriptions longer than `SS_MAX_DESCRIPTION_LENGTH` are rejected.
 - Debug trace is off until `ss_enable_trace()` names a stream (it always
   printed to stderr and `ss_enable_trace()` had no effect).
-
-### Deprecated
-- The `SS_TRACE` macro in `ss_config.h`; the library no longer uses it.
 - `ss_data_set_*` release the string or custom payload the object owned before
   (switching type leaked it) and keep the old value when allocation fails.
 - The error handler runs, outside the lock, for every failing call made while
@@ -87,12 +85,27 @@ public struct layouts are unchanged.
   benchmarks with the same `FEATURES`; CMake reads the version from the header,
   adds `SS_ENABLE_ISR_SAFE`, exports the feature definitions with the target and
   ships the missing `cmake/ss_libConfig.cmake.in`; `-DCMAKE_C_STANDARD` now
-  overrides its default of C11. `ss_lib.pc` is generated, no
-  longer committed, and its `Cflags` carry the library's feature definitions. Examples take their configuration from the command line.
+  overrides its default of C11. `ss_lib.pc` is generated, no longer committed,
+  and its `Cflags` carry the library's feature definitions. Examples take their
+  configuration from the command line.
 - Benchmarks: `benchmarks/compare.py` (moved out of the workflow),
   `benchmarks/requirements.txt`; the ISR benchmark measures the enqueue path.
 - CI: least-privilege permissions, SHA-pinned actions with Dependabot,
-  sanitizers, C89 to C2y compile check, MSVC, CMake, Cortex-M0/M4 and Python 3.11–3.15 jobs.
+  sanitizers, C89 to C2y compile check, MSVC, CMake, Cortex-M0/M4 and
+  Python 3.11–3.15 jobs.
+- Releases: the GitHub release notes are this file's section for the tag
+  (`scripts/release_notes.sh`); the release job checks the tag against the
+  header and `main`, runs `make test-all`, and publishes the tagged source tree
+  as `.tar.gz` and `.zip`, the single header and `SHA256SUMS`. Tags with a `-`
+  (`v2.3.0-rc.1`) publish pre-releases.
+- Shared library versioning: the major version is the ABI. On Linux the
+  library is `libss_lib.so.2.2.0` with soname `libss_lib.so.2` (Makefile and
+  CMake); on macOS the dylib records its current and compatibility versions.
+  The CMake package accepts `find_package(ss_lib 2.x)` only for the same major
+  version (it accepted any newer version).
+
+### Deprecated
+- The `SS_TRACE` macro in `ss_config.h`; the library no longer uses it.
 
 ### Documentation
 - Corrected the description of signal lookup (linear scan, not a hash table)

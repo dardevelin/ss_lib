@@ -6,6 +6,7 @@ ifeq ($(origin CC),default)
 endif
 
 VERSION := $(shell scripts/version.sh)
+MAJOR := $(firstword $(subst ., ,$(VERSION)))
 
 CSTD ?= -std=c11
 LIB_STD ?= $(CSTD)
@@ -36,12 +37,23 @@ ifeq ($(COVERAGE),1)
     OPT = -O0
 endif
 
+# Shared library versioning follows semver: the major version is the ABI.
+# Linux: libss_lib.so -> libss_lib.so.MAJOR (soname) -> libss_lib.so.VERSION
 UNAME_S := $(shell uname -s)
+SHARED_LINKS =
 ifeq ($(UNAME_S),Darwin)
     SHARED_EXT = dylib
-    SHARED_FLAGS = -dynamiclib -install_name @rpath/libss_lib.dylib
+    SHARED_REAL = libss_lib.dylib
+    SHARED_FLAGS = -dynamiclib -install_name @rpath/libss_lib.dylib \
+        -current_version $(VERSION) -compatibility_version $(MAJOR).0.0
+else ifeq ($(UNAME_S),Linux)
+    SHARED_EXT = so
+    SHARED_REAL = libss_lib.so.$(VERSION)
+    SHARED_LINKS = libss_lib.so.$(MAJOR) libss_lib.so
+    SHARED_FLAGS = -shared -Wl,-soname,libss_lib.so.$(MAJOR)
 else
     SHARED_EXT = so
+    SHARED_REAL = libss_lib.so
     SHARED_FLAGS = -shared
 endif
 
@@ -60,7 +72,8 @@ BENCH_BIN = $(BUILD_DIR)/benchmark_ss_lib
 .PHONY: all lib shared tests examples test test_embedded test-static test-minimal \
         test-c89 test-newest test-all test-asan test-tsan test-ubsan test-msan \
         test-valgrind coverage benchmark benchmark-all single-header \
-        check-standards check-single-header check-version install uninstall docs info help clean
+        check-standards check-single-header check-version release-notes install uninstall \
+        docs info help clean
 
 all: lib tests examples
 
@@ -78,8 +91,14 @@ $(LIB_OBJ): $(IMPL) include/ss_lib.h include/ss_config.h | $(BUILD_DIR)
 $(LIB_NAME): $(LIB_OBJ)
 	ar rcs $@ $^
 
-$(LIB_SO): $(LIB_OBJ)
+$(BUILD_DIR)/$(SHARED_REAL): $(LIB_OBJ)
 	$(CC) $(SHARED_FLAGS) -o $@ $^ $(LDFLAGS)
+
+ifneq ($(SHARED_LINKS),)
+$(LIB_SO): $(BUILD_DIR)/$(SHARED_REAL)
+	ln -sf $(SHARED_REAL) $(BUILD_DIR)/libss_lib.so.$(MAJOR)
+	ln -sf libss_lib.so.$(MAJOR) $@
+endif
 
 $(BUILD_DIR)/test_%: tests/test_%.c $(LIB_NAME)
 	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
@@ -189,6 +208,10 @@ check-single-header: | $(BUILD_DIR)
 check-version:
 	@scripts/check_version.sh
 
+# The CHANGELOG section that becomes the GitHub release notes
+release-notes:
+	@scripts/release_notes.sh $(VERSION)
+
 # ---------------------------------------------------------------- install
 
 PREFIX ?= /usr/local
@@ -200,7 +223,10 @@ install: $(LIB_NAME) $(LIB_SO)
 	@mkdir -p $(INSTALL_INC_DIR) $(INSTALL_LIB_DIR) $(INSTALL_PC_DIR)
 	@install -m 644 include/ss_lib.h include/ss_config.h $(INSTALL_INC_DIR)
 	@install -m 644 $(LIB_NAME) $(INSTALL_LIB_DIR)
-	@install -m 755 $(LIB_SO) $(INSTALL_LIB_DIR)
+	@install -m 755 $(BUILD_DIR)/$(SHARED_REAL) $(INSTALL_LIB_DIR)
+	@if [ -n "$(SHARED_LINKS)" ]; then \
+	    ln -sf $(SHARED_REAL) $(INSTALL_LIB_DIR)/libss_lib.so.$(MAJOR); \
+	    ln -sf libss_lib.so.$(MAJOR) $(INSTALL_LIB_DIR)/libss_lib.so; fi
 	@# Callers must use the library's FEATURES; pkg-config hands them on
 	@sed -e 's|@CMAKE_INSTALL_PREFIX@|$(PREFIX)|' -e 's|@PROJECT_VERSION@|$(VERSION)|' \
 	     -e 's|@CMAKE_THREAD_LIBS_INIT@|-pthread|' -e 's|@SS_FEATURE_CFLAGS@|$(strip $(FEATURES))|' \
@@ -210,6 +236,7 @@ install: $(LIB_NAME) $(LIB_SO)
 uninstall:
 	@rm -rf $(INSTALL_INC_DIR)
 	@rm -f $(INSTALL_LIB_DIR)/libss_lib.a $(INSTALL_LIB_DIR)/libss_lib.$(SHARED_EXT)
+	@rm -f $(INSTALL_LIB_DIR)/$(SHARED_REAL) $(INSTALL_LIB_DIR)/libss_lib.so.$(MAJOR)
 	@rm -f $(INSTALL_PC_DIR)/ss_lib.pc
 
 docs:
@@ -240,6 +267,7 @@ help:
 	@echo "  single-header       regenerate include/ss_lib_single.h"
 	@echo "  check-single-header fail if the committed single header is stale"
 	@echo "  check-version       fail if version numbers disagree"
+	@echo "  release-notes       print this version's CHANGELOG section"
 	@echo "  install/uninstall   PREFIX=$(PREFIX)"
 	@echo ""
 	@echo "Variables: CC CSTD FEATURES IMPL BUILD_DIR SANITIZER COVERAGE PREFIX"
