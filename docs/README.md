@@ -1,6 +1,6 @@
 # SS_Lib Documentation
 
-Welcome to the SS_Lib documentation. This directory contains detailed information about using and extending the signal-slot library.
+Welcome to the SS_Lib documentation. This directory contains detailed information about using and extending the signal-slot library. It describes version 2.2.0; see the [Changelog](../CHANGELOG.md) for changes from earlier versions.
 
 ## Documentation Structure
 
@@ -21,11 +21,10 @@ Welcome to the SS_Lib documentation. This directory contains detailed informatio
 
 ## Building Documentation
 
-To build HTML documentation (requires Doxygen):
+To build HTML documentation (requires Doxygen), from the repository root:
 
 ```bash
-cd docs
-doxygen Doxyfile
+make docs
 ```
 
-The generated documentation will be in `docs/html/`.
+The generated documentation will be in `docs/api/html/`.

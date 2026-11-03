@@ -1,0 +1,95 @@
+#!/bin/sh
+# Compile the library, a caller of the public header and the single header
+# with -Werror as every C standard from C89 to the newest the compiler knows.
+#
+#   scripts/check_standards.sh [CC...]        default: $CC or cc
+#   scripts/check_standards.sh --newest CC    print the newest -std CC accepts
+#
+# Standards a compiler does not know are reported and skipped, so the same
+# script runs on old toolchains and picks up new standards on new ones.
+set -eu
+
+cd "$(dirname "$0")/.."
+
+# Newest first; c2x is the pre-C23 spelling of c23
+NEWEST_FIRST="c2y c23 c2x c17 c11 c99 c89"
+
+supports() {
+    echo 'int x;' | "$1" -std="$2" -Werror -x c -c - -o /dev/null 2>/dev/null
+}
+
+newest() {
+    for std in $NEWEST_FIRST; do
+        if supports "$1" "$std"; then echo "$std"; return 0; fi
+    done
+    echo "$1 supports none of: $NEWEST_FIRST" >&2
+    return 1
+}
+
+if [ "${1:-}" = "--newest" ]; then
+    newest "${2:-${CC:-cc}}"
+    exit
+fi
+
+[ $# -gt 0 ] || set -- "${CC:-cc}"
+
+WARN="-Wall -Wextra -pedantic -Werror -Wstrict-prototypes"
+CONFIGS="
+-DSS_ENABLE_ISR_SAFE=1 -DSS_ENABLE_MEMORY_STATS=1 -DSS_ENABLE_PERFORMANCE_STATS=1 -DSS_ENABLE_DEBUG_TRACE=1
+-DSS_USE_STATIC_MEMORY=1 -DSS_ENABLE_ISR_SAFE=1
+-DSS_MINIMAL_BUILD
+-DSS_EMBEDDED_BUILD -DSS_ENABLE_ISR_SAFE=1"
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# A caller that only sees the public header
+cat > "$tmp/caller.c" <<'EOF'
+#include "ss_lib.h"
+static void on_value(const ss_data_t* data, void* user_data) {
+    (void)data;
+    (void)user_data;
+}
+int main(void) {
+    if (ss_init_abi(SS_ABI_TAG) != SS_OK) return 1;
+    if (ss_signal_register("value") != SS_OK) return 1;
+    if (ss_connect("value", on_value, 0) != SS_OK) return 1;
+    if (ss_emit_int("value", 1) != SS_OK) return 1;
+    ss_cleanup();
+    return 0;
+}
+EOF
+printf '#define SS_IMPLEMENTATION\n#include "ss_lib_single.h"\n' > "$tmp/single.c"
+
+failed=0
+for cc in "$@"; do
+    stds="c89 c99 c11 c17"
+    if supports "$cc" c23; then stds="$stds c23"
+    elif supports "$cc" c2x; then stds="$stds c2x"
+    else echo "$cc: no C23 support, skipped"
+    fi
+    if supports "$cc" c2y; then stds="$stds c2y"
+    else echo "$cc: no C2y support, skipped"
+    fi
+
+    for std in $stds; do
+        n=0
+        # Default configuration first (the empty line of CONFIGS)
+        for cfg in "" $(echo "$CONFIGS" | sed 's/ /@/g'); do
+            cfg=$(echo "$cfg" | sed 's/@/ /g')
+            # $cfg holds several flags and must be word-split
+            # shellcheck disable=SC2086
+            for src in src/ss_lib.c "$tmp/caller.c" "$tmp/single.c"; do
+                if ! $cc -std="$std" $WARN -Iinclude $cfg -c "$src" -o "$tmp/out.o"; then
+                    echo "FAIL: $cc -std=$std $cfg $src" >&2
+                    failed=1
+                fi
+                n=$((n + 1))
+            done
+        done
+        echo "$cc -std=$std: $n compiles"
+    done
+done
+
+[ "$failed" -eq 0 ] || exit 1
+echo "C standards check passed"

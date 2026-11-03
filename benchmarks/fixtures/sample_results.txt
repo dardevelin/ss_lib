@@ -1,0 +1,28 @@
+SS_Lib Benchmark Suite
+======================
+
+Configuration:
+  Memory: Dynamic
+  Thread Safety: Enabled
+  ISR Safe: Enabled
+
+Running benchmarks...
+
+Results:
+--------
+Signal registration                     : avg=  1365 ns, min=     0 ns, max= 11000 ns
+Slot connection                         : avg=    22 ns, min=     0 ns, max=  2000 ns
+Signal existence check                  : avg=   123 ns, min=     0 ns, max= 52000 ns
+Disconnect using handle                 : avg=    24 ns, min=     0 ns, max=  1000 ns
+Emit void signal (no slots)             : avg=    19 ns, min=     0 ns, max=  8000 ns
+Emit void signal (1 slots)              : avg=    20 ns, min=     0 ns, max=  7000 ns
+Emit void signal (5 slots)              : avg=    19 ns, min=     0 ns, max=  6000 ns
+Emit void signal (10 slots)             : avg=    30 ns, min=     0 ns, max=  7000 ns
+Emit int signal (5 slots)               : avg=    21 ns, min=     0 ns, max= 13000 ns
+Emit with priority slots (10 slots)     : avg=    26 ns, min=     0 ns, max=  7000 ns
+ISR enqueue (ss_emit_from_isr)          : avg=    19 ns, min=     0 ns, max= 23000 ns
+
+Memory Statistics:
+  Signals: 1107 used, 1107 allocated
+  Slots: 0 used, 0 allocated
+  Total memory: 145338 bytes

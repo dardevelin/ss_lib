@@ -2,6 +2,7 @@
 #include <stdio.h>
 
 void on_test(const ss_data_t* data, void* user_data) {
+    (void)user_data;
     printf("Signal received! Value: %d\n", ss_data_get_int(data, 0));
 }
 

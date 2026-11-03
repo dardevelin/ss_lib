@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the internal design and data structures of SS_Lib.
+This document describes the internal design and data structures of SS_Lib 2.2.0. The source of truth is `src/ss_lib.c`; its header comment summarizes the same structure.
 
 ## Overview
 
@@ -10,213 +10,226 @@ SS_Lib is a signal-slot event system with two memory models (dynamic and static)
 +------------------+
 |  Public API      |  ss_emit, ss_connect, ss_signal_register, ...
 +------------------+
-|  Feature Layer   |  Namespaces, Deferred, Batch, Stats, Trace
+|  Entry / Exit    |  ctx_enter / ctx_leave: lock, nesting depth, deferred cleanup, errors
 +------------------+
-|  Core Engine     |  Signal lookup, slot iteration, sweep
+|  Feature Layer   |  Namespaces, Deferred, Batch, ISR queue, Stats, Trace
 +------------------+
-|  Memory Layer    |  Dynamic (malloc/free) or Static (pool arrays)
+|  Core Engine     |  Name resolution, signal lookup, slot iteration, sweep
++------------------+
+|  Storage         |  Dynamic (heap lists) or Static (fixed arrays), one interface
 +------------------+
 ```
 
+## Library Context
+
+All state lives in one `ss_context_t`, reached through the global pointer `g_context`. The context holds the signal storage, the default namespace (`char ns[SS_MAX_SIGNAL_NAME_LENGTH]`, an inline buffer), the error handler, the handle counter, the mutex, the deferred queue entries, and the nesting counters `call_depth` and `closing`.
+
+Where the context lives depends on how the library was initialized:
+
+| Initialization | Context location | Freed by `ss_cleanup()` |
+|----------------|------------------|-------------------------|
+| `ss_init()`, dynamic mode | Heap (`SS_CALLOC`) | Yes (`heap_owned`) |
+| `ss_init()`, `SS_USE_STATIC_MEMORY`, `SS_STATIC_CONTEXT=1` (default) | Static storage (`g_static_context`, in `.bss`) | No |
+| `ss_init()`, `SS_USE_STATIC_MEMORY`, `SS_STATIC_CONTEXT=0` | Heap (`SS_CALLOC`), as in 2.1 | Yes |
+| `ss_init_static(pool, size)`, either mode, pool large enough | Caller's pool, aligned inside it | No, the pool is never freed |
+
+`ss_get_required_pool_size()` returns `sizeof(ss_context_t)` plus alignment slack, so the pool needs no particular alignment. `ss_init_static` only places the context; signals and slots still follow the compiled memory model. For 2.1 compatibility, a NULL pool or one smaller than that size is ignored and the call behaves exactly like `ss_init()`; it never returns `SS_ERR_NULL_PARAM` or `SS_ERR_BUFFER_TOO_SMALL`. `SS_STATIC_CONTEXT=0` drops the built-in `.bss` context, which saves a whole context of RAM when the application always supplies its own pool.
+
+`ss_init()` and `ss_init_static()` are plain functions. The configuration check is opt-in: `ss_init_abi(SS_ABI_TAG)` / `ss_init_static_abi(pool, size, SS_ABI_TAG)` compare `SS_ABI_TAG` (`sizeof(ss_data_t)` as the caller's compilation sees it) with the library's value and return `SS_ERR_CONFIG_MISMATCH` on a difference, before initializing. New code should initialize through them; `ss_init()` and `ss_init_static()` simply pass the library's own tag.
+
+## Entry and Exit (`ctx_enter` / `ctx_leave`)
+
+Every public function that touches shared state is wrapped in `ctx_enter()` / `ctx_leave()`. Locking, nesting, deferred cleanup and error reporting live only there.
+
+`ctx_enter()`:
+1. Returns NULL if there is no context (the caller returns `SS_ERR_NULL_PARAM`, 0 or NULL)
+2. Locks the mutex if `thread_safe` is set, and records whether it did
+3. Returns NULL if `closing` is set (a deferred `ss_cleanup()` is pending)
+4. Increments `call_depth`
+
+`ctx_leave()`:
+1. Decrements `call_depth`; if it reached 0 and `closing` is set, the context must be destroyed
+2. Unlocks the mutex if this call locked it
+3. After unlocking: destroys the context (deferred cleanup) or, if the call failed, invokes the error handler with the signal name or `ss_error_string(err)`
+
+The handler fires for every failing call while the library is initialized, including parameter errors (NULL arguments, handle 0, a NULL or destroyed batch, too-long names). Calling it after unlocking means a handler may itself call the library.
+
+## Name Resolution
+
+Every name-taking function resolves the name before using it:
+
+- A NULL or empty name is `SS_ERR_NULL_PARAM`.
+- If a default namespace is set and the name contains no `"::"`, it is rewritten to `"ns::name"` in a stack buffer of `SS_MAX_SIGNAL_NAME_LENGTH` bytes.
+- Names (after qualification) that do not fit `SS_MAX_SIGNAL_NAME_LENGTH` are rejected with `SS_ERR_WOULD_OVERFLOW` by register/deferred/batch, and reported as `SS_ERR_NOT_FOUND` by lookups (such a signal cannot exist).
+
+When no namespace is set, the emit path skips the qualification step entirely.
+
 ## Signal Registry
+
+There is no hash table. Lookup (`signal_find`) is a linear scan comparing names with `strcmp`, skipping retired signals.
 
 ### Dynamic Mode
 
-Signals are stored in a singly-linked list. Each `ss_signal_t` node is heap-allocated and contains a dynamically allocated name string.
+Signals are a singly-linked list of heap nodes, each with a heap copy of its name (and description when `SS_ENABLE_INTROSPECTION` is on). New signals are prepended.
 
 ```
 g_context->signals -> [sig3] -> [sig2] -> [sig1] -> NULL
 ```
 
-Signal lookup (`find_signal`) traverses the list with `strcmp`. This is O(n) but suitable for typical signal counts (< 100).
-
-New signals are prepended to the list head for O(1) insertion.
-
 ### Static Mode
 
-Signals are stored in a fixed-size array (`ss_signal_t signals[SS_MAX_SIGNALS]`). A parallel `signal_used[]` bitmap tracks which entries are occupied. Signal names use pre-allocated buffers (`signal_names[][]`).
+Signals are a fixed array `signals[SS_MAX_SIGNALS]` inside the context. Names and descriptions are inline buffers (`name[SS_MAX_SIGNAL_NAME_LENGTH]`, `description[SS_MAX_DESCRIPTION_LENGTH]`). A free entry has `name[0] == '\0'`; registration takes the first free entry and returns `SS_ERR_WOULD_OVERFLOW` when none is left or the description is too long.
 
 ```
-signals[0]: used=1, name="button_click"
-signals[1]: used=0
-signals[2]: used=1, name="data_ready"
+signals[0]: name="button_click"
+signals[1]: name=""            (free)
+signals[2]: name="data_ready"
 ...
 ```
 
-Lookup scans the array linearly, checking the `signal_used` flag and comparing names.
+### Storage Interface
+
+Both modes implement the same small interface, so the core engine has no memory-mode branches: `signal_create`, `signal_next` (iteration), `signal_release_storage`, `slot_alloc`, `slot_release`. `signal_destroy` releases a signal's slots and then its storage.
 
 ## Slot Lists
 
-Each signal maintains a singly-linked list of slots, sorted by priority at connection time (higher priority first).
+Each signal has a singly-linked list of slots sorted by priority at connection time: higher priority first, equal priorities in connection order.
 
 ```
-sig->slots -> [CRITICAL] -> [HIGH] -> [NORMAL] -> [LOW] -> NULL
+sig->slots -> [CRITICAL] -> [HIGH] -> [NORMAL] -> [NORMAL] -> [LOW] -> NULL
 ```
 
-### Priority-Sorted Insertion
+`ss_connect_ex` prepends when the list is empty or the new priority is higher than the head; otherwise it walks while `next->priority >= priority` and inserts there. Emission therefore never sorts.
 
-`ss_connect_ex` inserts the new slot at the correct position:
+In dynamic mode each slot is a heap node; in static mode it comes from `slots[SS_MAX_SLOTS]` in the context, where a free entry has `func == NULL`.
 
-1. If the list is empty or the new slot has higher priority than the head, prepend
-2. Otherwise, walk the list to find the insertion point where `next->priority < new_priority`
-3. Insert after the found node
-
-This ensures emission always invokes slots in descending priority order without sorting at emit time.
+`sig->slot_count` counts live slots only (removed ones are excluded), so the per-signal limit (`max_slots_per_signal`) applies to live slots.
 
 ### Connection Handles
 
-Each slot is assigned a monotonically increasing handle from `g_context->next_handle`. Handles are `uintptr_t` values starting at 1 (0 is reserved for "no handle"). The handle allows disconnection without knowing the function pointer or signal name.
+Each slot gets a handle from `g_context->next_handle`, starting at 1 and skipping 0 on wrap-around (0 means "no handle"). `ss_disconnect_handle` scans the slots of all live signals for it.
 
-## Safe Emission (Deferred Removal)
+## Removal and Safe Emission
 
-The core challenge in signal-slot systems is handling disconnection during emission. If a slot callback disconnects another slot (or itself), the iteration must not crash.
+Slots and signals are never freed while their signal is emitting. They are marked and released when the outermost emission of that signal ends.
 
-### Approach
+- **Disconnect**: `slot->removed = 1`, `sig->slot_count--`, `sig->dirty = 1`. If the signal is not emitting, `sweep_removed_slots()` unlinks and frees the marked slots at once.
+- **Unregister**: all slots are marked removed and the signal leaves `signal_count`. If it is emitting, `sig->retired = 1`; retired signals are invisible to lookup (so the name can be registered again immediately) and are destroyed at the end of their outermost emission.
+- **Cleanup**: see below; it marks every slot of every signal removed.
 
-1. Before iterating, set `sig->emitting++` (supports nested/reentrant emission)
-2. Capture `next = slot->next` **before** invoking the callback
-3. Skip slots where `slot->removed == 1`
-4. After the loop, decrement `sig->emitting`
-5. When `emitting` reaches 0, call `sweep_removed_slots()` to physically unlink and free removed slots
+The emit loop (`emit_locked`):
 
 ```c
 sig->emitting++;
-slot = sig->slots;
-while (slot) {
-    next_slot = slot->next;
-    if (!slot->removed) {
-        slot->func(data, slot->user_data);
-    }
-    slot = next_slot;
+for (slot = sig->slots; slot; ) {
+    ss_slot_t* next = slot->next;      /* nodes are only marked while emitting */
+    if (!slot->removed) slot->func(data, slot->user_data);
+    slot = next;
 }
 sig->emitting--;
 if (sig->emitting == 0) {
-    sweep_removed_slots(sig);
+    if (sig->retired) signal_destroy(ctx, sig);
+    else if (sig->dirty) sweep_removed_slots(ctx, sig);
 }
 ```
 
-### Why This Works
+Consequences:
+- A slot disconnected by an earlier slot is skipped; nothing is freed under the iterator.
+- Unregistering the signal or calling `ss_cleanup()` from a slot marks every slot removed, so the rest of that emission is skipped.
+- A slot connected during an emission of the same signal is inserted into the live list. Whether that emission reaches it depends on where its priority places it relative to the iterator, so callers must not rely on either outcome.
 
-- Capturing `next` before the callback prevents use-after-free if the current slot is removed
-- The `removed` flag prevents invoking a slot that was disconnected by an earlier callback
-- Sweep is deferred until all nested emissions complete
+## Deferred Cleanup
 
-## Static Memory Pool
+`ss_cleanup()` sets `closing = 1` and marks all slots removed. If no call is in progress, `ctx_leave()` destroys the context immediately. Called from inside a slot, `call_depth` is still above zero, so destruction waits until the outermost library call returns. Meanwhile `ctx_enter()` refuses every call (the library behaves as uninitialized), queue flushes and ISR drains stop early, and `ss_init()` returns `SS_ERR_ALREADY_EXISTS`.
 
-In static mode, slots are allocated from a fixed array:
+`context_destroy()` clears `g_context`, releases pending deferred entries, destroys all signals, discards ready ISR events, destroys the mutex and frees the context only if it is heap-owned.
 
-```
-ss_slot_t slots[SS_MAX_SLOTS];
-uint8_t slot_used[SS_MAX_SLOTS];
-```
+## Entry Queue (Deferred Emission and Batches)
 
-`allocate_slot()` scans for the first unused entry. `free_slot()` calculates the index from pointer arithmetic and clears the entry.
-
-This design:
-- Guarantees zero heap fragmentation
-- Has predictable memory usage
-- Allows compile-time memory budgeting
-
-## Deferred Emission Queue
-
-A fixed-size array of `ss_deferred_entry_t` structures:
+The deferred queue and batches share one implementation: `ss_queue_t`, a ring buffer (`entries`, `capacity`, `head`, `count`) of `ss_entry_t`.
 
 ```c
 typedef struct {
     char signal_name[SS_MAX_SIGNAL_NAME_LENGTH];
-    ss_data_t data;
-    int has_string;
-} ss_deferred_entry_t;
+    ss_data_t data;              /* type and scalar value; pointers cleared */
+    int has_payload;
+    /* static: inline bytes[SS_DEFERRED_PAYLOAD_SIZE]; dynamic: heap copy */
+} ss_entry_t;
 ```
 
-`ss_emit_deferred` copies the signal name and data into the next queue slot. String data is duplicated via `SS_STRDUP` to prevent dangling pointers.
+- `queue_push` copies the resolved name and the data. String and custom payloads are copied (static mode: into the inline buffer, `SS_ERR_WOULD_OVERFLOW` if larger than `SS_DEFERRED_PAYLOAD_SIZE`; dynamic mode: `SS_MALLOC`). `custom_cleanup` is cleared in the entry: it belongs to the caller's object and is never called for the copy.
+- Every entry gets a push sequence number from the queue's `pushed` counter. `queue_flush` records `pushed` when it starts and stops at the first entry pushed after that (wrap-safe comparison), so it emits only the entries queued before it started, oldest first, even when a slot runs a nested flush of the same queue. Each entry is **popped before it is emitted**, so slots may push to, or flush, the same queue; entries pushed meanwhile wait for the next flush. The slot sees an `ss_data_t` rebuilt by `entry_view` that points into the entry's payload copy, released right after the emission.
+- Flushing stops early if the context is closing (or, for batches, if the batch was destroyed by a slot).
 
-`ss_flush_deferred` snapshots the count, resets it to 0, then emits all entries. The snapshot prevents infinite loops if slot callbacks enqueue more deferred emissions.
+The deferred queue is `deferred_entries[SS_DEFERRED_QUEUE_SIZE]` inside the context. A batch (`struct ss_batch`) is a heap object with `entries[SS_BATCH_MAX_ENTRIES]`, its queue, and `emitting` / `destroy_pending` counters: `ss_batch_destroy` from a slot only sets `destroy_pending`, and `ss_batch_emit` frees the batch when it returns. Batches are not locked against concurrent use of the same batch.
 
-## ISR Queue (Ring Buffer)
+## ISR Queue
 
-When `SS_ENABLE_ISR_SAFE` is enabled, a separate volatile ring buffer holds ISR-queued emissions:
+With `SS_ENABLE_ISR_SAFE`, `ss_emit_from_isr` writes into a fixed global array `g_isr_queue[SS_ISR_QUEUE_SIZE]`, independent of the context (so it works before `ss_init`). Each entry has an atomic `state`, an atomic sequence number `seq`, the int value and the name.
 
-```c
-static volatile struct {
-    char signal_name[SS_MAX_SIGNAL_NAME_LENGTH];
-    int value;
-    volatile int pending;
-} g_isr_queue[SS_ISR_QUEUE_SIZE];
-```
+Entry states: `FREE -> WRITING -> READY -> READING -> FREE`.
 
 `ss_emit_from_isr`:
-1. Scans for a non-pending entry
-2. Copies the signal name via `ss_strscpy`
-3. Sets the value
-4. Issues a compiler write barrier (`__asm__ volatile("" ::: "memory")`)
-5. Sets `pending = 1`
+1. Rejects NULL/empty names and names of `SS_MAX_SIGNAL_NAME_LENGTH` or more
+2. Claims the first entry with compare-and-swap `FREE -> WRITING`; none free is `SS_ERR_WOULD_OVERFLOW`
+3. Copies name and value, stores the next global sequence number
+4. Publishes with a release store `-> READY`
 
-No mutex, no malloc, no function calls that might not be reentrant.
+No locks, no allocation, no slot calls. Because claiming is a CAS, nested interrupts and several threads may enqueue concurrently.
 
-## Batch Operations
+`ss_process_isr_queue` (normal context, through `ctx_enter`):
+1. Snapshots the READY entries and sorts them by sequence number (wrap-around safe)
+2. For each, claims it `READY -> READING`, copies name and value, frees it (`-> FREE`), resolves the name against the default namespace and emits it
 
-`ss_batch_t` is a heap-allocated structure containing a fixed array of `ss_deferred_entry_t`:
+Events queued after the snapshot wait for the next call. `ss_cleanup` discards READY entries.
 
-```c
-struct ss_batch {
-    ss_deferred_entry_t entries[SS_BATCH_MAX_ENTRIES];
-    size_t count;
-};
-```
-
-`ss_batch_emit` iterates the entries, emits each signal, frees any duplicated strings, and resets the count. The batch can be reused after emission.
+Atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins, or MSVC `Interlocked*`. If `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` are defined, they take precedence and wrap plain accesses, for cores without compare-and-swap (Cortex-M0, AVR).
 
 ## Namespace Implementation
 
-Namespace support is purely syntactic. `ss_emit_namespaced("ui", "button", data)` constructs the string `"ui::button"` in a stack buffer and calls `ss_emit`. No separate namespace registry exists.
-
-The default namespace (`ss_set_namespace`) is stored in `g_context->ns` as a heap-allocated string.
+Namespaces are syntactic: there is no namespace registry. `ss_set_namespace` copies the namespace into the context's inline `ns` buffer (`NULL` or `""` clears it; a namespace too long for even `"ns::x"` is `SS_ERR_WOULD_OVERFLOW`). Passing the pointer returned by `ss_get_namespace()` (the buffer itself) is detected and is a no-op. Name resolution (above) applies it to every name-taking function. `ss_emit_namespaced(ns, name, data)` builds `"ns::name"` itself and ignores the default namespace.
 
 ## Thread Safety
 
-When `SS_ENABLE_THREAD_SAFETY=1` and `ss_set_thread_safe(1)` is called:
+With `SS_ENABLE_THREAD_SAFETY=1`, `ss_init` creates one **recursive** mutex in the context (pthread mutex with `PTHREAD_MUTEX_RECURSIVE`, or a Windows `CRITICAL_SECTION`). Locking is off until `ss_set_thread_safe(1)`, which only flips a flag; `ctx_enter` records per call whether it locked, so the setting can change without unbalancing an in-flight call (it still must only change while no other thread uses the library).
 
-- A single global mutex protects all signal/slot operations
-- The mutex is acquired at the start of each public function and released before return
-- ISR emission bypasses the mutex entirely (lock-free path)
+- Every public function that reads or writes shared state locks, including the deferred queue, namespace, error handler, profiling flag and max-slots setting.
+- Slots run with the mutex held. Recursion lets a slot call back into the library on the same thread; a slot that waits for another thread that is itself calling the library deadlocks.
+- `ss_init` / `ss_cleanup` are not thread-safe with respect to other threads.
+- The ISR enqueue path never locks.
 
-The single-mutex design was chosen over fine-grained locking for:
-- Simplicity (fewer deadlock scenarios)
-- Small code size (important for embedded)
-- Predictable behavior (no lock ordering issues)
+The single-mutex design was chosen over fine-grained locking for simplicity, small code size and the absence of lock-ordering issues. The trade-off is that concurrent emission of different signals contends on the same lock, which suits the target use cases (embedded, game loops) where emission is mostly single-threaded.
 
-The trade-off is that concurrent emission of different signals still contends on the same lock. This is acceptable for the target use cases (embedded, game engines) where emission is typically single-threaded or occurs on a dedicated event loop.
+## Memory Modes and Allocation
+
+| Object | Dynamic mode | Static mode |
+|--------|--------------|-------------|
+| Context | Heap (or caller pool) | `.bss`, or heap with `SS_STATIC_CONTEXT=0` (or caller pool) |
+| Signals, names, descriptions | Heap | Context arrays |
+| Slots | Heap | Context array |
+| Namespace | Context buffer | Context buffer |
+| Deferred entries and payloads | Context array, heap payload copies | Context array, inline payloads |
+| `ss_data_create` / `ss_data_set_string` / `ss_data_set_custom` | Heap | Heap |
+| `ss_get_signal_list` result, `ss_batch_create` | Heap | Heap |
+
+In static mode (with the default `SS_STATIC_CONTEXT=1` or a caller pool), register, connect, emit, deferred, namespace, disconnect, unregister and cleanup never touch the heap. Only functions whose purpose is to hand the caller an allocated object allocate.
 
 ## Custom Allocators
 
-All allocation goes through four macros defined in `ss_config.h`:
-
-```c
-SS_MALLOC(size)
-SS_FREE(ptr)
-SS_CALLOC(count, size)
-SS_STRDUP(str)
-```
-
-Both `ss_lib.c` and `ss_lib_c89.c` use these exclusively. Users can redirect allocation to pool allocators, RTOS heaps, or debug allocators by redefining these macros.
+All allocation goes through `SS_MALLOC`, `SS_FREE` and `SS_CALLOC` from `ss_config.h`. Strings are copied with an internal `ss_strdup` that uses `SS_MALLOC`, so overriding `SS_MALLOC`/`SS_FREE` routes every allocation; `SS_STRDUP` can be defined to override string duplication specifically. With `SS_ENABLE_MEMORY_STATS` in dynamic mode, the library accounts the heap bytes it holds (context, signals, slots, strings).
 
 ## Error Reporting
 
-Internal errors call `report_error(error_code, message)` which invokes the user-set error handler (if any). This allows centralized error logging without polluting the API return path.
+Public functions return `ss_error_t`. Failures of calls made while the library is initialized are also reported to the user error handler from `ctx_leave()`, after the mutex is released. Debug trace (`SS_ENABLE_DEBUG_TRACE`) writes to the stream set by `ss_enable_trace()` and is silent until then; the library uses an internal trace function. The public `SS_TRACE` macro in `ss_config.h` is kept only for source compatibility, deprecated and unused by the library.
 
 ## Build Variants
 
-| Source File | Standard | Use Case |
-|------------|----------|----------|
-| `src/ss_lib.c` | C11 | Primary implementation |
-| `src/ss_lib_c89.c` | C89 | Legacy toolchains |
+| Source File | Role |
+|------------|------|
+| `src/ss_lib.c` | Primary implementation, written in the common subset of C89 and C11 |
+| `src/ss_lib_c89.c` | C89 copy for legacy toolchains: identical body, own header comment |
+| `include/ss_lib_single.h` | Generated single-header build |
 
-Both files provide identical functionality and pass the same test suite. The C89 version avoids:
-- `//` comments
-- Mixed declarations and code
-- `= {0}` aggregate initializers (uses `memset` instead)
-- Variadic macros in user-facing code
-- C99/C11-only headers (`<stdbool.h>` is not used)
+`src/ss_lib.c` uses no `//` comments, no variadic macros, no designated initializers and declares variables at the top of blocks; C11-only facilities (`<stdatomic.h>`) are selected with `__STDC_VERSION__`. `scripts/check_c89_sync.sh` checks that everything from the `SS_FEATURE_MACROS_BEGIN` marker on is identical in both files (`--fix` copies the body over); `make test-c89` builds with `-std=c89 -pedantic`.
 
-The `ss_config.h` header is shared and works with both versions.
+`include/ss_lib_single.h` is generated by `make single-header` (`create_single_header.sh`) from `ss_config.h`, `ss_lib.h` and `src/ss_lib.c`; define `SS_IMPLEMENTATION` in one translation unit. `make check-single-header` fails when the committed copy is stale or does not compile. The version lives only in `include/ss_lib.h` (`SS_VERSION_*`); `scripts/version.sh` prints it for the build scripts.

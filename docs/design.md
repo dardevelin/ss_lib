@@ -26,57 +26,76 @@ SS_Lib supports two memory models:
 - Suitable for desktop/server applications
 
 #### Static Memory
-- Pre-allocated memory pool
-- All allocations from fixed buffer
-- No heap fragmentation
-- Deterministic memory usage
-- Perfect for embedded systems
+- Signals, slots, descriptions, namespace and deferred entries live in fixed arrays sized at compile time
+- Register, connect, emit, deferred, namespace, disconnect, unregister and cleanup never touch the heap
+- Only functions that hand the caller an allocated object (`ss_data_create`, `ss_data_set_string`/`_custom`, `ss_get_signal_list`, `ss_batch_create`) allocate
+- Fixed limits are reported as `SS_ERR_WOULD_OVERFLOW`, never silently truncated
+- Deterministic memory usage, suitable for embedded systems
+
+#### Context Placement
+- `ss_init()` puts the context on the heap (dynamic) or in static storage (static; `SS_STATIC_CONTEXT=0` drops that storage and uses the heap)
+- `ss_init_static(pool, size)` puts it in a caller-owned pool, in either mode; a NULL or too-small pool falls back to `ss_init()` for 2.1 compatibility
 
 ### Data Structures
 
 #### Signal Registry
-- Hash table for O(1) signal lookup
-- Linked list for collision resolution
-- Configurable hash table size
+- Linear lookup with `strcmp`: a singly-linked list (dynamic) or a fixed array (static)
+- No hash table: a linear scan keeps code and RAM small and is adequate for small signal counts
+- Lookup cost grows with the number of registered signals
 
 #### Slot Lists
-- Sorted by priority for deterministic execution order
-- Doubly-linked for O(1) removal
-- Connection handles map directly to nodes
+- Singly-linked, sorted by priority at connection time (equal priorities keep connection order)
+- Removal during emission only marks the slot; it is freed after the emission (see [architecture](architecture.md))
+- Connection handles are monotonically increasing integers stored in the slot
 
 ### Thread Safety
 
 When enabled, thread safety is implemented using:
-- Single global mutex for simplicity
-- Fine-grained locking considered but rejected for complexity
-- Read-write locks evaluated but overhead too high for embedded
-- Lock-free algorithms considered for future versions
+- One recursive mutex per context, created by `ss_init`, used once `ss_set_thread_safe(1)` is called
+- Held while slots run, so emission order is consistent; recursion lets slots call back into the library
+- Every function that touches shared state locks; `ss_init`/`ss_cleanup` are not thread-safe
+- Fine-grained and read-write locking rejected for complexity and embedded overhead
+- Cost: a slot must not wait for another thread that is itself calling the library
+
+### Re-entrancy
+
+Slots may call any library function, including on the signal being emitted:
+- Every public call goes through one entry/exit pair that tracks nesting depth
+- Disconnect and unregister mark objects and free them when the emission ends
+- A slot connected during an emission of the same signal may or may not be called by that emission (it depends on its priority position); callers must not rely on either
+- `ss_cleanup` from a slot is deferred until the outermost call returns
+- Queued emissions are popped before they are emitted, so slots can queue more
+
+This keeps callback code free of "not from a slot" rules, at the cost of a small amount of bookkeeping per call.
 
 ### ISR Safety
 
 ISR-safe mode provides:
-- Lock-free emission path
-- Pre-allocated emission buffers
-- Deferred processing for complex operations
-- Minimal ISR execution time
+- `ss_emit_from_isr`: no locks, no allocation, no slot calls; entries claimed with atomic compare-and-swap
+- A fixed queue of `SS_ISR_QUEUE_SIZE` int events
+- Delivery from normal context by `ss_process_isr_queue()`, oldest first
+- A critical-section hook (`SS_ISR_CRITICAL_ENTER/EXIT`) for cores without compare-and-swap
+
+### Configuration Consistency (ABI Check)
+
+Feature flags change public types (`SS_ENABLE_CUSTOM_DATA` changes `ss_data_t`). A program compiled with different flags than the library would silently corrupt memory. `ss_init_abi(SS_ABI_TAG)` / `ss_init_static_abi(pool, size, SS_ABI_TAG)` pass the caller's `sizeof(ss_data_t)` to the library, which returns `SS_ERR_CONFIG_MISMATCH` on a difference; they are the recommended initialization for new code. The check is opt-in because turning `ss_init()` into a macro could break existing code that re-declares it, which a minor release must not do. Configuration must be identical for the library and every caller.
 
 ## Performance Considerations
 
 ### Signal Emission
 - Direct function calls (no virtual dispatch)
-- Cache-friendly memory layout
 - Minimal indirection
 - Priority sorting happens at connection time, not emission
 
 ### Memory Allocation
-- Pool allocator for static mode
-- Chunk-based allocation to reduce fragmentation
+- Fixed arrays in static mode, individual `SS_MALLOC`/`SS_CALLOC` allocations in dynamic mode
+- All allocation routed through `SS_MALLOC`/`SS_FREE`/`SS_CALLOC`
 - Memory statistics for profiling
 
 ### String Handling
-- Signal names use string interning
-- Hash-based lookups avoid string comparisons
-- Fixed-size names in static mode
+- Names are compared with `strcmp` during lookup
+- Names are copied once at registration (heap in dynamic mode, fixed-size buffers in static mode)
+- Queued emissions (deferred, batch) copy their string/custom payloads so callers may free theirs at once
 
 ## Trade-offs
 
@@ -86,9 +105,9 @@ ISR-safe mode provides:
 - Direct callbacks over message queues
 
 ### Performance vs Safety
-- Optional bounds checking
-- Configurable debug assertions
-- Statistics gathering can be disabled
+- Names and payloads are length-checked and rejected (`SS_ERR_WOULD_OVERFLOW`) instead of truncated
+- Re-entrancy bookkeeping and payload copies for queued emissions cost a little time per call
+- Statistics gathering and tracing can be compiled out
 
 ### Flexibility vs Size
 - Feature flags increase code complexity
@@ -118,14 +137,16 @@ ISR-safe mode provides:
 ## Future Directions
 
 ### Version 3.0 Considerations
+- An instance handle (`ss_bus_t*`) passed to every call instead of the global context, allowing several independent buses (breaking API change)
+- Making the configuration (ABI) check the default for `ss_init()` / `ss_init_static()`
 - Lock-free signal emission
 - Type-safe signal definitions
 - Coroutine support
 - Network-transparent signals
 
 ### Potential Optimizations
+- Faster signal lookup for large signal counts
 - SIMD slot iteration
-- Custom memory allocators
 - JIT compilation for hot paths
 - Hardware acceleration hooks
 

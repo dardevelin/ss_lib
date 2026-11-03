@@ -2,7 +2,7 @@
 
 # Project information
 PROJECT_NAME           = "SS_Lib"
-PROJECT_NUMBER         = "2.1.0"
+PROJECT_NUMBER         = $(SS_VERSION)
 PROJECT_BRIEF          = "Lightweight Signal-Slot Library for C"
 PROJECT_LOGO           = 
 

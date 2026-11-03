@@ -1,7 +1,7 @@
 /**
  * @file ss_lib.h
  * @brief SS_Lib - Lightweight Signal-Slot Library for C
- * @version 2.1.1
+ * @version 2.2.0
  * 
  * SS_Lib provides a simple, efficient signal-slot mechanism for C programs.
  * It's designed to work in resource-constrained environments while still
@@ -21,6 +21,12 @@
 extern "C" {
 #endif
 
+/** @brief Library version (semantic versioning) */
+#define SS_VERSION_MAJOR 2
+#define SS_VERSION_MINOR 2
+#define SS_VERSION_PATCH 0
+#define SS_VERSION_STRING "2.2.0"
+
 /**
  * @brief Error codes returned by SS_Lib functions
  */
@@ -30,12 +36,13 @@ typedef enum {
     SS_ERR_MEMORY,              /**< Memory allocation failed */
     SS_ERR_NOT_FOUND,           /**< Signal or slot not found */
     SS_ERR_ALREADY_EXISTS,      /**< Signal already registered */
-    SS_ERR_INVALID_TYPE,        /**< Invalid data type */
-    SS_ERR_BUFFER_TOO_SMALL,    /**< Buffer too small for operation */
-    SS_ERR_MAX_SLOTS,           /**< Maximum slots reached (static mode) */
-    SS_ERR_TIMEOUT,             /**< Operation timed out */
-    SS_ERR_WOULD_OVERFLOW,      /**< Operation would overflow buffer */
-    SS_ERR_ISR_UNSAFE           /**< Operation not safe in ISR context */
+    SS_ERR_INVALID_TYPE,        /**< Reserved, not currently returned */
+    SS_ERR_BUFFER_TOO_SMALL,    /**< Reserved, not currently returned */
+    SS_ERR_MAX_SLOTS,           /**< Maximum slots per signal reached */
+    SS_ERR_TIMEOUT,             /**< Reserved, not currently returned */
+    SS_ERR_WOULD_OVERFLOW,      /**< Name, payload or queue exceeds a fixed limit */
+    SS_ERR_ISR_UNSAFE,          /**< Reserved, not currently returned */
+    SS_ERR_CONFIG_MISMATCH      /**< Caller and library built with different flags */
 } ss_error_t;
 
 /**
@@ -47,9 +54,9 @@ typedef enum {
     SS_TYPE_FLOAT,              /**< Float data */
     SS_TYPE_DOUBLE,             /**< Double data */
     SS_TYPE_STRING,             /**< String data (null-terminated) */
-    SS_TYPE_POINTER,            /**< Generic pointer data */
+    SS_TYPE_POINTER             /**< Generic pointer data */
 #if SS_ENABLE_CUSTOM_DATA
-    SS_TYPE_CUSTOM              /**< Custom data with size */
+    , SS_TYPE_CUSTOM            /**< Custom data with size */
 #endif
 } ss_data_type_t;
 
@@ -66,13 +73,26 @@ typedef enum {
 } ss_priority_t;
 
 /**
- * @brief Cleanup function for user data
- * @param data User data to clean up
+ * @brief Cleanup function for custom data
+ *
+ * Called by ss_data_set_custom() and ss_data_destroy() with the library's
+ * copy of the custom data, so it can release resources the copy refers
+ * to. The library frees the copy itself afterwards: the cleanup function
+ * must not free the pointer it receives.
+ *
+ * @param data The library-owned copy of the custom data
  */
 typedef void (*ss_cleanup_func_t)(void* data);
 
 /**
  * @brief Data structure passed to slot functions
+ *
+ * Ownership: an ss_data_t created with ss_data_create() owns the string
+ * and custom data stored into it by ss_data_set_string() and
+ * ss_data_set_custom(); ss_data_destroy() frees them. Do not assign
+ * value.s_val or custom_data directly on such an object. A stack
+ * ss_data_t filled in by hand (as the ss_emit_* helpers do) borrows its
+ * pointers and must not be passed to ss_data_destroy() or ss_data_set_*.
  */
 typedef struct ss_data {
     ss_data_type_t type;        /**< Type of data */
@@ -111,23 +131,72 @@ typedef uintptr_t ss_connection_t;
  */
 
 /**
- * @brief Initialize the library with dynamic memory allocation
- * @return SS_OK on success, error code on failure
+ * @brief Initialize the library
+ *
+ * In dynamic mode the library context is heap-allocated; with
+ * SS_USE_STATIC_MEMORY it lives in static storage (unless
+ * SS_STATIC_CONTEXT is 0) and no heap is used.
+ * Not thread-safe: call before other threads use the library.
+ * Prefer ss_init_abi(SS_ABI_TAG), which also detects a library built
+ * with different configuration flags.
+ *
+ * @return SS_OK on success (also if already initialized),
+ *         SS_ERR_ALREADY_EXISTS if a deferred ss_cleanup() is pending
  */
 ss_error_t ss_init(void);
 
 /**
- * @brief Initialize the library with static memory pool
- * @param memory_pool Pre-allocated memory buffer
- * @param pool_size Size of memory pool in bytes
- * @return SS_OK on success, error code on failure
+ * @brief Initialize the library with its context in a caller-owned pool
+ *
+ * The pool needs no particular alignment; given at least
+ * ss_get_required_pool_size() bytes it holds the library context, must
+ * outlive ss_cleanup(), and is never freed. Signals and slots still
+ * follow the memory model (heap in dynamic mode, fixed arrays in static
+ * mode). For compatibility with 2.1, a NULL or smaller pool is ignored
+ * and the call behaves like ss_init().
+ *
+ * @param memory_pool Caller-owned buffer
+ * @param pool_size Size of the buffer in bytes
+ * @return as ss_init()
  */
 ss_error_t ss_init_static(void* memory_pool, size_t pool_size);
 
 /**
+ * @brief Bytes needed by ss_init_static(), including alignment slack
+ */
+size_t ss_get_required_pool_size(void);
+
+/**
+ * @brief Tag describing the configuration-dependent ABI as the caller sees
+ * it; currently the layout of ss_data_t (which SS_ENABLE_CUSTOM_DATA
+ * changes).
+ */
+#define SS_ABI_TAG ((size_t)sizeof(ss_data_t))
+
+/**
+ * @brief ss_init() that first checks the caller's SS_ABI_TAG
+ *
+ * Call as ss_init_abi(SS_ABI_TAG). Returns SS_ERR_CONFIG_MISMATCH when
+ * the caller was compiled with different flags than the library, which
+ * would otherwise corrupt memory later.
+ */
+ss_error_t ss_init_abi(size_t abi_tag);
+
+/** @brief ss_init_static() that first checks the caller's SS_ABI_TAG */
+ss_error_t ss_init_static_abi(void* memory_pool, size_t pool_size, size_t abi_tag);
+
+/**
  * @brief Clean up all resources and reset the library
+ *
+ * Releases signals, slots, pending deferred and ISR events. Called from
+ * inside a slot, the cleanup is deferred until the outermost emission
+ * returns, and the library behaves as uninitialized meanwhile. Not
+ * thread-safe with respect to other threads using the library.
  */
 void ss_cleanup(void);
+
+/** @brief Runtime version string, equal to SS_VERSION_STRING */
+const char* ss_version(void);
 
 /** @} */
 
@@ -157,6 +226,10 @@ ss_error_t ss_signal_register_ex(const char* signal_name,
 
 /**
  * @brief Unregister a signal and disconnect all slots
+ *
+ * Safe to call from a slot of the same signal: the remaining slots of
+ * that emission are skipped and the memory is released when it ends.
+ *
  * @param signal_name Name of the signal to remove
  * @return SS_OK on success, SS_ERR_NOT_FOUND if signal doesn't exist
  */
@@ -287,12 +360,52 @@ ss_error_t ss_emit_pointer(const char* signal_name, void* value);
 /** @} */
 
 #if SS_ENABLE_ISR_SAFE
-/* ISR-safe emission (no locks, no malloc) */
+/**
+ * @brief Queue an integer event from an interrupt handler
+ *
+ * No locks, no allocation, no slot calls: the event is stored in a
+ * fixed queue of SS_ISR_QUEUE_SIZE entries and delivered later by
+ * ss_process_isr_queue(). Safe with nested interrupts and from several
+ * threads. Usable before ss_init().
+ *
+ * @return SS_OK, SS_ERR_NULL_PARAM, or SS_ERR_WOULD_OVERFLOW if the
+ *         queue is full or the name exceeds SS_MAX_SIGNAL_NAME_LENGTH-1
+ */
 ss_error_t ss_emit_from_isr(const char* signal_name, int value);
+
+/**
+ * @brief Deliver queued ISR events, oldest first, from normal context
+ *
+ * Call regularly from the main loop. Names are resolved against the
+ * default namespace at delivery time.
+ *
+ * @return SS_OK, SS_ERR_NULL_PARAM if not initialized, or the last
+ *         emission error (e.g. SS_ERR_NOT_FOUND for unknown signals)
+ */
+ss_error_t ss_process_isr_queue(void);
 #endif
 
-/* Deferred emission */
+/**
+ * @brief Queue an emission for the next ss_flush_deferred()
+ *
+ * The queue stores a copy of the payload: string and custom data are
+ * copied, and the custom cleanup function is not called for the copy.
+ * In static memory mode string and custom payloads must fit in
+ * SS_DEFERRED_PAYLOAD_SIZE bytes.
+ *
+ * @return SS_OK, SS_ERR_NULL_PARAM, SS_ERR_MEMORY, or
+ *         SS_ERR_WOULD_OVERFLOW if the queue is full or the name or
+ *         payload is too long
+ */
 ss_error_t ss_emit_deferred(const char* signal_name, const ss_data_t* data);
+
+/**
+ * @brief Emit every queued deferred emission, oldest first
+ *
+ * Entries queued by slots during the flush wait for the next flush.
+ *
+ * @return SS_OK, or the last emission error
+ */
 ss_error_t ss_flush_deferred(void);
 
 /* Data handling */
@@ -330,6 +443,14 @@ typedef struct ss_signal_info {
 } ss_signal_info_t;
 
 size_t ss_get_signal_count(void);
+
+/**
+ * @brief Snapshot of all registered signals
+ *
+ * The list and its name and description strings are owned by the caller
+ * and stay valid after the signals change; release them with
+ * ss_free_signal_list(). Allocates in both memory modes.
+ */
 ss_error_t ss_get_signal_list(ss_signal_info_t** list, size_t* count);
 void ss_free_signal_list(ss_signal_info_t* list, size_t count);
 #endif
@@ -374,27 +495,54 @@ void ss_set_max_slots_per_signal(size_t max_slots);
 size_t ss_get_max_slots_per_signal(void);
 
 #if SS_ENABLE_THREAD_SAFETY
+/**
+ * @brief Turn locking on or off (off by default)
+ *
+ * All library state is guarded by one recursive mutex, so slots may call
+ * back into the library. Slots run with the mutex held: a slot must not
+ * wait for another thread that is itself calling the library. Change
+ * the setting only while no other thread is using the library.
+ */
 void ss_set_thread_safe(int enabled);
 int ss_is_thread_safe(void);
 #endif
 
-/* Namespace support */
-ss_error_t ss_set_namespace(const char* namespace);
+/**
+ * @brief Set the default namespace (NULL or "" clears it)
+ *
+ * While set, every signal name without "::" is resolved as "ns::name" by
+ * all functions that take a signal name. Names containing "::" are used
+ * as given.
+ *
+ * @return SS_OK, SS_ERR_NULL_PARAM if not initialized, or
+ *         SS_ERR_WOULD_OVERFLOW if ns cannot prefix any valid name
+ */
+ss_error_t ss_set_namespace(const char* ns);
+
+/** @brief Current default namespace, or NULL; valid until the next change */
 const char* ss_get_namespace(void);
-ss_error_t ss_emit_namespaced(const char* namespace, const char* signal_name, 
+
+/** @brief Emit "ns::signal_name" regardless of the default namespace */
+ss_error_t ss_emit_namespaced(const char* ns, const char* signal_name,
                               const ss_data_t* data);
 
-/* Batch operations */
+/*
+ * Batch operations. A batch stores copies of its payloads like the
+ * deferred queue. A batch is owned by the caller and must not be used
+ * from several threads at once; slots may add to it or destroy it while
+ * it is being emitted.
+ */
 typedef struct ss_batch ss_batch_t;
 
 ss_batch_t* ss_batch_create(void);
 void ss_batch_destroy(ss_batch_t* batch);
-ss_error_t ss_batch_add(ss_batch_t* batch, const char* signal_name, 
+ss_error_t ss_batch_add(ss_batch_t* batch, const char* signal_name,
                        const ss_data_t* data);
 ss_error_t ss_batch_emit(ss_batch_t* batch);
 
-/* Debug support */
+/* Debug support: trace is off until ss_enable_trace() names a stream */
 #if SS_ENABLE_DEBUG_TRACE
+#include <stdio.h>
 void ss_enable_trace(FILE* output);
 void ss_disable_trace(void);
 #endif

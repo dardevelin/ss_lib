@@ -6,105 +6,189 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
+# Actions are pinned to commit SHAs; Dependabot (.github/dependabot.yml)
+# proposes updates. The comment after each SHA is the release it maps to.
+
 jobs:
-  build-linux:
+  linux:
+    name: Linux (${{ matrix.cc }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
-        compiler: [gcc, clang]
-        build_type: [Debug, Release]
-    
+        cc: [ gcc, clang ]
+    env:
+      CC: ${{ matrix.cc }}
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y valgrind cppcheck clang-tools
-    
-    - name: Build with Make
-      env:
-        CC: ${{ matrix.compiler }}
-      run: |
-        make clean
-        make all
-    
-    - name: Run tests
-      run: |
-        make test
-    
-    - name: Memory check with Valgrind
-      if: matrix.build_type == 'Debug'
-      run: |
-        valgrind --leak-check=full --error-exitcode=1 ./build/test_ss_lib
-        valgrind --leak-check=full --error-exitcode=1 ./build/test_simple
-    
-    - name: Run cppcheck
-      run: |
-        cppcheck --enable=all --error-exitcode=0 --suppress=missingIncludeSystem \
-                 --suppress=unusedFunction --suppress=constParameter \
-                 --suppress=constParameterPointer \
-                 src/ include/
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-  build-windows:
-    runs-on: windows-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Setup MinGW
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: MINGW64
-        update: true
-        install: >-
-          mingw-w64-x86_64-gcc
-          make
-    
-    - name: Build with MinGW
-      shell: msys2 {0}
-      run: |
-        make clean
-        make all
-    
-    - name: Run tests
-      shell: msys2 {0}
-      run: |
-        ./build/test_ss_lib.exe
-        ./build/test_simple.exe
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y valgrind
 
-  build-macos:
-    runs-on: macos-latest
-    
-    steps:
-    - uses: actions/checkout@v3
-    
-    - name: Build with Make
-      run: |
-        make clean
-        make all
-    
-    - name: Run tests
-      run: |
-        make test
+      - name: Build library, tests and examples
+        run: make -j4 all
 
-  embedded-build:
+      - name: Test every configuration
+        # default, static memory, minimal, C89 copy, newest C standard,
+        # C89..newest compile check, single-header drift, version consistency
+        run: make -j4 test-all
+
+      - name: Embedded examples
+        run: make test_embedded
+
+      - name: Valgrind
+        run: make test-valgrind
+
+  sanitizers:
+    name: Sanitizer (${{ matrix.target }})
     runs-on: ubuntu-latest
-    
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ test-asan, test-ubsan, test-tsan, test-msan ]
+    env:
+      CC: clang
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Install ARM toolchain
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y gcc-arm-none-eabi
-    
-    - name: Build for embedded (static memory)
-      run: |
-        arm-none-eabi-gcc -c -O2 -mcpu=cortex-m4 -Iinclude \
-          -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -DSS_MAX_SLOTS=32 \
-          -DSS_ENABLE_THREAD_SAFETY=0 -DSS_MINIMAL_BUILD \
-          src/ss_lib.c -o ss_lib_embedded.o
-        
-        # Check binary size
-        arm-none-eabi-size ss_lib_embedded.o
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Run ${{ matrix.target }}
+        run: make ${{ matrix.target }}
+      - name: ThreadSanitizer on a C89 build (compiler-builtin atomics)
+        if: matrix.target == 'test-tsan'
+        run: make test SANITIZER=thread BUILD_DIR=build/tsan-c89 LIB_STD=-std=c89
+
+  standards:
+    name: C standards and configurations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: C89 copy is in sync
+        # identical bodies, so the matrix below compiles src/ss_lib.c only
+        run: scripts/check_c89_sync.sh
+      - name: cppcheck
+        run: |
+          sudo apt-get update && sudo apt-get install -y cppcheck
+          cppcheck --enable=warning,performance,portability --error-exitcode=1 \
+            --inline-suppr --suppress=missingIncludeSystem -q -Iinclude src/ss_lib.c include/
+      - name: Newer gcc (C23 needs gcc 14, C2y gcc 15)
+        run: sudo apt-get install -y gcc-14 || echo "gcc-14 not available"
+      - name: C89 to newest standard (-Werror)
+        # library, a caller of ss_lib.h and the single header, every
+        # configuration; standards a compiler lacks are skipped
+        run: |
+          compilers="gcc clang"
+          if command -v gcc-14 > /dev/null; then compilers="$compilers gcc-14"; fi
+          # shellcheck disable=SC2086
+          scripts/check_standards.sh $compilers
+
+  macos:
+    name: macOS
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build and test every configuration
+        run: make all && make test-all
+      - name: AddressSanitizer
+        run: make test-asan
+
+  windows-mingw:
+    name: Windows (MinGW)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            make
+      - name: Build and test
+        run: make all && make test && make test-static
+
+  windows-msvc:
+    name: Windows (MSVC, CMake)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure
+        run: cmake -S . -B build -DSS_ENABLE_ISR_SAFE=ON -DSS_ENABLE_PERFORMANCE_STATS=ON
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure
+
+  cmake:
+    name: CMake (Linux, ${{ matrix.config }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - "-DSS_ENABLE_ISR_SAFE=ON"
+          - "-DSS_USE_STATIC_MEMORY=ON -DSS_ENABLE_ISR_SAFE=ON"
+          - "-DSS_ENABLE_THREAD_SAFETY=OFF"
+          - "-DSS_BUILD_SHARED=ON"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Configure, build, test, install
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug ${{ matrix.config }}
+          cmake --build build -j
+          ctest --test-dir build --output-on-failure
+          cmake --install build --prefix "$RUNNER_TEMP/ss_lib"
+
+  embedded:
+    name: Embedded (ARM Cortex-M)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install ARM toolchain
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi
+      - name: Cortex-M4 (atomic compare-and-swap available)
+        run: |
+          arm-none-eabi-gcc -c -Os -mcpu=cortex-m4 -mthumb -Wall -Wextra -Werror -Iinclude \
+            -DSS_EMBEDDED_BUILD -DSS_MINIMAL_BUILD -DSS_MAX_SIGNALS=16 -DSS_MAX_SLOTS=32 \
+            -DSS_ENABLE_ISR_SAFE=1 src/ss_lib.c -o ss_lib_m4.o
+          arm-none-eabi-size ss_lib_m4.o
+      - name: Cortex-M0 (interrupt-masking critical section)
+        run: |
+          arm-none-eabi-gcc -c -Os -mcpu=cortex-m0 -mthumb -Wall -Wextra -Werror -Iinclude \
+            -DSS_EMBEDDED_BUILD -DSS_MINIMAL_BUILD -DSS_ENABLE_ISR_SAFE=1 \
+            '-DSS_ISR_CRITICAL_ENTER()=__asm__ volatile("cpsid i" ::: "memory")' \
+            '-DSS_ISR_CRITICAL_EXIT()=__asm__ volatile("cpsie i" ::: "memory")' \
+            src/ss_lib.c -o ss_lib_m0.o
+          arm-none-eabi-size ss_lib_m0.o
+
+  python:
+    name: Benchmark tools (Python ${{ matrix.python }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: [ "3.11", "3.12", "3.13", "3.14", "3.15" ]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python }}
+          allow-prereleases: true
+          cache: pip
+          cache-dependency-path: benchmarks/requirements.txt
+      - name: Install plotting dependencies
+        run: python -m pip install -r benchmarks/requirements.txt
+      - name: Run scripts with warnings as errors
+        env:
+          MPLBACKEND: Agg
+        run: |
+          python -W error benchmarks/compare.py benchmarks/fixtures/sample_results.txt \
+            benchmarks/fixtures/sample_results.txt
+          cd "$RUNNER_TEMP"
+          python -W error "$GITHUB_WORKSPACE/benchmarks/visualize.py" \
+            "$GITHUB_WORKSPACE/benchmarks/fixtures/sample_results.txt"
+          test -f plots/emission_performance.png

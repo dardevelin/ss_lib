@@ -1,16 +1,21 @@
-/* Example: Embedded System with Static Memory Allocation */
-
-/* Configure for embedded use */
-#define SS_USE_STATIC_MEMORY 1
-#define SS_MAX_SIGNALS 16
-#define SS_MAX_SLOTS 32
-#define SS_ENABLE_THREAD_SAFETY 0
-#define SS_ENABLE_MEMORY_STATS 1
-#define SS_ENABLE_PERFORMANCE_STATS 1
+/* Example: Embedded System with Static Memory Allocation
+ *
+ * Configuration macros must be identical for the library and every file
+ * that includes ss_lib.h, so they are passed on the command line rather
+ * than defined here. `make test_embedded` builds this example against a
+ * library compiled with:
+ *   -DSS_EMBEDDED_BUILD -DSS_MAX_SIGNALS=16 -DSS_MAX_SLOTS=32
+ *   -DSS_ENABLE_MEMORY_STATS=1 -DSS_ENABLE_PERFORMANCE_STATS=1 -DSS_ENABLE_ISR_SAFE=1
+ */
 
 #include "ss_lib.h"
 #include <stdio.h>
 #include <stdint.h>
+
+#if !SS_USE_STATIC_MEMORY || !SS_ENABLE_ISR_SAFE || !SS_ENABLE_MEMORY_STATS || \
+    !SS_ENABLE_PERFORMANCE_STATS
+#error "Build this example with the embedded configuration: make test_embedded"
+#endif
 
 /* Simulated hardware registers */
 static volatile uint16_t ADC_VALUE = 0;
@@ -34,6 +39,7 @@ static app_state_t g_app_state = {
 
 /* Signal handlers */
 void on_adc_reading(const ss_data_t* data, void* user_data) {
+    (void)user_data;
     uint16_t raw_value = ss_data_get_int(data, 0);
     g_app_state.temperature = raw_value / 10;  /* Convert to tenths of degree */
     
@@ -58,6 +64,7 @@ void on_temp_critical(const ss_data_t* data, void* user_data) {
 }
 
 void on_button_pressed(const ss_data_t* data, void* user_data) {
+    (void)user_data;
     int button_id = ss_data_get_int(data, 0);
     
     printf("[BUTTON] Button %d pressed\n", button_id);
@@ -70,6 +77,7 @@ void on_button_pressed(const ss_data_t* data, void* user_data) {
 }
 
 void on_timer_tick(const ss_data_t* data, void* user_data) {
+    (void)user_data;
     static uint32_t last_report = 0;
     uint32_t ticks = ss_data_get_int(data, 0);
     
@@ -180,20 +188,8 @@ int main(void) {
             BUTTON_STATE = 0;
         }
         
-        /* In a real embedded system, we would process ISR queue here */
-        /* For this simulation, emit directly instead */
-        if (i % 2 == 0) {
-            ss_emit_int("adc_ready", ADC_VALUE);
-        }
-        if (g_app_state.temperature > g_app_state.threshold) {
-            ss_emit_int("temp_critical", 1);
-        }
-        if (i % 5 == 0) {
-            ss_emit_int("timer_tick", TIMER_TICKS);
-        }
-        if (i == 25) {
-            ss_emit_int("button_press", 1);
-        }
+        /* Main loop: deliver the events the ISRs queued */
+        ss_process_isr_queue();
         
         /* Small delay */
         for (volatile int j = 0; j < 10000; j++);

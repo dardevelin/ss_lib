@@ -10,13 +10,16 @@ A lightweight, efficient signal-slot implementation for C, designed for embedded
 
 ```c
 #include "ss_lib.h"
+#include <stdio.h>
 
 void on_button_click(const ss_data_t* data, void* user_data) {
     printf("Button clicked!\n");
 }
 
 int main() {
-    ss_init();
+    /* ss_init() also works; ss_init_abi() additionally detects a library
+     * built with different configuration flags */
+    if (ss_init_abi(SS_ABI_TAG) != SS_OK) return 1;
 
     ss_signal_register("button_click");
     ss_connect("button_click", on_button_click, NULL);
@@ -37,6 +40,8 @@ sudo make install
 pkg-config --cflags --libs ss_lib
 ```
 
+`make install` builds the library with the Makefile's `FEATURES`; see [Configuration](#configuration) for why your program must be compiled with the same flags.
+
 ### Using CMake
 
 ```cmake
@@ -48,12 +53,18 @@ target_link_libraries(your_app ss_lib::ss_lib)
 
 ```bash
 make single-header
-# Creates ss_lib_single.h — copy to your project
+# Writes include/ss_lib_single.h — copy it to your project
+```
 
-# In your code:
+```c
+/* In exactly one C file: */
 #define SS_IMPLEMENTATION
 #include "ss_lib_single.h"
+
+/* Everywhere else, include it without SS_IMPLEMENTATION */
 ```
+
+Configuration macros must be identical in every file that includes the header; pass them on the command line.
 
 ### Using Homebrew (macOS)
 
@@ -71,27 +82,32 @@ yay -S ss-lib
 ## Features
 
 - **Zero Dependencies** — Pure ANSI C, no external libraries required
-- **Static Memory** — No malloc/free at runtime for embedded systems
-- **Thread-Safe** — Optional mutex protection with runtime toggle
-- **ISR-Safe** — Lock-free signal emission from interrupt handlers
-- **Namespaces** — Organize signals with namespace prefixes
-- **Deferred Emission** — Queue signals for later processing
+- **Static Memory** — Fixed arrays; register, connect, emit, disconnect and cleanup never touch the heap
+- **Thread-Safe** — Optional recursive mutex with runtime toggle; slots may call back into the library
+- **ISR-Safe** — Lock-free, allocation-free queueing from interrupt handlers, delivered from the main loop
+- **Namespaces** — `ns::name` prefixes and an optional default namespace
+- **Deferred Emission** — Queue signals (with a copy of their data) for later processing
 - **Batch Operations** — Group multiple emissions into a single batch
 - **Configurable** — Compile-time feature flags for minimal footprint
 - **Single Header** — Easy integration with a single `#include`
 - **Performance Profiling** — Built-in per-signal timing statistics
-- **Memory Diagnostics** — Track allocation usage in real-time
-- **C89 Compatible** — Alternate C89 source for legacy toolchains
+- **Memory Diagnostics** — Signal/slot usage, heap bytes held and peak
+- **C89 to C2y** — Pure C; builds warning-free as every standard from C89 to C2y, with an alternate C89 source for legacy toolchains
 
 ## Configuration
 
 ### Compile-Time Flags
+
+Configuration must be identical for the library and every file that includes `ss_lib.h`, so pass it on the command line (`-DSS_USE_STATIC_MEMORY=1`) rather than with `#define` in a source file. `ss_init_abi(SS_ABI_TAG)` (recommended for new code instead of `ss_init()`) returns `SS_ERR_CONFIG_MISMATCH` when a program was built with a different `ss_data_t` layout than the library (`SS_ENABLE_CUSTOM_DATA`); other mismatches are not detected.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `SS_USE_STATIC_MEMORY` | 0 | Use static allocation (no heap) |
 | `SS_MAX_SIGNALS` | 32 | Maximum signals (static mode) |
 | `SS_MAX_SLOTS` | 128 | Maximum slots (static mode) |
+| `SS_MAX_SIGNAL_NAME_LENGTH` | 256 (32 static) | Name buffer size, including the terminator |
+| `SS_MAX_DESCRIPTION_LENGTH` | 32 | Description buffer size (static mode) |
+| `SS_STATIC_CONTEXT` | 1 | Static mode: `ss_init()` keeps the context in `.bss`; 0 drops it (for `ss_init_static()` pools) |
 | `SS_ENABLE_THREAD_SAFETY` | 1 | Mutex protection infrastructure |
 | `SS_ENABLE_INTROSPECTION` | 1 | Signal listing and discovery |
 | `SS_ENABLE_CUSTOM_DATA` | 1 | Custom data types with cleanup |
@@ -100,51 +116,48 @@ yay -S ss-lib
 | `SS_ENABLE_ISR_SAFE` | 0 | ISR-safe emission path |
 | `SS_ENABLE_DEBUG_TRACE` | 0 | Debug trace output |
 | `SS_DEFERRED_QUEUE_SIZE` | 64 | Deferred emission queue depth |
+| `SS_DEFERRED_PAYLOAD_SIZE` | 32 | Bytes of string/custom data per deferred or batch entry (static mode) |
+| `SS_BATCH_MAX_ENTRIES` | `SS_DEFERRED_QUEUE_SIZE` | Entries per batch |
 | `SS_ISR_QUEUE_SIZE` | 16 | ISR queue depth |
+| `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` | undefined | Interrupt disable/restore for targets without atomic compare-and-swap (Cortex-M0, AVR) |
+
+See the [Configuration Guide](docs/configuration.md) for all options.
 
 ### Preset Configurations
 
-```c
-#define SS_MINIMAL_BUILD    /* Strips all optional features */
-#define SS_EMBEDDED_BUILD   /* Static memory, no threading */
+```bash
+-DSS_MINIMAL_BUILD    # Strips all optional features
+-DSS_EMBEDDED_BUILD   # Static memory, no threading, 10 slots per signal, deferred queue of 16
 ```
 
 ### Custom Allocators
 
-```c
-#define SS_MALLOC(size)       my_malloc(size)
-#define SS_FREE(ptr)          my_free(ptr)
-#define SS_CALLOC(count,size) my_calloc(count, size)
-#define SS_STRDUP(str)        my_strdup(str)
+```bash
+-D'SS_MALLOC(size)=my_malloc(size)' -D'SS_FREE(ptr)=my_free(ptr)' \
+-D'SS_CALLOC(count,size)=my_calloc(count,size)'
 ```
+
+Strings are copied with `SS_MALLOC`, so these three route every allocation. `SS_STRDUP(str)` may also be defined to override string duplication.
 
 ### Platform Examples
 
 #### Arduino/AVR (8-bit MCU)
 
-```c
-#define SS_USE_STATIC_MEMORY 1
-#define SS_MAX_SIGNALS 8
-#define SS_MAX_SLOTS 16
-#define SS_MINIMAL_BUILD
+```bash
+-DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=8 -DSS_MAX_SLOTS=16 -DSS_MINIMAL_BUILD
 ```
 
 #### STM32/ARM Cortex-M
 
-```c
-#define SS_USE_STATIC_MEMORY 1
-#define SS_MAX_SIGNALS 32
-#define SS_MAX_SLOTS 64
-#define SS_ENABLE_ISR_SAFE 1
-#define SS_ENABLE_THREAD_SAFETY 0
+```bash
+-DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=32 -DSS_MAX_SLOTS=64 \
+-DSS_ENABLE_ISR_SAFE=1 -DSS_ENABLE_THREAD_SAFETY=0
 ```
 
 #### Linux Embedded
 
-```c
-#define SS_USE_STATIC_MEMORY 0
-#define SS_ENABLE_THREAD_SAFETY 1
-#define SS_ENABLE_PERFORMANCE_STATS 1
+```bash
+-DSS_USE_STATIC_MEMORY=0 -DSS_ENABLE_THREAD_SAFETY=1 -DSS_ENABLE_PERFORMANCE_STATS=1
 ```
 
 ## API Overview
@@ -153,9 +166,12 @@ yay -S ss-lib
 
 | Function | Description |
 |----------|-------------|
-| `ss_init()` | Initialize with dynamic memory |
-| `ss_init_static(pool, size)` | Initialize with static memory pool |
+| `ss_init()` | Initialize (context on the heap, or in static storage with `SS_USE_STATIC_MEMORY`) |
+| `ss_init_abi(SS_ABI_TAG)` | `ss_init()` plus a check that caller and library were built with the same flags |
+| `ss_init_static(pool, size)` | Initialize with the context in a caller-owned buffer (`ss_init_static_abi` checks flags) |
+| `ss_get_required_pool_size()` | Bytes `ss_init_static()` needs |
 | `ss_cleanup()` | Clean up all resources |
+| `ss_version()` | Runtime version string (`SS_VERSION_STRING`) |
 
 ### Signals
 
@@ -187,13 +203,14 @@ yay -S ss-lib
 | `ss_emit_double(signal, value)` | Emit double |
 | `ss_emit_string(signal, str)` | Emit string |
 | `ss_emit_pointer(signal, ptr)` | Emit pointer |
-| `ss_emit_from_isr(signal, value)` | ISR-safe emission |
+| `ss_emit_from_isr(signal, value)` | Queue an int event from an ISR |
+| `ss_process_isr_queue()` | Deliver queued ISR events (main loop) |
 
 ### Namespaces
 
 | Function | Description |
 |----------|-------------|
-| `ss_set_namespace(ns)` | Set default namespace |
+| `ss_set_namespace(ns)` | Set default namespace (NULL clears) |
 | `ss_get_namespace()` | Get current namespace |
 | `ss_emit_namespaced(ns, signal, data)` | Emit with namespace prefix |
 
@@ -258,6 +275,13 @@ yay -S ss-lib
 | `ss_set_thread_safe(enabled)` | Enable/disable thread safety |
 | `ss_is_thread_safe()` | Check thread safety state |
 
+### Debug Trace
+
+| Function | Description |
+|----------|-------------|
+| `ss_enable_trace(stream)` | Start trace output (`SS_ENABLE_DEBUG_TRACE`) |
+| `ss_disable_trace()` | Stop trace output |
+
 ## Advanced Usage
 
 ### Connection Handles
@@ -282,16 +306,22 @@ ss_connect_ex("alarm", on_log, NULL, SS_PRIORITY_LOW, NULL);
 
 ```c
 ss_signal_register("ui::button");
-ss_signal_register("ui::slider");
 
 /* Emit using namespace helper */
 ss_emit_namespaced("ui", "button", data);
+
+/* Or set a default namespace: names without "::" resolve as "ui::name" */
+ss_set_namespace("ui");
+ss_signal_register("slider");      /* registers "ui::slider" */
+ss_emit_void("slider");            /* emits "ui::slider" */
+ss_emit_void("net::ping");         /* names with "::" are used as given */
+ss_set_namespace(NULL);            /* clear */
 ```
 
 ### Deferred Emission
 
 ```c
-/* Queue signals during processing */
+/* Queue signals during processing; the queue keeps a copy of the data */
 ss_emit_deferred("update", data1);
 ss_emit_deferred("render", data2);
 
@@ -329,29 +359,26 @@ printf("Signals: %zu/%zu\n", mem.signals_used, mem.signals_allocated);
 printf("Slots: %zu/%zu\n", mem.slots_used, mem.slots_allocated);
 ```
 
-### Custom Allocators
-
-```c
-/* Define before including ss_lib.h or in ss_config.h */
-#define SS_MALLOC(size)       pool_alloc(size)
-#define SS_FREE(ptr)          pool_free(ptr)
-#define SS_CALLOC(count,size) pool_calloc(count, size)
-#define SS_STRDUP(str)        pool_strdup(str)
-```
-
 ### Embedded System (Static Memory)
 
 ```c
-#define SS_USE_STATIC_MEMORY 1
-#define SS_MAX_SIGNALS 16
-#define SS_MAX_SLOTS 32
-#define SS_ENABLE_THREAD_SAFETY 0
-#define SS_ENABLE_ISR_SAFE 1
+/* Built with: -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -DSS_MAX_SLOTS=32
+ *             -DSS_ENABLE_THREAD_SAFETY=0 -DSS_ENABLE_ISR_SAFE=1
+ * (the same flags for the library and this file) */
 #include "ss_lib.h"
 
 void ADC_ISR(void) {
     uint16_t value = ADC->DATA;
-    ss_emit_from_isr("adc_ready", value);
+    ss_emit_from_isr("adc_ready", value);   /* queued, no slot runs here */
+}
+
+int main(void) {
+    ss_init();
+    ss_signal_register("adc_ready");
+    ss_connect("adc_ready", on_adc_ready, NULL);
+    for (;;) {
+        ss_process_isr_queue();             /* slots run here */
+    }
 }
 ```
 
@@ -359,29 +386,33 @@ void ADC_ISR(void) {
 
 ```c
 ss_init();
-ss_set_thread_safe(1);  /* Enable at runtime */
+ss_set_thread_safe(1);  /* After ss_init, before other threads use the library */
 
-/* All operations are now mutex-protected */
+/* All operations are now protected by one recursive mutex */
 ss_signal_register("event");
 ss_emit_void("event");
-
-ss_set_thread_safe(0);  /* Disable when no longer needed */
 ```
+
+Slots run with the mutex held and may call any library function; a slot must not wait for another thread that is itself calling the library. Change the setting only while no other thread uses the library. `ss_init()` and `ss_cleanup()` are not thread-safe.
 
 ## Building
 
 ### Standard Build
 
 ```bash
-make          # Build library and tests
+make          # Build library, tests and examples
 make test     # Run tests
 make examples # Build example programs
+make help     # List all targets
 ```
+
+The Makefile honours `CC` and compiles the library, tests, examples and benchmarks with the same `FEATURES` (default: `-DSS_ENABLE_ISR_SAFE=1 -DSS_ENABLE_MEMORY_STATS=1 -DSS_ENABLE_PERFORMANCE_STATS=1`).
 
 ### Embedded Build
 
 ```bash
 gcc -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -c src/ss_lib.c -Iinclude
+# compile every file that includes ss_lib.h with the same -D flags
 ```
 
 ### CMake
@@ -392,16 +423,26 @@ cmake --build build
 ctest --test-dir build
 ```
 
+Options: `SS_BUILD_SHARED`, `SS_USE_STATIC_MEMORY` (with `SS_MAX_SIGNALS`, `SS_MAX_SLOTS`), `SS_ENABLE_THREAD_SAFETY`, `SS_ENABLE_PERFORMANCE_STATS`, `SS_ENABLE_ISR_SAFE`, `SS_ENABLE_SANITIZERS`, `SS_ENABLE_COVERAGE`, `SS_BUILD_TESTS`, `SS_BUILD_EXAMPLES`. The C standard defaults to C11; `-DCMAKE_C_STANDARD=90` (or 99, 17, 23) selects another. The feature definitions are exported with the `ss_lib::ss_lib` target, so consumers get the same configuration.
+
 ### Single Header
 
 ```bash
-make single-header
+make single-header        # regenerate include/ss_lib_single.h
+make check-single-header  # fail if it is stale or does not compile
 ```
 
 ## Testing
 
 ```bash
-make test           # Run all tests
+make test           # Run the test suite
+make test-static    # ... with SS_USE_STATIC_MEMORY=1
+make test-minimal   # ... with SS_MINIMAL_BUILD
+make test-c89       # ... against src/ss_lib_c89.c built as C89
+make test-newest    # ... built as the newest C standard the compiler supports
+make check-standards # Compile as C89, C99, C11, C17, C23 and C2y with -Werror
+make test-all       # All of the above plus check-single-header and check-version
+make test_embedded  # Embedded examples against an SS_EMBEDDED_BUILD library
 make test-asan      # AddressSanitizer
 make test-tsan      # ThreadSanitizer
 make test-ubsan     # UndefinedBehaviorSanitizer
@@ -458,11 +499,9 @@ Signal emission:
 - With 1 slot: ~124 ns
 - With 5 slots: ~287 ns
 
-Memory usage (16 signals, 32 slots):
-- Total allocation: 2.1 KB
-- Per signal overhead: 48 bytes
-- Per slot overhead: 24 bytes
 ```
+
+Code size on Cortex-M4 (arm-none-eabi-gcc -Os, `SS_EMBEDDED_BUILD` + `SS_MINIMAL_BUILD`): about 3.8 KB of text. RAM is the static context in `.bss`, or a pool you pass to `ss_init_static()` with `SS_STATIC_CONTEXT=0` (`ss_get_required_pool_size()` reports its size plus alignment slack; see the [Embedded Guide](docs/embedded-guide.md#memory-budget)).
 
 View the [latest benchmark results](https://github.com/dardevelin/ss_lib/actions/workflows/benchmarks.yml) or run locally:
 
@@ -503,8 +542,10 @@ This repository includes [Claude Code skills](https://docs.anthropic.com/en/docs
 
 1. Fork the repository
 2. Create your feature branch
-3. Ensure tests pass (`make test`)
+3. Ensure tests pass (`make test-all` and the sanitizer targets)
 4. Submit pull request
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the rules on the C89 copy, the single header and the version number.
 
 ## License
 

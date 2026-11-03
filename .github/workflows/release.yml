@@ -6,68 +6,52 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  TAG: ${{ github.ref_name }}
 
 jobs:
   create-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Check version and generated files
+      run: |
+        scripts/check_version.sh "$TAG"
+        make check-single-header
 
     - name: Create Release
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        if gh release view "${{ github.ref_name }}" > /dev/null 2>&1; then
-          echo "Release ${{ github.ref_name }} already exists, skipping creation"
+        if gh release view "$TAG" > /dev/null 2>&1; then
+          echo "Release $TAG already exists, skipping creation"
         else
-          gh release create "${{ github.ref_name }}" --generate-notes --verify-tag
+          gh release create "$TAG" --generate-notes --verify-tag
         fi
 
+  # The archives hold sources only, so one runner builds both formats
   build-artifacts:
     needs: create-release
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-
-    runs-on: ${{ matrix.os }}
-
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-    - uses: actions/checkout@v4
-
-    - name: Create single header
-      shell: bash
-      run: |
-        chmod +x create_single_header.sh
-        ./create_single_header.sh
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
     - name: Package release
-      shell: bash
       run: |
-        mkdir -p ss_lib-${{ github.ref_name }}
-        cp -r include/ ss_lib-${{ github.ref_name }}/
-        cp -r src/ ss_lib-${{ github.ref_name }}/
-        cp -r examples/ ss_lib-${{ github.ref_name }}/
-        cp -r docs/ ss_lib-${{ github.ref_name }}/
-        cp ss_lib_single.h ss_lib-${{ github.ref_name }}/
-        cp README.md LICENSE CHANGELOG.md ss_lib-${{ github.ref_name }}/
+        mkdir -p "ss_lib-$TAG"
+        cp -r include/ src/ examples/ docs/ "ss_lib-$TAG/"
+        cp include/ss_lib_single.h README.md LICENSE CHANGELOG.md "ss_lib-$TAG/"
+        tar -czf "ss_lib-$TAG.tar.gz" "ss_lib-$TAG"
+        zip -qr "ss_lib-$TAG.zip" "ss_lib-$TAG"
 
-    - name: Create archive (Unix)
-      if: runner.os != 'Windows'
-      shell: bash
-      run: tar -czf ss_lib-${{ github.ref_name }}-${{ runner.os }}.tar.gz ss_lib-${{ github.ref_name }}
-
-    - name: Create archive (Windows)
-      if: runner.os == 'Windows'
-      run: Compress-Archive -Path ss_lib-${{ github.ref_name }} -DestinationPath ss_lib-${{ github.ref_name }}-${{ runner.os }}.zip
-
-    - name: Upload Release Asset
+    - name: Upload Release Assets
       env:
         GH_TOKEN: ${{ github.token }}
-      run: |
-        if [ "$RUNNER_OS" = "Windows" ]; then
-          gh release upload "${{ github.ref_name }}" "./ss_lib-${{ github.ref_name }}-${{ runner.os }}.zip"
-        else
-          gh release upload "${{ github.ref_name }}" "./ss_lib-${{ github.ref_name }}-${{ runner.os }}.tar.gz"
-        fi
-      shell: bash
+      run: gh release upload "$TAG" "ss_lib-$TAG.tar.gz" "ss_lib-$TAG.zip" --clobber

@@ -20,20 +20,20 @@ run_benchmark() {
     local name="$1"
     local flags="$2"
     local output="$BUILD_DIR/benchmark_$name"
-    
+
     echo "Building benchmark: $name"
-    gcc -O3 -march=native $flags \
-        -I"$PROJECT_DIR/include" \
-        "$SCRIPT_DIR/benchmark_ss_lib.c" \
-        "$PROJECT_DIR/src/ss_lib.c" \
-        -pthread -lm \
-        -o "$output"
-    
+    make -s -C "$PROJECT_DIR" "build/benchmarks/$name/benchmark_ss_lib" \
+        BUILD_DIR="build/benchmarks/$name" FEATURES="$flags"
+    cp "$PROJECT_DIR/build/benchmarks/$name/benchmark_ss_lib" "$output"
+
     echo "Running benchmark: $name"
     echo "----------------------------------------"
-    "$output"
+    { echo "Configuration: $name"; "$output"; } | tee "$output.txt"
+    cat "$output.txt" >> "$BUILD_DIR/all_results.txt"
     echo ""
 }
+
+rm -f "$BUILD_DIR/all_results.txt"
 
 # Run different configurations
 run_benchmark "dynamic_mt" "-DSS_ENABLE_THREAD_SAFETY=1"
@@ -42,15 +42,11 @@ run_benchmark "static_mt" "-DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=256 -DSS_MA
 run_benchmark "static_st" "-DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=256 -DSS_MAX_SLOTS=1024 -DSS_ENABLE_THREAD_SAFETY=0"
 run_benchmark "minimal" "-DSS_MINIMAL_BUILD -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=32 -DSS_MAX_SLOTS=128"
 
-# If ISR-safe is available
-if grep -q "SS_ENABLE_ISR_SAFE" "$PROJECT_DIR/include/ss_config.h"; then
-    run_benchmark "isr_safe" "-DSS_ENABLE_ISR_SAFE=1 -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=64 -DSS_MAX_SLOTS=256"
-fi
+run_benchmark "isr_safe" "-DSS_ENABLE_ISR_SAFE=1 -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=64 -DSS_MAX_SLOTS=256"
 
-# Generate comparison report
-echo "Generating comparison report..."
-"$SCRIPT_DIR/compare_results.py" "$BUILD_DIR" > "$BUILD_DIR/comparison_report.txt" 2>/dev/null || {
-    echo "Note: Python comparison script not found or failed. Raw results are in $BUILD_DIR"
-}
+# JSON report (and plots when matplotlib is installed) across configurations
+echo "Generating report..."
+(cd "$BUILD_DIR" && python3 "$SCRIPT_DIR/visualize.py" all_results.txt) || \
+    echo "Note: report generation failed; raw results are in $BUILD_DIR"
 
 echo "Benchmark complete! Results saved to: $BUILD_DIR"

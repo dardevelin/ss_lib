@@ -7,6 +7,97 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-11-03
+
+Security, robustness and maintenance release. Existing code keeps compiling;
+public struct layouts are unchanged.
+
+### Security
+- Fixed a use-after-free when a slot unregisters its own signal or calls
+  `ss_cleanup()`: the signal is retired and freed when its emission ends, and a
+  cleanup requested from a slot completes when the outermost call returns.
+- Fixed a use-after-free and double free in `ss_flush_deferred()` when a slot
+  queues a deferred emission during the flush: entries are now popped from a
+  FIFO ring before they are emitted, and a flush only emits the entries queued
+  when it started, also across nested flushes.
+- Regenerated `include/ss_lib_single.h`, which still contained the
+  disconnect-during-emit use-after-free fixed in 2.1.0; CI now fails when it is stale.
+- Thread safety: one recursive mutex created at `ss_init()` and used by every
+  function that touches shared state (the deferred queue, namespace, error handler,
+  profiling flag and slot limit were unlocked). Toggling it no longer creates or
+  destroys the mutex.
+- Fixed a deadlock on POSIX when a slot called back into the library with thread
+  safety enabled (the mutex was not recursive; Windows already was).
+- Deferred and batched emissions copy custom data instead of keeping the
+  caller's pointer.
+- `ss_emit_from_isr()` claims queue entries atomically, so nested interrupts
+  and concurrent producers cannot corrupt an entry.
+- Over-long signal names are rejected with `SS_ERR_WOULD_OVERFLOW` by deferred,
+  batch and ISR emission instead of being truncated (which could fire another signal).
+- `ss_get_signal_list()` returns copies of descriptions instead of pointers into
+  library storage.
+- Static memory mode: `ss_cleanup()` no longer leaks pending deferred strings and
+  the namespace, and unregistering clears the signal's description, priority and statistics.
+- Windows performance timer no longer overflows after about 15 minutes of uptime.
+- Strings are copied with `SS_MALLOC`: the default `SS_STRDUP` used libc
+  `strdup`, so a custom `SS_FREE` received memory it never allocated.
+
+### Added
+- `ss_process_isr_queue()` delivers events queued by `ss_emit_from_isr()`
+  (nothing delivered them before). Targets without compare-and-swap (Cortex-M0,
+  AVR) can define `SS_ISR_CRITICAL_ENTER()`/`SS_ISR_CRITICAL_EXIT()`.
+- `SS_VERSION_MAJOR`/`MINOR`/`PATCH`/`STRING` and `ss_version()`.
+- ABI check: `ss_init_abi(SS_ABI_TAG)` and `ss_init_static_abi(pool, size,
+  SS_ABI_TAG)` return the new `SS_ERR_CONFIG_MISMATCH` when the caller was built
+  with a different `ss_data_t` layout than the library. Recommended for new code.
+- `ss_get_required_pool_size()` for `ss_init_static()`.
+- Configuration: `SS_MAX_DESCRIPTION_LENGTH`, `SS_DEFERRED_PAYLOAD_SIZE` and
+  `SS_STATIC_CONTEXT` (static mode), `SS_BATCH_MAX_ENTRIES`.
+- Tests: re-entrancy regressions, allocation accounting (leaks, allocator
+  routing, zero heap in static mode), a pthread stress test for ThreadSanitizer.
+  Make targets `test-static`, `test-minimal`, `test-c89`, `test-newest` (the
+  suite built as the newest C standard the compiler supports), `check-standards`
+  (library, a caller of `ss_lib.h` and the single header compile with `-Werror`
+  as C89, C99, C11, C17, C23 and C2y), `test-all`, `check-single-header`,
+  `check-version`.
+
+### Changed
+- `ss_init_static()` places the library context in the caller's pool when it
+  holds at least `ss_get_required_pool_size()` bytes (it ignored its arguments
+  before); a NULL or smaller pool still behaves like `ss_init()`.
+- The default namespace set by `ss_set_namespace()` now applies: names without
+  `::` resolve as `ns::name` in every function that takes a signal name (it was
+  stored but had no effect). The prototype's parameter is renamed `ns`; callers are unaffected.
+- Static memory mode uses no heap in register, connect, emit, deferred,
+  namespace, disconnect, unregister and cleanup paths, as documented.
+  Descriptions longer than `SS_MAX_DESCRIPTION_LENGTH` are rejected.
+- Debug trace is off until `ss_enable_trace()` names a stream (it always
+  printed to stderr and `ss_enable_trace()` had no effect).
+
+### Deprecated
+- The `SS_TRACE` macro in `ss_config.h`; the library no longer uses it.
+- `ss_data_set_*` release the string or custom payload the object owned before
+  (switching type leaked it) and keep the old value when allocation fails.
+- The error handler runs, outside the lock, for every failing call made while
+  the library is initialized, including parameter errors.
+- `SS_EMBEDDED_BUILD` now compiles (the preset was applied after the defaults it
+  controls) and defaults `SS_DEFERRED_QUEUE_SIZE` to 16.
+- Memory statistics report the heap actually held and its peak.
+- Build: the Makefile honours `CC` and builds library, tests, examples and
+  benchmarks with the same `FEATURES`; CMake reads the version from the header,
+  adds `SS_ENABLE_ISR_SAFE`, exports the feature definitions with the target and
+  ships the missing `cmake/ss_libConfig.cmake.in`; `-DCMAKE_C_STANDARD` now
+  overrides its default of C11. `ss_lib.pc` is generated, no
+  longer committed, and its `Cflags` carry the library's feature definitions. Examples take their configuration from the command line.
+- Benchmarks: `benchmarks/compare.py` (moved out of the workflow),
+  `benchmarks/requirements.txt`; the ISR benchmark measures the enqueue path.
+- CI: least-privilege permissions, SHA-pinned actions with Dependabot,
+  sanitizers, C89 to C2y compile check, MSVC, CMake, Cortex-M0/M4 and Python 3.11–3.15 jobs.
+
+### Documentation
+- Corrected the description of signal lookup (linear scan, not a hash table)
+  and of slot lists (singly linked).
+
 ## [2.1.1] - 2026-03-01
 
 ### Fixed
@@ -93,7 +184,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Signal introspection
 - Basic examples and tests
 
-[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v2.1.1...HEAD
+[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/dardevelin/ss_lib/compare/v2.1.1...v2.2.0
 [2.1.1]: https://github.com/dardevelin/ss_lib/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/dardevelin/ss_lib/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/dardevelin/ss_lib/compare/v1.0.0...v2.0.0
