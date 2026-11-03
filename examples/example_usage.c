@@ -8,6 +8,7 @@ typedef struct {
 } Player;
 
 void on_player_scored(const ss_data_t* data, void* user_data) {
+    (void)user_data;
     Player* player = (Player*)ss_data_get_pointer(data);
     if (player) {
         printf("[Game] %s scored! Total: %d points\n", player->name, player->score);
@@ -15,16 +16,19 @@ void on_player_scored(const ss_data_t* data, void* user_data) {
 }
 
 void on_game_over(const ss_data_t* data, void* user_data) {
+    (void)user_data;
     const char* winner = ss_data_get_string(data);
     printf("[Game] Game Over! Winner: %s\n", winner ? winner : "Nobody");
 }
 
 void on_button_clicked(const ss_data_t* data, void* user_data) {
+    (void)data;
     const char* button_name = (const char*)user_data;
     printf("[UI] Button '%s' was clicked\n", button_name);
 }
 
 void on_value_changed(const ss_data_t* data, void* user_data) {
+    (void)user_data;
     int new_value = ss_data_get_int(data, 0);
     printf("[UI] Slider value changed to: %d\n", new_value);
 }
@@ -88,6 +92,7 @@ typedef struct {
 } Point;
 
 void on_mouse_moved(const ss_data_t* data, void* user_data) {
+    (void)user_data;
     size_t size;
     Point* pos = (Point*)ss_data_get_custom(data, &size);
     if (pos && size == sizeof(Point)) {

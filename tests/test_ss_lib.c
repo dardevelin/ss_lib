@@ -1,7 +1,15 @@
 #include "ss_lib.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <unistd.h>
+#define TEST_WATCHDOG(seconds) alarm(seconds) /* a deadlock fails the run */
+#else
+#define TEST_WATCHDOG(seconds) ((void)0)
+#endif
 
 static int g_test_counter = 0;
 
@@ -13,6 +21,7 @@ void test_slot_void(const ss_data_t* data, void* user_data) {
 }
 
 void test_slot_int(const ss_data_t* data, void* user_data) {
+    (void)user_data;
     assert(data->type == SS_TYPE_INT);
     int value = ss_data_get_int(data, 0);
     printf("Int signal received: %d\n", value);
@@ -20,6 +29,7 @@ void test_slot_int(const ss_data_t* data, void* user_data) {
 }
 
 void test_slot_string(const ss_data_t* data, void* user_data) {
+    (void)user_data;
     assert(data->type == SS_TYPE_STRING);
     const char* str = ss_data_get_string(data);
     printf("String signal received: %s\n", str ? str : "(null)");
@@ -340,6 +350,7 @@ void test_custom_cleanup(void) {
 }
 #endif
 
+#if SS_ENABLE_THREAD_SAFETY
 void test_thread_safety_config(void) {
     printf("\n=== Testing Thread Safety Configuration ===\n");
     
@@ -359,6 +370,7 @@ void test_thread_safety_config(void) {
     ss_cleanup();
     printf("Thread safety configuration tests passed!\n");
 }
+#endif
 
 #if SS_ENABLE_ISR_SAFE
 void test_isr_null_signal(void) {
@@ -492,6 +504,654 @@ void test_batch_operations(void) {
     printf("Batch operations tests passed!\n");
 }
 
+/* ------------------------------------------------------------------ */
+/* Regression tests for the 2.2.0 review findings (S* / A* ids)        */
+/* ------------------------------------------------------------------ */
+
+/* S1: unregistering a signal from inside one of its own slots */
+static void slot_unregister_self(const ss_data_t* data, void* user_data) {
+    (void)data; (void)user_data;
+    assert(ss_signal_unregister("unreg_sig") == SS_OK);
+    assert(ss_signal_exists("unreg_sig") == 0);
+}
+
+void test_unregister_during_emit(void) {
+    int after = 0;
+    printf("\n=== Testing Unregister During Emit (S1) ===\n");
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("unreg_sig") == SS_OK);
+    assert(ss_connect_ex("unreg_sig", slot_unregister_self, NULL,
+                         SS_PRIORITY_HIGH, NULL) == SS_OK);
+    assert(ss_connect("unreg_sig", test_slot_void, &after) == SS_OK);
+
+    assert(ss_emit_void("unreg_sig") == SS_OK);
+    assert(after == 0);                       /* remaining slots are skipped */
+    assert(ss_signal_exists("unreg_sig") == 0);
+
+    /* The name is free again and the new signal starts empty */
+    assert(ss_signal_register("unreg_sig") == SS_OK);
+    assert(ss_emit_void("unreg_sig") == SS_OK);
+    assert(after == 0);
+
+    ss_cleanup();
+    printf("Unregister during emit tests passed!\n");
+}
+
+/* S1: ss_cleanup() from inside a slot is deferred to the end of the emit */
+static void slot_cleanup_library(const ss_data_t* data, void* user_data) {
+    (void)data; (void)user_data;
+    ss_cleanup();
+    /* The library behaves as uninitialised from here on */
+    assert(ss_signal_exists("cleanup_sig") == 0);
+    assert(ss_emit_void("cleanup_sig") == SS_ERR_NULL_PARAM);
+}
+
+void test_cleanup_during_emit(void) {
+    int after = 0;
+    printf("\n=== Testing Cleanup During Emit (S1) ===\n");
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("cleanup_sig") == SS_OK);
+    assert(ss_connect_ex("cleanup_sig", slot_cleanup_library, NULL,
+                         SS_PRIORITY_HIGH, NULL) == SS_OK);
+    assert(ss_connect("cleanup_sig", test_slot_void, &after) == SS_OK);
+
+    assert(ss_emit_void("cleanup_sig") == SS_OK);
+    assert(after == 0);
+
+    /* Cleanup completed when the emit returned; re-init works */
+    assert(ss_signal_exists("cleanup_sig") == 0);
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("cleanup_sig") == SS_OK);
+    ss_cleanup();
+    printf("Cleanup during emit tests passed!\n");
+}
+
+/* S2: a slot that queues a deferred emission while the queue is flushing */
+static char g_seen[4][32];
+static int g_seen_count = 0;
+
+static void record_string(const ss_data_t* data) {
+    const char* s = ss_data_get_string(data);
+    assert(g_seen_count < 4);
+    strcpy(g_seen[g_seen_count++], s ? s : "(null)");
+}
+
+static void slot_record_and_requeue(const ss_data_t* data, void* user_data) {
+    ss_data_t next = {0};
+    (void)user_data;
+    record_string(data);
+    if (g_seen_count == 1) {
+        next.type = SS_TYPE_STRING;
+        next.value.s_val = "second";
+        assert(ss_emit_deferred("requeue_b", &next) == SS_OK);
+    }
+}
+
+static void slot_record(const ss_data_t* data, void* user_data) {
+    (void)user_data;
+    record_string(data);
+}
+
+void test_deferred_requeue_during_flush(void) {
+    ss_data_t first = {0};
+    char payload[8];
+    printf("\n=== Testing Deferred Requeue During Flush (S2) ===\n");
+
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("requeue_a") == SS_OK);
+    assert(ss_signal_register("requeue_b") == SS_OK);
+    assert(ss_connect_ex("requeue_a", slot_record_and_requeue, NULL,
+                         SS_PRIORITY_HIGH, NULL) == SS_OK);
+    assert(ss_connect("requeue_a", slot_record, NULL) == SS_OK);
+    assert(ss_connect("requeue_b", slot_record, NULL) == SS_OK);
+
+    /* The queue owns a copy: changing the caller's buffer has no effect */
+    strcpy(payload, "first");
+    first.type = SS_TYPE_STRING;
+    first.value.s_val = payload;
+    g_seen_count = 0;
+    assert(ss_emit_deferred("requeue_a", &first) == SS_OK);
+    strcpy(payload, "XXXXX");
+
+    assert(ss_flush_deferred() == SS_OK);
+    assert(g_seen_count == 2);
+    assert(strcmp(g_seen[0], "first") == 0);
+    assert(strcmp(g_seen[1], "first") == 0);  /* not overwritten by "second" */
+
+    /* The entry queued during the flush is delivered by the next flush */
+    assert(ss_flush_deferred() == SS_OK);
+    assert(g_seen_count == 3);
+    assert(strcmp(g_seen[2], "second") == 0);
+
+    /* Pending entries are released by cleanup without being emitted */
+    assert(ss_emit_deferred("requeue_b", &first) == SS_OK);
+    ss_cleanup();
+    assert(g_seen_count == 3);
+    printf("Deferred requeue during flush tests passed!\n");
+}
+
+/* S6: deferred and batched custom data are copied, not referenced */
+#if SS_ENABLE_CUSTOM_DATA
+typedef struct { int a; int b; } test_pair_t;
+static test_pair_t g_pair_seen;
+static int g_custom_cleanup_on_copy = 0;
+
+static void slot_record_pair(const ss_data_t* data, void* user_data) {
+    size_t size = 0;
+    test_pair_t* p = (test_pair_t*)ss_data_get_custom(data, &size);
+    (void)user_data;
+    assert(p != NULL && size == sizeof(test_pair_t));
+    g_pair_seen = *p;
+}
+
+static void count_cleanup_on_copy(void* ptr) {
+    (void)ptr;
+    g_custom_cleanup_on_copy++;
+}
+
+void test_deferred_custom_copy(void) {
+    test_pair_t pair = {1, 2};
+    ss_data_t d = {0};
+    ss_batch_t* batch;
+    printf("\n=== Testing Deferred Custom Data Copy (S6) ===\n");
+
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("custom_sig") == SS_OK);
+    assert(ss_connect("custom_sig", slot_record_pair, NULL) == SS_OK);
+
+    d.type = SS_TYPE_CUSTOM;
+    d.custom_data = &pair;
+    d.size = sizeof(pair);
+    d.custom_cleanup = count_cleanup_on_copy;
+
+    g_custom_cleanup_on_copy = 0;
+    assert(ss_emit_deferred("custom_sig", &d) == SS_OK);
+    pair.a = 99;
+    assert(ss_flush_deferred() == SS_OK);
+    assert(g_pair_seen.a == 1 && g_pair_seen.b == 2);
+
+    batch = ss_batch_create();
+    assert(batch != NULL);
+    assert(ss_batch_add(batch, "custom_sig", &d) == SS_OK);
+    pair.a = 7;
+    assert(ss_batch_emit(batch) == SS_OK);
+    assert(g_pair_seen.a == 99);
+    ss_batch_destroy(batch);
+
+    /* The caller's cleanup belongs to the caller's object, not our copy */
+    assert(g_custom_cleanup_on_copy == 0);
+    ss_cleanup();
+    printf("Deferred custom data copy tests passed!\n");
+}
+#endif
+
+/* S7: ISR queue is drained in order by ss_process_isr_queue() */
+#if SS_ENABLE_ISR_SAFE
+static int g_isr_values[64];
+static int g_isr_count = 0;
+
+static void slot_record_isr(const ss_data_t* data, void* user_data) {
+    (void)user_data;
+    assert(g_isr_count < 64);
+    g_isr_values[g_isr_count++] = ss_data_get_int(data, -1);
+}
+
+void test_isr_queue_processing(void) {
+    int i;
+    char long_name[300];
+    printf("\n=== Testing ISR Queue Processing (S7) ===\n");
+
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("isr_sig") == SS_OK);
+    assert(ss_connect("isr_sig", slot_record_isr, NULL) == SS_OK);
+
+    g_isr_count = 0;
+    assert(ss_emit_from_isr("isr_sig", 1) == SS_OK);
+    assert(ss_emit_from_isr("isr_sig", 2) == SS_OK);
+    assert(ss_emit_from_isr("isr_sig", 3) == SS_OK);
+    assert(g_isr_count == 0);                 /* nothing runs in the ISR */
+
+    assert(ss_process_isr_queue() == SS_OK);
+    assert(g_isr_count == 3);
+    assert(g_isr_values[0] == 1 && g_isr_values[1] == 2 && g_isr_values[2] == 3);
+
+    /* A full queue rejects, and draining makes room again */
+    for (i = 0; i < SS_ISR_QUEUE_SIZE; i++) {
+        assert(ss_emit_from_isr("isr_sig", 100 + i) == SS_OK);
+    }
+    assert(ss_emit_from_isr("isr_sig", -1) == SS_ERR_WOULD_OVERFLOW);
+    assert(ss_process_isr_queue() == SS_OK);
+    assert(g_isr_count == 3 + SS_ISR_QUEUE_SIZE);
+    for (i = 0; i < SS_ISR_QUEUE_SIZE; i++) {
+        assert(g_isr_values[3 + i] == 100 + i);
+    }
+    assert(ss_emit_from_isr("isr_sig", 5) == SS_OK);
+    assert(ss_process_isr_queue() == SS_OK);
+
+    /* S10: over-long names are rejected, never truncated */
+    memset(long_name, 'i', sizeof(long_name) - 1);
+    long_name[sizeof(long_name) - 1] = '\0';
+    assert(ss_emit_from_isr(long_name, 1) == SS_ERR_WOULD_OVERFLOW);
+
+    /* Events for unknown signals are dropped and reported */
+    assert(ss_emit_from_isr("no_such_signal", 1) == SS_OK);
+    assert(ss_process_isr_queue() == SS_ERR_NOT_FOUND);
+
+    ss_cleanup();
+    assert(ss_process_isr_queue() == SS_ERR_NULL_PARAM);
+    printf("ISR queue processing tests passed!\n");
+}
+#endif
+
+/* S9: an unregistered signal leaves nothing behind for the next one */
+void test_unregister_resets_signal(void) {
+    printf("\n=== Testing Unregister Resets Signal (S9) ===\n");
+#if SS_ENABLE_INTROSPECTION
+    {
+        ss_signal_info_t* list = NULL;
+        size_t count = 0;
+        assert(ss_init() == SS_OK);
+        assert(ss_signal_register_ex("s9_old", "old description",
+                                     SS_PRIORITY_HIGH) == SS_OK);
+        assert(ss_signal_unregister("s9_old") == SS_OK);
+        assert(ss_signal_register("s9_new") == SS_OK);
+        assert(ss_get_signal_list(&list, &count) == SS_OK);
+        assert(count == 1);
+        assert(strcmp(list[0].name, "s9_new") == 0);
+        assert(list[0].description == NULL);
+        assert(list[0].priority == SS_PRIORITY_NORMAL);
+        ss_free_signal_list(list, count);
+        ss_cleanup();
+    }
+#endif
+    printf("Unregister resets signal tests passed!\n");
+}
+
+/* S10: over-long names are rejected by deferred and batch emission */
+void test_name_too_long_rejected(void) {
+    char long_name[300];
+    ss_batch_t* batch;
+    printf("\n=== Testing Over-long Names Rejected (S10) ===\n");
+
+    memset(long_name, 'n', sizeof(long_name) - 1);
+    long_name[sizeof(long_name) - 1] = '\0';
+
+    assert(ss_init() == SS_OK);
+    assert(ss_emit_deferred(long_name, NULL) == SS_ERR_WOULD_OVERFLOW);
+    batch = ss_batch_create();
+    assert(batch != NULL);
+    assert(ss_batch_add(batch, long_name, NULL) == SS_ERR_WOULD_OVERFLOW);
+    ss_batch_destroy(batch);
+    assert(ss_flush_deferred() == SS_OK);
+    ss_cleanup();
+    printf("Over-long names rejected tests passed!\n");
+}
+
+/* S11: the signal list owns its strings */
+void test_signal_list_owns_strings(void) {
+    printf("\n=== Testing Signal List Owns Strings (S11) ===\n");
+#if SS_ENABLE_INTROSPECTION
+    {
+        ss_signal_info_t* list = NULL;
+        size_t count = 0;
+        assert(ss_init() == SS_OK);
+        assert(ss_signal_register_ex("s11", "about s11", SS_PRIORITY_LOW) == SS_OK);
+        assert(ss_get_signal_list(&list, &count) == SS_OK);
+        assert(ss_signal_unregister("s11") == SS_OK);
+        assert(count == 1);
+        assert(strcmp(list[0].name, "s11") == 0);
+        assert(strcmp(list[0].description, "about s11") == 0);
+        ss_free_signal_list(list, count);
+        ss_cleanup();
+    }
+#endif
+    printf("Signal list owns strings tests passed!\n");
+}
+
+/* S5: slots may call back into the library while thread safety is on */
+#if SS_ENABLE_THREAD_SAFETY
+static int g_nested_called = 0;
+
+static void slot_nested(const ss_data_t* data, void* user_data) {
+    (void)data; (void)user_data;
+    g_nested_called++;
+}
+
+static void slot_reenter(const ss_data_t* data, void* user_data) {
+    (void)data; (void)user_data;
+    assert(ss_signal_exists("outer") == 1);
+    assert(ss_connect("inner", slot_nested, NULL) == SS_OK);
+    assert(ss_emit_void("inner") == SS_OK);
+    assert(ss_emit_deferred("inner", NULL) == SS_OK);
+}
+
+void test_reentrant_calls_with_thread_safety(void) {
+    printf("\n=== Testing Re-entrant Calls With Thread Safety (S5) ===\n");
+    TEST_WATCHDOG(10);
+
+    assert(ss_init() == SS_OK);
+    ss_set_thread_safe(1);
+    assert(ss_signal_register("outer") == SS_OK);
+    assert(ss_signal_register("inner") == SS_OK);
+    assert(ss_connect("outer", slot_reenter, NULL) == SS_OK);
+
+    g_nested_called = 0;
+    assert(ss_emit_void("outer") == SS_OK);
+    assert(g_nested_called == 1);
+    assert(ss_flush_deferred() == SS_OK);
+    assert(g_nested_called == 2);
+
+    /* Toggling inside a slot must not leave the mutex held */
+    ss_set_thread_safe(0);
+    ss_set_thread_safe(1);
+    assert(ss_emit_void("inner") == SS_OK);
+
+    ss_cleanup();
+    TEST_WATCHDOG(0);
+    printf("Re-entrant calls with thread safety tests passed!\n");
+}
+#endif
+
+/* Disconnect bookkeeping while a signal is emitting */
+static ss_connection_t g_self_handle = 0;
+
+/* user_data: counter for the replacement slot */
+static void slot_replace_self(const ss_data_t* data, void* user_data) {
+    (void)data;
+    assert(ss_disconnect_handle(g_self_handle) == SS_OK);
+    assert(ss_disconnect_handle(g_self_handle) == SS_ERR_NOT_FOUND);
+    /* The limit counts live slots, so the freed place can be reused now */
+    assert(ss_connect("replace_sig", test_slot_void, user_data) == SS_OK);
+}
+
+void test_disconnect_bookkeeping_during_emit(void) {
+    int replacement = 0;
+    printf("\n=== Testing Disconnect Bookkeeping During Emit ===\n");
+    assert(ss_init() == SS_OK);
+    ss_set_max_slots_per_signal(1);
+    assert(ss_signal_register("replace_sig") == SS_OK);
+    assert(ss_connect_ex("replace_sig", slot_replace_self, &replacement,
+                         SS_PRIORITY_NORMAL, &g_self_handle) == SS_OK);
+    assert(ss_emit_void("replace_sig") == SS_OK);
+    assert(replacement == 0);                 /* connected after the cursor */
+    assert(ss_emit_void("replace_sig") == SS_OK);
+    assert(replacement == 1);
+    ss_cleanup();
+    printf("Disconnect bookkeeping during emit tests passed!\n");
+}
+
+/* Batches can be extended or destroyed from their own slots */
+static ss_batch_t* g_batch = NULL;
+static int g_batch_slot_calls = 0;
+
+static void slot_extend_batch(const ss_data_t* data, void* user_data) {
+    (void)user_data;
+    g_batch_slot_calls++;
+    if (ss_data_get_int(data, 0) == 1) {
+        ss_data_t two = {0};
+        two.type = SS_TYPE_INT;
+        two.value.i_val = 2;
+        assert(ss_batch_add(g_batch, "batch_sig", &two) == SS_OK);
+    } else if (ss_data_get_int(data, 0) == 3) {
+        ss_batch_destroy(g_batch);   /* deferred until the emit returns */
+        g_batch = NULL;
+    }
+}
+
+void test_batch_reentrancy(void) {
+    ss_data_t d = {0};
+    printf("\n=== Testing Batch Re-entrancy ===\n");
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("batch_sig") == SS_OK);
+    assert(ss_connect("batch_sig", slot_extend_batch, NULL) == SS_OK);
+
+    g_batch = ss_batch_create();
+    assert(g_batch != NULL);
+    d.type = SS_TYPE_INT;
+    d.value.i_val = 1;
+    assert(ss_batch_add(g_batch, "batch_sig", &d) == SS_OK);
+    g_batch_slot_calls = 0;
+    assert(ss_batch_emit(g_batch) == SS_OK);
+    assert(g_batch_slot_calls == 1);          /* added entry waits */
+    assert(ss_batch_emit(g_batch) == SS_OK);
+    assert(g_batch_slot_calls == 2);
+
+    d.value.i_val = 3;
+    assert(ss_batch_add(g_batch, "batch_sig", &d) == SS_OK);
+    assert(ss_batch_add(g_batch, "batch_sig", &d) == SS_OK);
+    assert(ss_batch_emit(g_batch) == SS_OK);  /* destroyed by its own slot */
+    assert(g_batch == NULL);
+    assert(g_batch_slot_calls == 3);          /* remaining entry discarded */
+
+    ss_cleanup();
+    printf("Batch re-entrancy tests passed!\n");
+}
+
+/* A6: the default namespace qualifies unqualified names */
+void test_default_namespace(void) {
+    char long_ns[300];
+    int calls = 0;
+    ss_data_t none = {0};                     /* SS_TYPE_VOID */
+    printf("\n=== Testing Default Namespace (A6) ===\n");
+    assert(ss_init() == SS_OK);
+
+    assert(ss_set_namespace("app") == SS_OK);
+    assert(ss_signal_register("click") == SS_OK);
+    assert(ss_signal_exists("app::click") == 1);
+    assert(ss_signal_exists("click") == 1);
+    assert(ss_connect("click", test_slot_void, &calls) == SS_OK);
+
+    assert(ss_emit_void("click") == SS_OK);
+    assert(ss_emit_void("app::click") == SS_OK);
+    assert(ss_emit_namespaced("app", "click", &none) == SS_OK);
+    assert(ss_emit_deferred("click", NULL) == SS_OK);
+    assert(ss_flush_deferred() == SS_OK);
+    assert(calls == 4);
+
+    /* Qualified names are never prefixed again */
+    assert(ss_signal_register("ui::ok") == SS_OK);
+    assert(ss_signal_exists("app::ui::ok") == 0);
+
+    /* Without a namespace, "click" is a different signal */
+    assert(ss_set_namespace(NULL) == SS_OK);
+    assert(ss_signal_exists("click") == 0);
+    assert(ss_signal_exists("app::click") == 1);
+
+    /* An empty namespace clears it too */
+    assert(ss_set_namespace("") == SS_OK);
+    assert(ss_get_namespace() == NULL);
+
+    memset(long_ns, 'n', sizeof(long_ns) - 1);
+    long_ns[sizeof(long_ns) - 1] = '\0';
+    assert(ss_set_namespace(long_ns) == SS_ERR_WOULD_OVERFLOW);
+    assert(ss_get_namespace() == NULL);
+
+    ss_cleanup();
+    printf("Default namespace tests passed!\n");
+}
+
+/* A6: ss_init_static places the library context in a caller pool */
+void test_init_static_pool(void) {
+    size_t need = ss_get_required_pool_size();
+    unsigned char* raw;
+    printf("\n=== Testing Static Pool Initialisation (A6) ===\n");
+
+    assert(need > 0);
+
+    /* 2.1 compatibility: NULL or too small a pool behaves like ss_init() */
+    assert(ss_init_static(NULL, 0) == SS_OK);
+    assert(ss_signal_register("fallback_sig") == SS_OK);
+    ss_cleanup();
+
+    raw = (unsigned char*)malloc(need + 1);
+    assert(raw != NULL);
+    memset(raw, 0xA5, need + 1);
+    assert(ss_init_static(raw + 1, need - 1) == SS_OK);
+    assert(raw[need / 2] == 0xA5);            /* pool not used */
+    ss_cleanup();
+
+    /* A misaligned pool of the advertised size still works */
+    assert(ss_init_static(raw + 1, need) == SS_OK);
+    assert(ss_signal_register("pool_sig") == SS_OK);
+    assert(ss_emit_void("pool_sig") == SS_OK);
+    ss_cleanup();                             /* must not free the pool */
+    assert(ss_signal_exists("pool_sig") == 0);
+
+    free(raw);
+    printf("Static pool initialisation tests passed!\n");
+}
+
+/* A8: a caller built with a different ss_data_t layout is refused */
+void test_abi_check(void) {
+    printf("\n=== Testing ABI Check (A8) ===\n");
+    assert(ss_init_abi(sizeof(ss_data_t) + 1) == SS_ERR_CONFIG_MISMATCH);
+    assert(ss_signal_exists("anything") == 0);   /* still uninitialised */
+    assert(ss_init_abi(sizeof(ss_data_t)) == SS_OK);
+    ss_cleanup();
+    assert(strcmp(ss_error_string(SS_ERR_CONFIG_MISMATCH), "Unknown error") != 0);
+    printf("ABI check tests passed!\n");
+}
+
+/* Debug trace writes only to the stream given to ss_enable_trace() */
+#if SS_ENABLE_DEBUG_TRACE
+void test_debug_trace(void) {
+    FILE* out = tmpfile();
+    long written;
+    printf("\n=== Testing Debug Trace ===\n");
+    assert(out != NULL);
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("quiet") == SS_OK);    /* trace off: nothing */
+    ss_enable_trace(out);
+    assert(ss_signal_register("traced") == SS_OK);
+    written = ftell(out);
+    assert(written > 0);
+    ss_disable_trace();
+    assert(ss_signal_register("quiet_again") == SS_OK);
+    assert(ftell(out) == written);
+    ss_cleanup();
+    fclose(out);
+    printf("Debug trace tests passed!\n");
+}
+#endif
+
+/* Review R1: a ring slot reused after wrapping must not free a stale payload */
+static void slot_ignore(const ss_data_t* data, void* user_data) {
+    (void)data; (void)user_data;
+}
+
+void test_queue_wraparound(void) {
+    ss_data_t s = {0};
+    ss_data_t n = {0};
+    ss_batch_t* batch;
+    int i;
+    printf("\n=== Testing Queue Wrap-around ===\n");
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("wrap") == SS_OK);
+    assert(ss_connect("wrap", slot_ignore, NULL) == SS_OK);
+    s.type = SS_TYPE_STRING;
+    s.value.s_val = "payload";
+    n.type = SS_TYPE_INT;
+
+    for (i = 0; i < SS_DEFERRED_QUEUE_SIZE + 1; i++) {   /* wraps to slot 0 */
+        assert(ss_emit_deferred("wrap", &s) == SS_OK);
+        assert(ss_flush_deferred() == SS_OK);
+    }
+    assert(ss_emit_deferred("wrap", &n) == SS_OK);         /* no payload */
+    assert(ss_emit_deferred("wrap", NULL) == SS_OK);
+    assert(ss_flush_deferred() == SS_OK);
+
+    batch = ss_batch_create();
+    assert(batch != NULL);
+    for (i = 0; i < SS_BATCH_MAX_ENTRIES + 1; i++) {
+        assert(ss_batch_add(batch, "wrap", &s) == SS_OK);
+        assert(ss_batch_emit(batch) == SS_OK);
+    }
+    assert(ss_batch_add(batch, "wrap", &n) == SS_OK);
+    assert(ss_batch_emit(batch) == SS_OK);
+    ss_batch_destroy(batch);
+    ss_cleanup();
+    printf("Queue wrap-around tests passed!\n");
+}
+
+/* Review R4: a nested flush does not let the outer flush take new entries */
+static int g_nested_seen[8];
+static int g_nested_count = 0;
+
+static void slot_nested_flush(const ss_data_t* data, void* user_data) {
+    int v = ss_data_get_int(data, -1);
+    (void)user_data;
+    g_nested_seen[g_nested_count++] = v;
+    if (v == 1) {
+        assert(ss_flush_deferred() == SS_OK);   /* emits 2 */
+        assert(ss_emit_deferred("nested_q", &(ss_data_t){ .type = SS_TYPE_INT,
+                                                          .value.i_val = 3 }) == SS_OK);
+    }
+}
+
+void test_nested_flush(void) {
+    printf("\n=== Testing Nested Flush ===\n");
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("nested_q") == SS_OK);
+    assert(ss_connect("nested_q", slot_nested_flush, NULL) == SS_OK);
+    g_nested_count = 0;
+    assert(ss_emit_deferred("nested_q", &(ss_data_t){ .type = SS_TYPE_INT,
+                                                      .value.i_val = 1 }) == SS_OK);
+    assert(ss_emit_deferred("nested_q", &(ss_data_t){ .type = SS_TYPE_INT,
+                                                      .value.i_val = 2 }) == SS_OK);
+    assert(ss_flush_deferred() == SS_OK);
+    assert(g_nested_count == 2);              /* 3 was queued during the flush */
+    assert(g_nested_seen[0] == 1 && g_nested_seen[1] == 2);
+    assert(ss_flush_deferred() == SS_OK);
+    assert(g_nested_count == 3 && g_nested_seen[2] == 3);
+    ss_cleanup();
+    printf("Nested flush tests passed!\n");
+}
+
+/* Review R3: parameter errors reach the error handler */
+static int g_handler_calls = 0;
+
+static void count_errors(ss_error_t error, const char* msg) {
+    (void)error;
+    assert(msg != NULL);
+    g_handler_calls++;
+}
+
+void test_error_handler_coverage(void) {
+    printf("\n=== Testing Error Handler Coverage ===\n");
+    assert(ss_init() == SS_OK);
+    ss_set_error_handler(count_errors);
+    g_handler_calls = 0;
+    assert(ss_emit_namespaced(NULL, "x", NULL) == SS_ERR_NULL_PARAM);
+    assert(ss_disconnect_handle(0) == SS_ERR_NULL_PARAM);
+    assert(ss_batch_add(NULL, "x", NULL) == SS_ERR_NULL_PARAM);
+    assert(ss_batch_emit(NULL) == SS_ERR_NULL_PARAM);
+    assert(ss_emit_void("missing") == SS_ERR_NOT_FOUND);
+    assert(g_handler_calls == 5);
+    ss_cleanup();
+    printf("Error handler coverage tests passed!\n");
+}
+
+/* Review R7: restoring the namespace from ss_get_namespace() is safe */
+void test_namespace_self_assign(void) {
+    printf("\n=== Testing Namespace Self-assignment ===\n");
+    assert(ss_init() == SS_OK);
+    assert(ss_set_namespace("keep") == SS_OK);
+    assert(ss_set_namespace(ss_get_namespace()) == SS_OK);
+    assert(strcmp(ss_get_namespace(), "keep") == 0);
+    ss_cleanup();
+    printf("Namespace self-assignment tests passed!\n");
+}
+
+/* Version macros match the runtime string */
+void test_version(void) {
+    char expected[32];
+    printf("\n=== Testing Version ===\n");
+    snprintf(expected, sizeof(expected), "%d.%d.%d", SS_VERSION_MAJOR, SS_VERSION_MINOR, SS_VERSION_PATCH);
+    assert(strcmp(expected, SS_VERSION_STRING) == 0);
+    assert(strcmp(ss_version(), SS_VERSION_STRING) == 0);
+    printf("Version tests passed!\n");
+}
+
 int main(void) {
     printf("Starting Signal-Slot Library Tests\n");
     printf("==================================\n");
@@ -507,12 +1167,43 @@ int main(void) {
 #if SS_ENABLE_CUSTOM_DATA
     test_custom_cleanup();
 #endif
+#if SS_ENABLE_THREAD_SAFETY
     test_thread_safety_config();
+#endif
     test_namespace();
     test_deferred_emission();
     test_batch_operations();
 #if SS_ENABLE_ISR_SAFE
     test_isr_null_signal();
+#endif
+
+    test_unregister_during_emit();
+    test_cleanup_during_emit();
+    test_deferred_requeue_during_flush();
+#if SS_ENABLE_CUSTOM_DATA
+    test_deferred_custom_copy();
+#endif
+#if SS_ENABLE_ISR_SAFE
+    test_isr_queue_processing();
+#endif
+    test_unregister_resets_signal();
+    test_name_too_long_rejected();
+    test_signal_list_owns_strings();
+#if SS_ENABLE_THREAD_SAFETY
+    test_reentrant_calls_with_thread_safety();
+#endif
+    test_disconnect_bookkeeping_during_emit();
+    test_batch_reentrancy();
+    test_default_namespace();
+    test_init_static_pool();
+    test_abi_check();
+    test_queue_wraparound();
+    test_nested_flush();
+    test_error_handler_coverage();
+    test_namespace_self_assign();
+    test_version();
+#if SS_ENABLE_DEBUG_TRACE
+    test_debug_trace();
 #endif
 
     printf("\n==================================\n");

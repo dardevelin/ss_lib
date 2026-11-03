@@ -30,10 +30,10 @@ Enhancement suggestions are welcome! Please include:
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Make your changes
+3. Make your changes (for a bug fix, first write a test that fails without the fix)
 4. Add/update tests as needed
 5. Update documentation
-6. Run tests locally
+6. Run tests locally (`make test-all` and the sanitizer targets)
 7. Commit with clear messages
 8. Push to your fork
 9. Open a Pull Request
@@ -49,12 +49,14 @@ cd ss_lib
 make clean && make all
 
 # Run tests
-make test
+make test-all
 make test_embedded
 
 # Build documentation
 make docs
 ```
+
+`make help` lists all targets. The Makefile honours `CC` and builds everything with one `FEATURES` variable.
 
 ## Coding Standards
 
@@ -78,6 +80,14 @@ ss_error_t ss_example_function(const char* param) {
 }
 ```
 
+### Source Rules
+
+- `src/ss_lib.c` is written in the common subset of C89 and C11: block comments only, declarations at the top of blocks, C11-only facilities behind `__STDC_VERSION__` checks.
+- `src/ss_lib_c89.c` is the C89 copy and must stay in sync: its body is identical to `src/ss_lib.c`, only the header comment differs. `scripts/check_c89_sync.sh` checks it; `scripts/check_c89_sync.sh --fix` copies the body over. `make test-c89` builds the copy as strict C89 against the test suite.
+- `include/ss_lib_single.h` is generated. After changing `include/ss_lib.h`, `include/ss_config.h` or `src/ss_lib.c`, run `make single-header` and commit the result; `make check-single-header` fails CI when it is stale. Never edit it by hand.
+- The version lives only in `include/ss_lib.h`; the Makefile, CMake, Doxygen, pkg-config and the shared library's soname read it from there. See [Releasing](#releasing).
+- Configuration macros must not be `#define`d in examples or tests; pass them on the command line so the library and its callers agree.
+
 ### Commit Messages
 
 - Use present tense ("Add feature" not "Added feature")
@@ -95,23 +105,57 @@ Add static memory allocation support
 Fixes #123
 ```
 
+## Releasing
+
+SS_Lib follows [semantic versioning](https://semver.org/). Pick the next version from what changed since the last tag:
+
+| Change | Bump |
+|---|---|
+| Removed or changed public function, macro, enum value or struct layout; changed meaning of an existing call | **major** (also the shared library's soname, `libss_lib.so.MAJOR`) |
+| New function, enum value appended at the end, new configuration macro, deprecation | **minor** |
+| Bug fix with no API change | **patch** |
+
+In a minor or patch release, deprecate instead of removing, and append new enum values instead of inserting them.
+
+1. Move the entries under `## [Unreleased]` in `CHANGELOG.md` to a new `## [x.y.z] - YYYY-MM-DD` section, and update the compare links at the bottom. This section becomes the GitHub release notes (`make release-notes` prints it).
+2. In `include/ss_lib.h`, set `SS_VERSION_MAJOR`/`MINOR`/`PATCH`, `SS_VERSION_STRING` and the `@version` comment.
+3. Run `make single-header`, then `make test-all`; it includes `check-version`.
+4. Merge to `main` through a pull request with CI green.
+5. Tag the merge commit on `main` and push the tag:
+   ```bash
+   git tag -a vX.Y.Z -m "SS_Lib X.Y.Z" && git push origin vX.Y.Z
+   ```
+   `.github/workflows/release.yml` checks that the tag matches the header and is on `main`, runs `make test-all`, and publishes the notes with the source `.tar.gz`/`.zip`, `ss_lib_single.h` and `SHA256SUMS`. A tag with a pre-release suffix (`vX.Y.Z-rc.1`) publishes a pre-release and may be on a release branch.
+6. Rerunning the workflow for an existing release replaces its assets.
+
 ## Testing
 
 ### Running Tests
 
 ```bash
-# Run all tests
+# Run the test suite (default configuration)
 make test
+
+# Everything CI checks locally: static, minimal, C89 and newest-standard
+# builds, C89..C2y compile check, single-header and version consistency
+make test-all
+
+# Sanitizers and memory checks
+make test-asan
+make test-ubsan
+make test-tsan        # runs test_threads under ThreadSanitizer
+make test-msan        # clang only
+make test-valgrind
 
 # Run specific test suite
 ./build/test_ss_lib
-
-# Run with valgrind (memory checks)
-make test-valgrind
 ```
+
+Test programs: `tests/test_ss_lib.c` (main suite, including regression tests), `tests/test_simple.c`, `tests/test_memory.c` (tracking allocator: no leaks, allocator routing, zero heap in static mode), and `tests/test_threads.c` (pthread stress test).
 
 ### Writing Tests
 
+- For bug fixes, write a failing test first, then fix the bug
 - Add tests for new features
 - Ensure edge cases are covered
 - Test error conditions
@@ -127,6 +171,7 @@ make test-valgrind
 ## Performance Considerations
 
 For embedded systems focus:
+- Do not add heap use to the static-memory paths (register, connect, emit, deferred, namespace, disconnect, unregister, cleanup); `tests/test_memory.c` checks this
 - Minimize dynamic allocations
 - Consider static memory options
 - Profile changes on target hardware

@@ -1,4 +1,5 @@
-ss_lib_single.h
+# Single header generated outside include/ (include/ss_lib_single.h is tracked)
+/ss_lib_single.h
 
 # Build artifacts
 build/
@@ -9,19 +10,20 @@ build/
 *.dll
 *.exe
 
-# Test executables
-test_*
-example_*
-!tests/
-!examples/
+# Test and example executables built at the top level
+/test_*
+/example_*
 
 # Benchmark results
 benchmark_results.txt
+benchmark_results.json
+plots/
+.venv/
 *.log
 
 # Coverage files
 coverage.info
-coverage-report/
+coverage_report/
 *.gcda
 *.gcno
 

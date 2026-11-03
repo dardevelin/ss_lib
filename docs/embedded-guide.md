@@ -4,52 +4,68 @@ This guide covers using SS_Lib in resource-constrained embedded environments inc
 
 ## Static Memory Mode
 
-Static memory mode eliminates all dynamic allocation after initialization. Signals and slots are stored in pre-allocated arrays.
+In static memory mode the library context, signals and slots live in static storage. `ss_init` (unless `SS_STATIC_CONTEXT` is 0), register, connect, emit, deferred emission, namespace, disconnect, unregister and cleanup never touch the heap.
+
+Functions whose job is to hand you an allocated object still use `SS_MALLOC`/`SS_CALLOC`: `ss_data_create`, `ss_data_set_string`, `ss_data_set_custom`, `ss_get_signal_list` and `ss_batch_create`. Avoid them on targets without a heap; the `ss_emit_*` helpers and `ss_emit_deferred` with a stack `ss_data_t` need no allocation.
 
 ### Configuration
 
-```c
-#define SS_USE_STATIC_MEMORY 1
-#define SS_MAX_SIGNALS 16       /* adjust to your needs */
-#define SS_MAX_SLOTS 32         /* total slots across all signals */
-#define SS_MAX_SIGNAL_NAME_LENGTH 32
+Pass the configuration on the command line, identically for the library and every file that includes `ss_lib.h`:
+
+```bash
+-DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -DSS_MAX_SLOTS=32 -DSS_MAX_SIGNAL_NAME_LENGTH=32
 ```
+
+`-DSS_EMBEDDED_BUILD` is a preset for static memory, no threading, 10 slots per signal and a deferred queue of 16 entries.
+
+Fixed limits in static mode:
+- Names: `SS_MAX_SIGNAL_NAME_LENGTH` bytes including the terminator (default 32)
+- Descriptions: `SS_MAX_DESCRIPTION_LENGTH` bytes including the terminator (default 32); longer ones are rejected with `SS_ERR_WOULD_OVERFLOW`
+- String/custom payloads of deferred and batch entries: `SS_DEFERRED_PAYLOAD_SIZE` bytes (default 32); larger ones are rejected with `SS_ERR_WOULD_OVERFLOW`
 
 ### Memory Budget
 
-Calculate your memory requirements:
+In static mode the library's own RAM is in `.bss` (the context is in your pool instead if you use `ss_init_static()` with `SS_STATIC_CONTEXT=0`):
 
 | Component | Size |
 |-----------|------|
-| Signal array | `SS_MAX_SIGNALS * sizeof(ss_signal_t)` (~48 bytes each) |
-| Slot array | `SS_MAX_SLOTS * sizeof(ss_slot_t)` (~24 bytes each) |
-| Name buffers | `SS_MAX_SIGNALS * SS_MAX_SIGNAL_NAME_LENGTH` |
-| Context | ~200 bytes overhead |
+| Signal array | `SS_MAX_SIGNALS` entries, each with a name buffer (`SS_MAX_SIGNAL_NAME_LENGTH`), a description buffer (`SS_MAX_DESCRIPTION_LENGTH`, only with introspection) and a few words of bookkeeping |
+| Slot array | `SS_MAX_SLOTS` entries of a few pointers each |
+| Deferred queue | `SS_DEFERRED_QUEUE_SIZE` entries, each with a name buffer, an `ss_data_t` and `SS_DEFERRED_PAYLOAD_SIZE` payload bytes |
+| Namespace | `SS_MAX_SIGNAL_NAME_LENGTH` bytes |
+| ISR queue (`SS_ENABLE_ISR_SAFE`) | `SS_ISR_QUEUE_SIZE` entries, each with a name buffer and three ints |
 
-Example with 16 signals and 32 slots:
-- Signals: 16 * 48 = 768 bytes
-- Slots: 32 * 24 = 768 bytes
-- Names: 16 * 32 = 512 bytes
-- Context: ~200 bytes
-- **Total: ~2.1 KB**
+The deferred queue is often the largest part; reduce `SS_DEFERRED_QUEUE_SIZE` if you do not use deferred emission. For the exact size on your target, `ss_get_required_pool_size()` returns the size of the context (everything above except the ISR queue) plus alignment slack, and `ss_get_memory_stats()` reports it as `total_bytes_allocated`. For reference, on a 64-bit host the embedded preset with 16 signals and 32 slots needs about 5 KB (about 4 KB with `SS_MINIMAL_BUILD`); 32-bit targets need less.
 
 ### Initialization
 
 ```c
-ss_init();  /* Uses static arrays, no heap allocation */
+ss_init();  /* Uses static storage, no heap allocation */
 ```
 
-The `ss_init_static()` function accepts a memory pool parameter for forward compatibility but currently delegates to `ss_init()`.
+`ss_init_static(pool, size)` places the context in a buffer you provide instead (any alignment, at least `ss_get_required_pool_size()` bytes; `ss_cleanup()` never frees it). Use it to put the context in a specific memory region, or to avoid the heap for the context in dynamic mode. A NULL or too small buffer is ignored and the call behaves like `ss_init()` (for 2.1 compatibility), so check `ss_get_required_pool_size()` yourself.
+
+In static mode the built-in context is still compiled in, so a pool alone does not save RAM. Build with `-DSS_STATIC_CONTEXT=0` to drop it when you always pass a pool; `ss_init()` then allocates the context with `SS_CALLOC`.
+
+```c
+static unsigned char pool[CONTEXT_POOL_SIZE];   /* >= ss_get_required_pool_size() */
+
+if (ss_get_required_pool_size() > sizeof(pool)) {
+    /* enlarge the pool */
+}
+ss_init_static_abi(pool, sizeof(pool), SS_ABI_TAG);
+```
+
+`ss_init_abi(SS_ABI_TAG)` / `ss_init_static_abi(..., SS_ABI_TAG)` return `SS_ERR_CONFIG_MISMATCH` if the application and the library were built with different `ss_data_t` layouts; prefer them in new code.
 
 ## ISR-Safe Operations
 
-SS_Lib provides a lock-free emission path for use in interrupt service routines.
+SS_Lib provides a lock-free path for interrupt service routines: the ISR queues an event, and the main loop delivers it to the slots.
 
 ### Configuration
 
-```c
-#define SS_ENABLE_ISR_SAFE 1
-#define SS_ISR_QUEUE_SIZE 16    /* number of queued ISR emissions */
+```bash
+-DSS_ENABLE_ISR_SAFE=1 -DSS_ISR_QUEUE_SIZE=16   # number of queued ISR events
 ```
 
 ### Usage
@@ -57,35 +73,48 @@ SS_Lib provides a lock-free emission path for use in interrupt service routines.
 ```c
 void ADC_IRQHandler(void) {
     uint16_t value = ADC->DR;
-    ss_emit_from_isr("adc_ready", (int)value);
+    ss_emit_from_isr("adc_ready", (int)value);   /* queued; no slot runs here */
 }
 
-/* In main loop, process ISR queue */
-void main_loop(void) {
-    /* Process pending ISR emissions */
-    /* (ISR queue is processed via the standard emit path) */
+int main(void) {
+    ss_init();
+    ss_signal_register("adc_ready");
+    ss_connect("adc_ready", on_adc_ready, NULL);
 
-    ss_emit_int("adc_ready", last_adc_value);
+    for (;;) {
+        ss_process_isr_queue();   /* delivers queued events, oldest first */
+        /* ... other work ... */
+    }
 }
 ```
 
+Never call `ss_emit()` or other library functions from an ISR; only `ss_emit_from_isr()` is safe there.
+
 ### How It Works
 
-`ss_emit_from_isr` stores the signal name and integer value in a ring buffer using a compiler write barrier. No mutex is acquired, no memory is allocated. The pending flag uses volatile access for visibility between ISR and main context.
+`ss_emit_from_isr` claims a free queue entry with an atomic compare-and-swap, copies the name and value into it and marks it ready. No mutex is acquired, no memory is allocated and no slot is called, so it is safe with nested interrupts and from several threads, and usable before `ss_init()`. `ss_process_isr_queue()` takes a snapshot of the ready entries, frees each one and emits it in queue order. Names are resolved against the default namespace at delivery. Events queued during delivery wait for the next call; `ss_cleanup()` discards queued events.
+
+The atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins or MSVC Interlocked functions. On cores without compare-and-swap (Cortex-M0/M0+, AVR), define `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` to disable and restore interrupts, e.g. in `ss_config.h`:
+
+```c
+#define SS_ISR_CRITICAL_ENTER() uint32_t ss_irq_ = __get_PRIMASK(); __disable_irq()
+#define SS_ISR_CRITICAL_EXIT()  __set_PRIMASK(ss_irq_)
+```
 
 ### Limitations
 
 - Only supports integer data (to avoid allocation in ISR)
-- Queue has fixed depth (`SS_ISR_QUEUE_SIZE`)
-- Returns `SS_ERR_WOULD_OVERFLOW` if queue is full
+- Queue has fixed depth (`SS_ISR_QUEUE_SIZE`); events stay queued until `ss_process_isr_queue()` runs
+- Returns `SS_ERR_WOULD_OVERFLOW` if the queue is full or the name is too long, `SS_ERR_NULL_PARAM` for a NULL or empty name
 - Signal name must be shorter than `SS_MAX_SIGNAL_NAME_LENGTH`
+- An event for an unregistered signal is dropped; `ss_process_isr_queue()` returns `SS_ERR_NOT_FOUND`
 
 ## Minimal Build
 
 Strip all optional features for the smallest footprint:
 
-```c
-#define SS_MINIMAL_BUILD
+```bash
+-DSS_MINIMAL_BUILD
 ```
 
 This disables:
@@ -102,14 +131,10 @@ Minimal build retains: signal register/unregister, connect/disconnect, all emit 
 ### STM32 with HAL
 
 ```c
-/* ss_config.h overrides or compiler flags */
-#define SS_USE_STATIC_MEMORY 1
-#define SS_MAX_SIGNALS 16
-#define SS_MAX_SLOTS 32
-#define SS_ENABLE_ISR_SAFE 1
-#define SS_ENABLE_THREAD_SAFETY 0
-#define SS_MINIMAL_BUILD
-
+/* Library and application compiled with:
+ *   -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -DSS_MAX_SLOTS=32
+ *   -DSS_ENABLE_ISR_SAFE=1 -DSS_ENABLE_THREAD_SAFETY=0 -DSS_MINIMAL_BUILD
+ */
 #include "ss_lib.h"
 #include "stm32f4xx_hal.h"
 
@@ -144,9 +169,19 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
         ss_emit_from_isr("button_press", 0);
     }
 }
+
+int main(void) {
+    HAL_Init();
+    system_init();
+    for (;;) {
+        ss_process_isr_queue();   /* slots run here, not in the ISRs */
+    }
+}
 ```
 
 ### Custom Allocator for FreeRTOS
+
+Add to `ss_config.h` (the library source must see these, so defining them in your application file has no effect):
 
 ```c
 #include "FreeRTOS.h"
@@ -154,15 +189,9 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
 #define SS_MALLOC(size)        pvPortMalloc(size)
 #define SS_FREE(ptr)           vPortFree(ptr)
 #define SS_CALLOC(count, size) pvPortCalloc(count, size)
-#define SS_STRDUP(str)         port_strdup(str)
-
-static char* port_strdup(const char* s) {
-    size_t len = strlen(s) + 1;
-    char* dup = pvPortMalloc(len);
-    if (dup) memcpy(dup, s, len);
-    return dup;
-}
 ```
+
+Strings are copied with `SS_MALLOC`, so no `SS_STRDUP` is needed. In static mode these are only used by the functions that return allocated objects (see [Static Memory Mode](#static-memory-mode)).
 
 ## Compile-Time Verification
 
@@ -181,11 +210,13 @@ arm-none-eabi-gcc -std=c89 -pedantic \
     -Iinclude -c src/ss_lib_c89.c -o ss_lib_c89.o
 ```
 
+On the host, `make test_embedded` builds the embedded examples against a library compiled with `SS_EMBEDDED_BUILD` and runs them.
+
 ## Tips
 
 1. **Size signal pools conservatively** — Unused signal/slot entries waste RAM
 2. **Use short signal names** — Reduce `SS_MAX_SIGNAL_NAME_LENGTH` to save RAM
 3. **Disable unused features** — Every disabled feature reduces code size
-4. **Use ISR emission sparingly** — The queue has a fixed depth; overflow drops signals
+4. **Drain the ISR queue often** — The queue has a fixed depth; when it is full, `ss_emit_from_isr()` rejects new events with `SS_ERR_WOULD_OVERFLOW`
 5. **Prefer `ss_emit_int`** — Avoids `ss_data_t` construction overhead in tight loops
-6. **Profile with memory stats** — Enable temporarily to verify your pool sizing, then disable
+6. **Check pool sizing with memory stats** — `signals_used` / `slots_used` against `SS_MAX_SIGNALS` / `SS_MAX_SLOTS`; enable temporarily, then disable

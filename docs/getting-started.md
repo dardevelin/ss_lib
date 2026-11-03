@@ -4,13 +4,15 @@
 
 ### Method 1: Single Header (Easiest)
 
-1. Generate or download `ss_lib_single.h`
-2. Include in your project:
+1. Generate it with `make single-header` (writes `include/ss_lib_single.h`) or download it
+2. In exactly one C file:
 
 ```c
 #define SS_IMPLEMENTATION
 #include "ss_lib_single.h"
 ```
+
+3. Everywhere else, include it without `SS_IMPLEMENTATION`. Configuration macros must be identical in every file; pass them on the command line.
 
 ### Method 2: Traditional Library
 
@@ -34,6 +36,8 @@ make lib
 gcc myapp.c -I/path/to/ss_lib/include -L/path/to/ss_lib/build -lss_lib -pthread
 ```
 
+Compile your program with the same configuration flags as the library. `make lib` uses the Makefile's `FEATURES` (`make info` prints them); `make lib FEATURES="..."` changes them. See the [Configuration Guide](configuration.md).
+
 ### Method 3: System Install
 
 ```bash
@@ -54,6 +58,7 @@ gcc myapp.c $(pkg-config --cflags --libs ss_lib)
 - Can have user-defined context data
 - Multiple slots can connect to one signal
 - Execute in priority order
+- May call any library function, including disconnecting themselves or unregistering the signal being emitted
 
 ### Connections
 - Links between signals and slots
@@ -71,8 +76,11 @@ void on_button_click(const ss_data_t* data, void* user_data) {
 }
 
 int main() {
-    /* Initialize the library */
-    ss_init();
+    /* Initialize the library. ss_init() also works; ss_init_abi()
+     * additionally detects a library built with different flags. */
+    if (ss_init_abi(SS_ABI_TAG) != SS_OK) {
+        return 1;
+    }
 
     /* Register a signal */
     ss_signal_register("button_clicked");
@@ -118,6 +126,8 @@ int main() {
 }
 ```
 
+`ss_emit_string()` and the other `ss_emit_*` helpers pass borrowed data: the slot must not free it, and the string only has to stay valid during the call. Deferred and batched emissions store their own copy. An `ss_data_t` from `ss_data_create()` owns the string or custom data set on it and is freed with `ss_data_destroy()`.
+
 ## Using Connection Handles
 
 Connection handles make it easy to disconnect slots without remembering the function pointer:
@@ -154,11 +164,11 @@ if (err != SS_OK) {
 }
 ```
 
-You can also set a global error handler:
+You can also set a global error handler (after `ss_init()`; `ss_cleanup()` resets it). It is called for every failing call, including parameter errors, outside the library's lock; `msg` is the signal name when there is one, otherwise the error string:
 
 ```c
 void my_error_handler(ss_error_t error, const char* msg) {
-    fprintf(stderr, "SS_Lib error %d: %s\n", error, msg);
+    fprintf(stderr, "SS_Lib error %s: %s\n", ss_error_string(error), msg);
 }
 
 ss_set_error_handler(my_error_handler);

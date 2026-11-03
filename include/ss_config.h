@@ -5,6 +5,36 @@
  * Signal-Slot Library Configuration
  * ======================================================================== */
 
+/* Presets come first so the defaults below follow from them. Like in
+ * earlier versions, a preset overrides the options it controls. */
+
+/* Minimal Build: strip optional features */
+#ifdef SS_MINIMAL_BUILD
+    #undef SS_ENABLE_THREAD_SAFETY
+    #define SS_ENABLE_THREAD_SAFETY 0
+    #undef SS_ENABLE_INTROSPECTION
+    #define SS_ENABLE_INTROSPECTION 0
+    #undef SS_ENABLE_CUSTOM_DATA
+    #define SS_ENABLE_CUSTOM_DATA 0
+    #undef SS_ENABLE_PERFORMANCE_STATS
+    #define SS_ENABLE_PERFORMANCE_STATS 0
+    #undef SS_ENABLE_MEMORY_STATS
+    #define SS_ENABLE_MEMORY_STATS 0
+#endif
+
+/* Embedded Build: static memory, no threading, small slot limit */
+#ifdef SS_EMBEDDED_BUILD
+    #undef SS_USE_STATIC_MEMORY
+    #define SS_USE_STATIC_MEMORY 1
+    #undef SS_ENABLE_THREAD_SAFETY
+    #define SS_ENABLE_THREAD_SAFETY 0
+    #undef SS_DEFAULT_MAX_SLOTS_PER_SIGNAL
+    #define SS_DEFAULT_MAX_SLOTS_PER_SIGNAL 10
+    #ifndef SS_DEFERRED_QUEUE_SIZE
+        #define SS_DEFERRED_QUEUE_SIZE 16
+    #endif
+#endif
+
 /* Memory Configuration */
 #ifndef SS_USE_STATIC_MEMORY
     #define SS_USE_STATIC_MEMORY 0
@@ -25,6 +55,27 @@
         #define SS_MAX_SIGNAL_NAME_LENGTH 32
     #else
         #define SS_MAX_SIGNAL_NAME_LENGTH 256
+    #endif
+#endif
+
+#if SS_USE_STATIC_MEMORY
+    /* Per-signal description buffer, including the terminator. Longer
+     * descriptions are rejected with SS_ERR_WOULD_OVERFLOW. */
+    #ifndef SS_MAX_DESCRIPTION_LENGTH
+        #define SS_MAX_DESCRIPTION_LENGTH 32
+    #endif
+
+    /* Inline payload buffer per deferred/batch entry for string and
+     * custom data. Larger payloads are rejected with SS_ERR_WOULD_OVERFLOW. */
+    #ifndef SS_DEFERRED_PAYLOAD_SIZE
+        #define SS_DEFERRED_PAYLOAD_SIZE 32
+    #endif
+
+    /* 1: ss_init() keeps the library context in static storage (.bss).
+     * 0: drop that storage when ss_init_static() supplies a pool; ss_init()
+     *    then allocates the context with SS_CALLOC, as in 2.1. */
+    #ifndef SS_STATIC_CONTEXT
+        #define SS_STATIC_CONTEXT 1
     #endif
 #endif
 
@@ -58,6 +109,16 @@
     #define SS_ENABLE_ISR_SAFE 0
 #endif
 
+/* The ISR queue claims entries with C11 atomics, GCC/Clang __atomic
+ * builtins or MSVC Interlocked functions. On targets without atomic
+ * compare-and-swap (e.g. Cortex-M0, AVR), define both of these to disable
+ * and restore interrupts, e.g.:
+ *   #define SS_ISR_CRITICAL_ENTER() uint32_t ss_irq_ = __get_PRIMASK(); __disable_irq()
+ *   #define SS_ISR_CRITICAL_EXIT()  __set_PRIMASK(ss_irq_)
+ */
+/* #define SS_ISR_CRITICAL_ENTER() */
+/* #define SS_ISR_CRITICAL_EXIT() */
+
 #ifndef SS_ISR_QUEUE_SIZE
     #define SS_ISR_QUEUE_SIZE 16
 #endif
@@ -75,6 +136,11 @@
     #define SS_DEFERRED_QUEUE_SIZE 64
 #endif
 
+/* Entries per ss_batch_t */
+#ifndef SS_BATCH_MAX_ENTRIES
+    #define SS_BATCH_MAX_ENTRIES SS_DEFERRED_QUEUE_SIZE
+#endif
+
 /* Custom Memory Functions */
 #ifndef SS_MALLOC
     #define SS_MALLOC(size) malloc(size)
@@ -88,13 +154,13 @@
     #define SS_CALLOC(count, size) calloc(count, size)
 #endif
 
-#ifndef SS_STRDUP
-    #define SS_STRDUP(str) strdup(str)
-#endif
+/* SS_STRDUP(str) may be defined to override string duplication. By
+ * default the library copies strings with SS_MALLOC, so overriding
+ * SS_MALLOC and SS_FREE is enough to route every allocation. */
 
-/* Debug Macros */
+/* Deprecated: SS_TRACE is kept for source compatibility; the library no
+ * longer uses it (see ss_enable_trace()). */
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
-    /* C99+: use variadic macros */
     #if SS_ENABLE_DEBUG_TRACE
         #include <stdio.h>
         #define SS_TRACE(...) do { \
@@ -106,38 +172,7 @@
         #define SS_TRACE(...) ((void)0)
     #endif
 #else
-    /* C89: no variadic macros available, use cast-to-void approach */
     #define SS_TRACE (void)sizeof
-#endif
-
-/* Minimal Build */
-#ifdef SS_MINIMAL_BUILD
-    #undef SS_ENABLE_THREAD_SAFETY
-    #define SS_ENABLE_THREAD_SAFETY 0
-    
-    #undef SS_ENABLE_INTROSPECTION
-    #define SS_ENABLE_INTROSPECTION 0
-    
-    #undef SS_ENABLE_CUSTOM_DATA
-    #define SS_ENABLE_CUSTOM_DATA 0
-    
-    #undef SS_ENABLE_PERFORMANCE_STATS
-    #define SS_ENABLE_PERFORMANCE_STATS 0
-    
-    #undef SS_ENABLE_MEMORY_STATS
-    #define SS_ENABLE_MEMORY_STATS 0
-#endif
-
-/* Embedded Build */
-#ifdef SS_EMBEDDED_BUILD
-    #undef SS_USE_STATIC_MEMORY
-    #define SS_USE_STATIC_MEMORY 1
-    
-    #undef SS_ENABLE_THREAD_SAFETY
-    #define SS_ENABLE_THREAD_SAFETY 0
-    
-    #undef SS_DEFAULT_MAX_SLOTS_PER_SIGNAL
-    #define SS_DEFAULT_MAX_SLOTS_PER_SIGNAL 10
 #endif
 
 #endif /* SS_CONFIG_H */

@@ -12,4 +12,4 @@ Requires.private:
 Conflicts:
 Libs: -L${libdir} -lss_lib @CMAKE_THREAD_LIBS_INIT@
 Libs.private: 
-Cflags: -I${includedir}/ss_lib
+Cflags: -I${includedir}/ss_lib @SS_FEATURE_CFLAGS@

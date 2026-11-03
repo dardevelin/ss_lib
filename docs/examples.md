@@ -2,6 +2,8 @@
 
 This document walks through the example programs included in the `examples/` directory and demonstrates additional usage patterns.
 
+The examples do not `#define` configuration macros in their source: configuration must be identical for the library and every caller, so it is passed on the command line (the Makefile's `FEATURES`).
+
 ## Included Examples
 
 ### example_usage.c
@@ -15,26 +17,28 @@ make examples
 
 Covers:
 - `ss_init()` / `ss_cleanup()`
-- `ss_signal_register()` / `ss_connect()`
-- `ss_emit_void()` / `ss_emit_int()`
+- `ss_signal_register()` / `ss_signal_unregister()` / `ss_connect()` / `ss_disconnect_all()`
+- `ss_emit_void()` / `ss_emit_int()` / `ss_emit_string()` / `ss_emit_pointer()`
+- Custom data with `ss_data_create()` / `ss_data_set_custom()` / `ss_data_destroy()`
+- Introspection with `ss_get_signal_list()` / `ss_free_signal_list()`
 
 ### example_embedded.c
 
-Demonstrates embedded usage with ISR-safe emission:
+Demonstrates embedded usage with ISR-safe emission. It needs the embedded configuration (static memory, ISR, memory and performance stats) and fails to compile otherwise, so it is built by `make test_embedded`, not `make examples`:
 
 ```bash
-make examples
-./build/example_embedded
+make test_embedded
 ```
 
 Covers:
-- ISR-safe emission with `ss_emit_from_isr()`
-- Static memory configuration
-- Simulated interrupt handling
+- Queueing events from simulated ISRs with `ss_emit_from_isr()`
+- Delivering them from the main loop with `ss_process_isr_queue()`
+- Static memory with the `SS_EMBEDDED_BUILD` preset
+- Memory statistics and per-signal profiling
 
 ### example_embedded_simple.c
 
-Minimal embedded example without ISR features:
+Minimal embedded example without ISR features. `make examples` builds it with the default (dynamic) configuration; `make test_embedded` builds and runs it against a library compiled with `SS_EMBEDDED_BUILD`:
 
 ```bash
 make test_embedded
@@ -150,6 +154,7 @@ Priority-based signal handling for game entity damage:
 ```c
 #include "ss_lib.h"
 #include <stdio.h>
+#include <string.h>
 
 typedef struct {
     int health;
@@ -160,7 +165,7 @@ typedef struct {
 static void check_death(const ss_data_t* data, void* user_data) {
     entity_t* e = (entity_t*)ss_data_get_pointer(data);
     if (e && e->health <= 0) {
-        printf("[CRITICAL] %s has died!\n", e->name);
+        printf("[HIGH] %s has died!\n", e->name);
     }
 }
 
@@ -169,7 +174,7 @@ static void apply_damage(const ss_data_t* data, void* user_data) {
     int damage = *(int*)user_data;
     if (e) {
         e->health -= damage;
-        printf("[HIGH] %s took %d damage, health: %d\n",
+        printf("[CRITICAL] %s took %d damage, health: %d\n",
                e->name, damage, e->health);
     }
 }
@@ -195,11 +200,11 @@ int main(void) {
     ss_signal_register_ex("entity_damaged", "Entity takes damage",
                           SS_PRIORITY_HIGH);
 
-    /* Death check runs first (highest priority) */
+    /* Damage is applied first (highest priority), then the death check */
     ss_connect_ex("entity_damaged", apply_damage, &damage,
-                  SS_PRIORITY_HIGH, NULL);
-    ss_connect_ex("entity_damaged", check_death, NULL,
                   SS_PRIORITY_CRITICAL, NULL);
+    ss_connect_ex("entity_damaged", check_death, NULL,
+                  SS_PRIORITY_HIGH, NULL);
     ss_connect_ex("entity_damaged", play_hurt_sound, NULL,
                   SS_PRIORITY_NORMAL, NULL);
 
@@ -242,6 +247,12 @@ int main(void) {
     ss_emit_namespaced("ui", "button_click", NULL);
     ss_emit_namespaced("net", "data_received", NULL);
 
+    /* Default namespace: names without "::" resolve as "ui::name" */
+    ss_set_namespace("ui");
+    ss_emit_void("button_click");           /* emits "ui::button_click" */
+    ss_emit_void("net::data_received");     /* contains "::", used as given */
+    ss_set_namespace(NULL);
+
     ss_cleanup();
     return 0;
 }
@@ -279,7 +290,8 @@ int main(void) {
     for (frame = 0; frame < 3; frame++) {
         printf("--- Frame %d ---\n", frame);
 
-        /* Queue updates during processing */
+        /* Queue updates during processing; the queue stores a copy
+         * of the data, so d can be destroyed at once */
         d = ss_data_create(SS_TYPE_INT);
         ss_data_set_int(d, frame * 16);
         ss_emit_deferred("physics_update", d);
@@ -323,7 +335,8 @@ int main(void) {
     ss_connect("velocity_changed", on_update, "Velocity");
     ss_connect("health_changed", on_update, "Health");
 
-    /* Create a batch of updates */
+    /* Create a batch of updates (up to SS_BATCH_MAX_ENTRIES); like the
+     * deferred queue, it stores copies of the data */
     batch = ss_batch_create();
 
     d = ss_data_create(SS_TYPE_INT);

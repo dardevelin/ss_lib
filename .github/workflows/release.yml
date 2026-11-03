@@ -1,73 +1,67 @@
 name: Release
 
+# Pushing a tag vMAJOR.MINOR.PATCH publishes a release; vX.Y.Z-rc.N (any
+# tag with a '-') publishes a pre-release. CONTRIBUTING.md has the steps.
+
 on:
   push:
     tags:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref_name }}
+
+env:
+  TAG: ${{ github.ref_name }}
 
 jobs:
-  create-release:
+  release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        fetch-depth: 0
 
-    - name: Create Release
+    - name: Check tag, version and release notes
+      run: |
+        scripts/check_version.sh "$TAG"
+        scripts/release_notes.sh "$TAG" > release-notes.md
+        case "$TAG" in
+          *-*) ;;  # pre-releases may come from a release branch
+          *) git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
+               { echo "$TAG does not point at a commit on main" >&2; exit 1; } ;;
+        esac
+
+    - name: Test every configuration
+      run: make -j4 all && make test-all
+
+    - name: Package
+      # The archives are the tagged tree (minus export-ignore paths in
+      # .gitattributes), so they build with make or CMake as shipped
+      run: |
+        mkdir dist
+        git archive --format=tar.gz --prefix="ss_lib-$TAG/" -o "dist/ss_lib-$TAG.tar.gz" "$TAG"
+        git archive --format=zip --prefix="ss_lib-$TAG/" -o "dist/ss_lib-$TAG.zip" "$TAG"
+        cp include/ss_lib_single.h dist/
+        (cd dist && sha256sum -- * > SHA256SUMS)
+        cat dist/SHA256SUMS
+
+    - name: Publish
       env:
         GH_TOKEN: ${{ github.token }}
       run: |
-        if gh release view "${{ github.ref_name }}" > /dev/null 2>&1; then
-          echo "Release ${{ github.ref_name }} already exists, skipping creation"
+        if gh release view "$TAG" > /dev/null 2>&1; then
+          echo "Release $TAG exists; replacing its assets"
+          gh release upload "$TAG" dist/* --clobber
         else
-          gh release create "${{ github.ref_name }}" --generate-notes --verify-tag
+          prerelease=""
+          case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+          # shellcheck disable=SC2086
+          gh release create "$TAG" dist/* --verify-tag $prerelease \
+            --title "SS_Lib ${TAG#v}" --notes-file release-notes.md
         fi
-
-  build-artifacts:
-    needs: create-release
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-    - uses: actions/checkout@v4
-
-    - name: Create single header
-      shell: bash
-      run: |
-        chmod +x create_single_header.sh
-        ./create_single_header.sh
-
-    - name: Package release
-      shell: bash
-      run: |
-        mkdir -p ss_lib-${{ github.ref_name }}
-        cp -r include/ ss_lib-${{ github.ref_name }}/
-        cp -r src/ ss_lib-${{ github.ref_name }}/
-        cp -r examples/ ss_lib-${{ github.ref_name }}/
-        cp -r docs/ ss_lib-${{ github.ref_name }}/
-        cp ss_lib_single.h ss_lib-${{ github.ref_name }}/
-        cp README.md LICENSE CHANGELOG.md ss_lib-${{ github.ref_name }}/
-
-    - name: Create archive (Unix)
-      if: runner.os != 'Windows'
-      shell: bash
-      run: tar -czf ss_lib-${{ github.ref_name }}-${{ runner.os }}.tar.gz ss_lib-${{ github.ref_name }}
-
-    - name: Create archive (Windows)
-      if: runner.os == 'Windows'
-      run: Compress-Archive -Path ss_lib-${{ github.ref_name }} -DestinationPath ss_lib-${{ github.ref_name }}-${{ runner.os }}.zip
-
-    - name: Upload Release Asset
-      env:
-        GH_TOKEN: ${{ github.token }}
-      run: |
-        if [ "$RUNNER_OS" = "Windows" ]; then
-          gh release upload "${{ github.ref_name }}" "./ss_lib-${{ github.ref_name }}-${{ runner.os }}.zip"
-        else
-          gh release upload "${{ github.ref_name }}" "./ss_lib-${{ github.ref_name }}-${{ runner.os }}.tar.gz"
-        fi
-      shell: bash

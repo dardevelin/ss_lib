@@ -1,0 +1,5 @@
+# Paths left out of release archives (git archive)
+.github export-ignore
+.claude export-ignore
+.gitattributes export-ignore
+.gitignore export-ignore

@@ -277,7 +277,7 @@ static void benchmark_signal_lookup(benchmark_result_t* result) {
 
 #if SS_ENABLE_ISR_SAFE
 static void benchmark_isr_emit(benchmark_result_t* result) {
-    result->name = "ISR-safe emit (5 slots)";
+    result->name = "ISR enqueue (ss_emit_from_isr)";
     result->min_time = UINT64_MAX;
     result->max_time = 0;
     result->total_time = 0;
@@ -300,6 +300,8 @@ static void benchmark_isr_emit(benchmark_result_t* result) {
         result->total_time += elapsed;
         if (elapsed < result->min_time) result->min_time = elapsed;
         if (elapsed > result->max_time) result->max_time = elapsed;
+
+        ss_process_isr_queue();   /* deliver outside the timed region */
     }
     
     ss_disconnect_all("bench_isr");
@@ -375,7 +377,7 @@ int main(void) {
                stats.signals_used, stats.signals_allocated);
         printf("  Slots: %zu used, %zu allocated\n",
                stats.slots_used, stats.slots_allocated);
-        printf("  Total memory: %zu bytes\n", stats.total_bytes);
+        printf("  Total memory: %zu bytes\n", stats.total_bytes_allocated);
     }
 #endif
     

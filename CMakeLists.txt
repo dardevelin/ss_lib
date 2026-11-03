@@ -1,5 +1,10 @@
 cmake_minimum_required(VERSION 3.10)
-project(ss_lib VERSION 2.1.0 LANGUAGES C)
+
+# The version lives in include/ss_lib.h (SS_VERSION_STRING) only
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/include/ss_lib.h" _ss_version_line
+     REGEX "^#define SS_VERSION_STRING ")
+string(REGEX MATCH "[0-9]+[.][0-9]+[.][0-9]+" SS_VERSION "${_ss_version_line}")
+project(ss_lib VERSION ${SS_VERSION} LANGUAGES C)
 
 # Options
 option(SS_BUILD_SHARED "Build shared library" OFF)
@@ -8,11 +13,15 @@ option(SS_BUILD_EXAMPLES "Build examples" ON)
 option(SS_USE_STATIC_MEMORY "Use static memory allocation" OFF)
 option(SS_ENABLE_THREAD_SAFETY "Enable thread safety" ON)
 option(SS_ENABLE_PERFORMANCE_STATS "Enable performance statistics" OFF)
+option(SS_ENABLE_ISR_SAFE "Enable ISR-safe emission" OFF)
 option(SS_ENABLE_SANITIZERS "Enable sanitizers" OFF)
 option(SS_ENABLE_COVERAGE "Enable code coverage" OFF)
 
-# C standard
-set(CMAKE_C_STANDARD 11)
+# C standard: the sources are C89-compatible; 11 stays the default and
+# -DCMAKE_C_STANDARD=90|99|17|23 selects another
+if(NOT DEFINED CMAKE_C_STANDARD)
+    set(CMAKE_C_STANDARD 11)
+endif()
 set(CMAKE_C_STANDARD_REQUIRED ON)
 
 # Compiler flags
@@ -60,20 +69,24 @@ endif()
 
 # Configuration
 if(SS_USE_STATIC_MEMORY)
-    add_compile_definitions(SS_USE_STATIC_MEMORY=1)
+    list(APPEND SS_FEATURE_DEFINITIONS SS_USE_STATIC_MEMORY=1)
     set(SS_MAX_SIGNALS "32" CACHE STRING "Maximum number of signals")
     set(SS_MAX_SLOTS "128" CACHE STRING "Maximum number of slots")
-    add_compile_definitions(SS_MAX_SIGNALS=${SS_MAX_SIGNALS})
-    add_compile_definitions(SS_MAX_SLOTS=${SS_MAX_SLOTS})
+    list(APPEND SS_FEATURE_DEFINITIONS SS_MAX_SIGNALS=${SS_MAX_SIGNALS})
+    list(APPEND SS_FEATURE_DEFINITIONS SS_MAX_SLOTS=${SS_MAX_SLOTS})
 endif()
 
+# Always pass 0 or 1: an absent definition means "header default", which
+# for thread safety is 1.
+foreach(opt SS_ENABLE_THREAD_SAFETY SS_ENABLE_PERFORMANCE_STATS SS_ENABLE_ISR_SAFE)
+    if(${opt})
+        list(APPEND SS_FEATURE_DEFINITIONS ${opt}=1)
+    else()
+        list(APPEND SS_FEATURE_DEFINITIONS ${opt}=0)
+    endif()
+endforeach()
 if(SS_ENABLE_THREAD_SAFETY)
-    add_compile_definitions(SS_ENABLE_THREAD_SAFETY=1)
     find_package(Threads REQUIRED)
-endif()
-
-if(SS_ENABLE_PERFORMANCE_STATS)
-    add_compile_definitions(SS_ENABLE_PERFORMANCE_STATS=1)
 endif()
 
 # Include directories
@@ -92,6 +105,9 @@ set(LIB_HEADERS
 # Build library
 if(SS_BUILD_SHARED)
     add_library(ss_lib SHARED ${LIB_SOURCES})
+    # semver: the major version is the ABI (libss_lib.so.MAJOR)
+    set_target_properties(ss_lib PROPERTIES
+        VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
 else()
     add_library(ss_lib STATIC ${LIB_SOURCES})
 endif()
@@ -101,8 +117,11 @@ target_include_directories(ss_lib PUBLIC
     $<INSTALL_INTERFACE:include>
 )
 
+# Feature definitions are part of the ABI: every consumer must see them
+target_compile_definitions(ss_lib PUBLIC ${SS_FEATURE_DEFINITIONS})
+
 if(SS_ENABLE_THREAD_SAFETY)
-    target_link_libraries(ss_lib Threads::Threads)
+    target_link_libraries(ss_lib PUBLIC Threads::Threads)
 endif()
 
 # Installation
@@ -120,36 +139,45 @@ install(FILES ${LIB_HEADERS}
 # Tests
 if(SS_BUILD_TESTS)
     enable_testing()
-    
-    add_executable(test_ss_lib tests/test_ss_lib.c src/ss_lib.c)
+
+    add_executable(test_ss_lib tests/test_ss_lib.c)
+    target_link_libraries(test_ss_lib ss_lib)
     add_executable(test_simple tests/test_simple.c)
-
     target_link_libraries(test_simple ss_lib)
-
+    # Compiles the implementation itself, with a tracking allocator
+    add_executable(test_memory tests/test_memory.c)
+    target_compile_definitions(test_memory PRIVATE ${SS_FEATURE_DEFINITIONS})
     if(SS_ENABLE_THREAD_SAFETY)
-        target_link_libraries(test_ss_lib Threads::Threads)
+        target_link_libraries(test_memory Threads::Threads)
     endif()
-
     add_test(NAME test_basic COMMAND test_ss_lib)
     add_test(NAME test_simple COMMAND test_simple)
+    add_test(NAME test_memory COMMAND test_memory)
+
+    if(SS_ENABLE_THREAD_SAFETY AND NOT WIN32)
+        add_executable(test_threads tests/test_threads.c)
+        target_link_libraries(test_threads ss_lib Threads::Threads)
+        add_test(NAME test_threads COMMAND test_threads)
+    endif()
 endif()
 
 # Examples
 if(SS_BUILD_EXAMPLES)
-    add_executable(example_usage examples/example_usage.c src/ss_lib.c)
+    add_executable(example_usage examples/example_usage.c)
+    target_link_libraries(example_usage ss_lib)
     add_executable(example_embedded_simple examples/example_embedded_simple.c)
-    
     target_link_libraries(example_embedded_simple ss_lib)
-    
-    if(SS_ENABLE_THREAD_SAFETY)
-        target_link_libraries(example_usage Threads::Threads)
-    endif()
 endif()
 
 # Package configuration
 include(CMakePackageConfigHelpers)
 
-# Generate pkg-config file
+# Generate pkg-config file; it carries the feature definitions too
+set(SS_FEATURE_CFLAGS "")
+foreach(def ${SS_FEATURE_DEFINITIONS})
+    string(APPEND SS_FEATURE_CFLAGS " -D${def}")
+endforeach()
+string(STRIP "${SS_FEATURE_CFLAGS}" SS_FEATURE_CFLAGS)
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/ss_lib.pc.in"
     "${CMAKE_CURRENT_BINARY_DIR}/ss_lib.pc"
@@ -163,7 +191,7 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/ss_lib.pc"
 write_basic_package_version_file(
     "${CMAKE_CURRENT_BINARY_DIR}/ss_libConfigVersion.cmake"
     VERSION ${PROJECT_VERSION}
-    COMPATIBILITY AnyNewerVersion
+    COMPATIBILITY SameMajorVersion
 )
 
 install(EXPORT ss_libTargets

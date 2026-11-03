@@ -16,14 +16,16 @@ try:
     HAS_MATPLOTLIB = True
 except ImportError:
     HAS_MATPLOTLIB = False
-    print("Warning: matplotlib not installed. Install with: pip install matplotlib")
+    print("Warning: matplotlib not installed; plots are skipped. Install it in a "
+          "virtual environment: python3 -m venv .venv && "
+          ".venv/bin/pip install -r benchmarks/requirements.txt")
 
 def parse_benchmark_output(filename):
     """Parse benchmark output file and extract results"""
     results = defaultdict(dict)
     current_config = "default"
     
-    with open(filename, 'r') as f:
+    with open(filename, 'r', encoding='utf-8') as f:
         for line in f:
             # Check for configuration headers
             config_match = re.match(r'Configuration:\s*(.+)', line)
@@ -171,7 +173,7 @@ def plot_benchmarks(results, output_dir="plots"):
 
 def generate_json_report(results, output_file="benchmark_results.json"):
     """Generate JSON report for further processing"""
-    with open(output_file, 'w') as f:
+    with open(output_file, 'w', encoding='utf-8') as f:
         json.dump(results, f, indent=2)
     print(f"JSON report saved to {output_file}")
 
