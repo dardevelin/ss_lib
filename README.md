@@ -56,11 +56,10 @@ target_link_libraries(your_app ss_lib::ss_lib)
 ### Using Homebrew (macOS, Linux)
 
 ```bash
-brew tap dardevelin/ss-lib
-brew install ss-lib
+brew install dardevelin/ss-lib/ss-lib
 ```
 
-The formula installs the shared library (thread safety and performance statistics enabled), `ss_lib.pc`, the CMake package and `ss_lib_single.h`. Compile with `pkg-config --cflags --libs ss_lib` so your program uses the same configuration.
+Use the full name: Homebrew 7 does not load a third-party tap's formula by its short name until the tap is trusted (`brew trust dardevelin/ss-lib`). The formula needs only CMake to build, and installs the shared library (thread safety and performance statistics enabled), `ss_lib.pc`, the CMake package and `ss_lib_single.h`. Compile with `pkg-config --cflags --libs ss_lib` so your program uses the same configuration.
 
 ### Single Header
 
