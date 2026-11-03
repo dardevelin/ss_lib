@@ -16,6 +16,7 @@ jobs:
   linux:
     name: Linux (${{ matrix.cc }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -26,7 +27,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y valgrind
+        run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 update && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 install -y valgrind
 
       - name: Build library, tests and examples
         run: make -j4 all
@@ -45,6 +46,7 @@ jobs:
   sanitizers:
     name: Sanitizer (${{ matrix.target }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -62,6 +64,7 @@ jobs:
   standards:
     name: C standards and configurations
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: C89 copy is in sync
@@ -69,11 +72,11 @@ jobs:
         run: scripts/check_c89_sync.sh
       - name: cppcheck
         run: |
-          sudo apt-get update && sudo apt-get install -y cppcheck
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 update && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 install -y cppcheck
           cppcheck --version
           make cppcheck
       - name: Newer gcc (C23 needs gcc 14, C2y gcc 15)
-        run: sudo apt-get install -y gcc-14 || echo "gcc-14 not available"
+        run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 install -y gcc-14 || echo "gcc-14 not available"
       - name: C89 to newest standard (-Werror)
         # library, a caller of ss_lib.h and the single header, every
         # configuration; standards a compiler lacks are skipped
@@ -86,6 +89,7 @@ jobs:
   macos:
     name: macOS
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Build and test every configuration
@@ -96,6 +100,7 @@ jobs:
   windows-mingw:
     name: Windows (MinGW)
     runs-on: windows-latest
+    timeout-minutes: 30
     defaults:
       run:
         shell: msys2 {0}
@@ -114,6 +119,7 @@ jobs:
   windows-msvc:
     name: Windows (MSVC, CMake)
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Configure
@@ -126,6 +132,7 @@ jobs:
   cmake:
     name: CMake (Linux, ${{ matrix.config }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -146,10 +153,11 @@ jobs:
   embedded:
     name: Embedded (ARM Cortex-M)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install ARM toolchain
-        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi
+        run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 update && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 install -y gcc-arm-none-eabi
       - name: Cortex-M4 (atomic compare-and-swap available)
         run: |
           arm-none-eabi-gcc -c -Os -mcpu=cortex-m4 -mthumb -Wall -Wextra -Werror -Iinclude \
@@ -168,6 +176,7 @@ jobs:
   python:
     name: Benchmark tools (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
