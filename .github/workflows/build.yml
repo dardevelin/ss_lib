@@ -149,6 +149,8 @@ jobs:
           cmake --build build -j
           ctest --test-dir build --output-on-failure
           cmake --install build --prefix "$RUNNER_TEMP/ss_lib"
+      - name: Use the installed package with pkg-config flags and find_package
+        run: scripts/check_install.sh "$RUNNER_TEMP/ss_lib"
 
   embedded:
     name: Embedded (ARM Cortex-M)
