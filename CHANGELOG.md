@@ -7,12 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-11-04
+
 ### Fixed
 - `make install` on macOS: programs linked against the installed library failed
   to start with "Library not loaded: @rpath/libss_lib.dylib" (since 2.1). The
   installed dylib now carries its absolute install path as install name, and is
   named by major version like on Linux and in the CMake build:
-  `libss_lib.dylib` -> `libss_lib.2.dylib` -> `libss_lib.2.2.0.dylib`.
+  `libss_lib.dylib` -> `libss_lib.2.dylib` -> `libss_lib.2.2.1.dylib`.
 - `make test-all` includes `check-install`, which installs into `build/`, runs
   a program against the installed shared library and checks `make uninstall`.
 - `make install` also installs the CMake package (`lib/cmake/ss_lib`), so
@@ -223,7 +225,8 @@ public struct layouts are unchanged.
 - Signal introspection
 - Basic examples and tests
 
-[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v2.2.1...HEAD
+[2.2.1]: https://github.com/dardevelin/ss_lib/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/dardevelin/ss_lib/compare/v2.1.1...v2.2.0
 [2.1.1]: https://github.com/dardevelin/ss_lib/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/dardevelin/ss_lib/compare/v2.0.0...v2.1.0
