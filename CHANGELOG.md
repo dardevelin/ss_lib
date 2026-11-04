@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `libss_lib.dylib` -> `libss_lib.2.dylib` -> `libss_lib.2.2.0.dylib`.
 - `make test-all` includes `check-install`, which installs into `build/`, runs
   a program against the installed shared library and checks `make uninstall`.
+- `make install` also installs the CMake package (`lib/cmake/ss_lib`), so
+  `find_package(ss_lib 2)` works after either install, as the README showed.
+- CMake package: `#include <ss_lib.h>` failed with `find_package(ss_lib)`
+  because the target's include directory was `include/` while the headers
+  are in `include/ss_lib/`; both directories are on it now.
+- `cmake --install` on macOS: the shared library's install name is its
+  absolute path, so programs built with pkg-config flags start without an
+  rpath, as with `make install`.
+- `scripts/check_install.sh` checks an install from either build system with
+  pkg-config flags and with `find_package` (when cmake is available); CI runs
+  it after each CMake install.
 
 ### Removed
 - `benchmarks/requirements.txt` and the Dependabot updates for it: the project

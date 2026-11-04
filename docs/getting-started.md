@@ -41,9 +41,16 @@ Compile your program with the same configuration flags as the library. `make lib
 ### Method 3: System Install
 
 ```bash
-sudo make install
+sudo make install          # or: cmake --install, after a CMake build
 # Then use pkg-config:
 gcc myapp.c $(pkg-config --cflags --libs ss_lib)
+```
+
+Or, from CMake:
+
+```cmake
+find_package(ss_lib 2 REQUIRED)
+target_link_libraries(myapp ss_lib::ss_lib)
 ```
 
 ## Basic Concepts

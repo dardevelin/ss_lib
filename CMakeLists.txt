@@ -108,12 +108,21 @@ if(SS_BUILD_SHARED)
     # semver: the major version is the ABI (libss_lib.so.MAJOR)
     set_target_properties(ss_lib PROPERTIES
         VERSION ${PROJECT_VERSION} SOVERSION ${PROJECT_VERSION_MAJOR})
+    # macOS: the installed dylib names its absolute path, so programs linked
+    # against it start without an rpath (as with make install)
+    if(CMAKE_VERSION VERSION_LESS 3.17)
+        set_target_properties(ss_lib PROPERTIES INSTALL_NAME_DIR "${CMAKE_INSTALL_PREFIX}/lib")
+    else()
+        set_target_properties(ss_lib PROPERTIES INSTALL_NAME_DIR "$<INSTALL_PREFIX>/lib")
+    endif()
 else()
     add_library(ss_lib STATIC ${LIB_SOURCES})
 endif()
 
 target_include_directories(ss_lib PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    # <ss_lib.h>, as with pkg-config; <ss_lib/ss_lib.h> keeps working
+    $<INSTALL_INTERFACE:include/ss_lib>
     $<INSTALL_INTERFACE:include>
 )
 

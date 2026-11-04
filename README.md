@@ -37,14 +37,23 @@ int main(void) {
 
 Each [GitHub release](https://github.com/dardevelin/ss_lib/releases) has the source as `.tar.gz` and `.zip` (builds with make or CMake as shipped), `ss_lib_single.h`, and `SHA256SUMS` to verify them (`sha256sum -c SHA256SUMS --ignore-missing`). The release notes are the version's [CHANGELOG](CHANGELOG.md) section.
 
+### Installing
+
+Install with either build system; both install the headers, the library, `ss_lib.pc` for pkg-config and the CMake package for `find_package`, so programs can use either one:
+
+```bash
+sudo make install                       # static and shared library, PREFIX=/usr/local
+# or
+cmake -B build -DSS_BUILD_SHARED=ON && cmake --build build && sudo cmake --install build
+```
+
+`make install` builds with the Makefile's `FEATURES`, CMake with its `SS_*` options. pkg-config and the CMake target hand those flags to your program, which must be compiled with the same ones (see [Configuration](#configuration)). Versions follow [semantic versioning](https://semver.org/): programs link against `libss_lib.so.2` (Linux) or `libss_lib.2.dylib` (macOS), and only a new major version changes that name. Use an absolute `PREFIX`: on macOS the installed dylib records its installed path, so programs find it without `DYLD_*` variables.
+
 ### Using pkg-config
 
 ```bash
-sudo make install
-pkg-config --cflags --libs ss_lib
+cc your_app.c $(pkg-config --cflags --libs ss_lib)
 ```
-
-`make install` installs the static library and the shared library and builds them with the Makefile's `FEATURES`; pkg-config hands those flags to your program, which must be compiled with the same ones (see [Configuration](#configuration)). Versions follow [semantic versioning](https://semver.org/): programs link against `libss_lib.so.2` (Linux) or `libss_lib.2.dylib` (macOS), and only a new major version changes that name. Use an absolute `PREFIX`: on macOS the installed dylib records its installed path, so programs find it without `DYLD_*` variables.
 
 ### Using CMake
 
@@ -52,6 +61,8 @@ pkg-config --cflags --libs ss_lib
 find_package(ss_lib 2 REQUIRED)   # accepts any 2.x
 target_link_libraries(your_app ss_lib::ss_lib)
 ```
+
+`#include <ss_lib.h>` works with both; `<ss_lib/ss_lib.h>` also works with CMake.
 
 ### Using Homebrew (macOS, Linux)
 
@@ -444,7 +455,8 @@ make check-standards  # Compile as C89, C99, C11, C17, C23 and C2y with -Werror
 make test-all       # All of the above plus check-single-header, check-version, check-install
 make test_embedded  # Embedded examples against an SS_EMBEDDED_BUILD library
 make cppcheck       # Static analysis, as CI runs it
-make check-install  # make install into build/, run a program against it, uninstall
+make check-install  # make install into build/, build and run programs against it
+                    # with pkg-config flags and find_package (if cmake is present), uninstall
 make test-asan      # AddressSanitizer
 make test-tsan      # ThreadSanitizer
 make test-ubsan     # UndefinedBehaviorSanitizer

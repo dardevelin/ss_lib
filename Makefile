@@ -235,9 +235,13 @@ PREFIX ?= /usr/local
 INSTALL_INC_DIR = $(PREFIX)/include/ss_lib
 INSTALL_LIB_DIR = $(PREFIX)/lib
 INSTALL_PC_DIR = $(PREFIX)/lib/pkgconfig
+INSTALL_CMAKE_DIR = $(PREFIX)/lib/cmake/ss_lib
+# FEATURES as a CMake list: -DA=1 -DB=1 -> A=1;B=1
+empty :=
+CMAKE_DEFINITIONS = $(subst $(empty) $(empty),;,$(strip $(patsubst -D%,%,$(filter -D%,$(FEATURES)))))
 
 install: $(LIB_NAME) $(LIB_SO)
-	@mkdir -p $(INSTALL_INC_DIR) $(INSTALL_LIB_DIR) $(INSTALL_PC_DIR)
+	@mkdir -p $(INSTALL_INC_DIR) $(INSTALL_LIB_DIR) $(INSTALL_PC_DIR) $(INSTALL_CMAKE_DIR)
 	@install -m 644 include/ss_lib.h include/ss_config.h $(INSTALL_INC_DIR)
 	@install -m 644 $(LIB_NAME) $(INSTALL_LIB_DIR)
 	@$(INSTALL_SHARED)
@@ -248,10 +252,17 @@ install: $(LIB_NAME) $(LIB_SO)
 	@sed -e 's|@CMAKE_INSTALL_PREFIX@|$(PREFIX)|' -e 's|@PROJECT_VERSION@|$(VERSION)|' \
 	     -e 's|@CMAKE_THREAD_LIBS_INIT@|-pthread|' -e 's|@SS_FEATURE_CFLAGS@|$(strip $(FEATURES))|' \
 	     ss_lib.pc.in > $(INSTALL_PC_DIR)/ss_lib.pc
+	@# find_package(ss_lib), the same package the CMake build installs
+	@for f in ss_libConfig ss_libConfigVersion ss_libTargets; do \
+	    sed -e 's|@PROJECT_VERSION@|$(VERSION)|' -e 's|@PROJECT_VERSION_MAJOR@|$(MAJOR)|' \
+	        -e 's|@SS_ENABLE_THREAD_SAFETY@|ON|' -e 's|@SHARED_REAL@|$(SHARED_REAL)|' \
+	        -e 's|@SS_FEATURE_DEFINITIONS@|$(CMAKE_DEFINITIONS)|' \
+	        cmake/$$f.cmake.in > $(INSTALL_CMAKE_DIR)/$$f.cmake || exit 1; done
 	@echo "Installed SS_Lib $(VERSION) to $(PREFIX)"
 
-# Install into build/, run a program linked against the installed shared
-# library, then check that uninstall leaves no library file or header behind
+# Install into build/, build programs against the installed shared library
+# with pkg-config flags and (when cmake is present) find_package, run them,
+# then check that uninstall leaves no library, header or package file behind
 INSTALL_CHECK = $(abspath $(BUILD_DIR))/install-check
 check-install:
 	@$(MAKE) --no-print-directory install PREFIX=$(INSTALL_CHECK) > /dev/null
@@ -266,6 +277,7 @@ uninstall:
 	@rm -f $(addprefix $(INSTALL_LIB_DIR)/,libss_lib.a libss_lib.$(SHARED_EXT) \
 	    $(SHARED_REAL) $(SHARED_SONAME))
 	@rm -f $(INSTALL_PC_DIR)/ss_lib.pc
+	@rm -rf $(INSTALL_CMAKE_DIR)
 
 docs:
 	@mkdir -p docs/api
