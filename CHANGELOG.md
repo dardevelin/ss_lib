@@ -20,6 +20,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `make test-asan` include it, so CI and the release workflow test the file
   users copy into their projects, not only that it is current. Before 2.2.0
   an outdated copy of it kept a use-after-free (GHSA-f5pm-2465-f895).
+- `SECURITY.md`: supported versions, how to report a vulnerability privately
+  through GitHub, and the published advisories. The README has a Security
+  section linking it and the advisory.
 
 ## [2.2.3] - 2026-11-05
 

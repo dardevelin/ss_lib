@@ -467,6 +467,13 @@ make test-valgrind  # Valgrind memory check
 make coverage       # Generate coverage report
 ```
 
+`make test` includes regression tests named after the review findings (S1,
+S2, ...) and `tests/test_reentrancy.c`, which runs 10,000 seeded random
+programs whose slots unregister signals, clean up, disconnect, emit and flush
+while an emission is running. CI runs `test-all` on Linux (x86-64 and arm64)
+and macOS, the sanitizers, valgrind and cppcheck on Linux, `test-pauth` on
+Linux arm64, and the tests on Windows with MinGW and with MSVC (CMake).
+
 ## Benchmarks
 
 Performance data from CI (dynamic memory, thread-safe):
@@ -553,6 +560,17 @@ This repository includes [Claude Code skills](https://docs.anthropic.com/en/docs
 **With other Claude Code projects that use SS_Lib:** Copy the `.claude/skills/ss-lib/` and `.claude/skills/ss-lib-review/` directories into your project's `.claude/skills/` folder.
 
 **Invoking manually:** Type `/ss-lib` for API guidance or `/ss-lib-review` to review code for common mistakes.
+
+## Security
+
+Versions before 2.2.0 have use-after-free bugs when a slot unregisters its
+signal, calls `ss_cleanup()`, or queues a deferred emission during a flush
+([GHSA-f5pm-2465-f895](https://github.com/dardevelin/ss_lib/security/advisories/GHSA-f5pm-2465-f895)).
+Upgrade to the latest release; if you copied `ss_lib_single.h` into your
+project, replace it with the one from the latest release.
+
+Report vulnerabilities privately, not in a public issue: see
+[SECURITY.md](SECURITY.md).
 
 ## Contributing
 

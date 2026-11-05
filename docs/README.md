@@ -17,6 +17,7 @@ Welcome to the SS_Lib documentation. This directory contains detailed informatio
 
 - [Main README](../README.md)
 - [Changelog](../CHANGELOG.md)
+- [Security policy](../SECURITY.md)
 - [License](../LICENSE)
 
 ## Building Documentation
