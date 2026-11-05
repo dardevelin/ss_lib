@@ -15,6 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deep, and check every payload they receive. It guards against the bugs in
   advisory GHSA-f5pm-2465-f895: built against 2.1.1 with AddressSanitizer it
   fails.
+- `make test-single` runs the test suite against `include/ss_lib_single.h`
+  (dynamic and static memory) instead of `src/ss_lib.c`; `make test-all` and
+  `make test-asan` include it, so CI and the release workflow test the file
+  users copy into their projects, not only that it is current. Before 2.2.0
+  an outdated copy of it kept a use-after-free (GHSA-f5pm-2465-f895).
 
 ## [2.2.3] - 2026-11-05
 

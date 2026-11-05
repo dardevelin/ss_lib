@@ -15,6 +15,7 @@ make all              # library, tests (build/test_*), examples
 make test             # test_ss_lib, test_simple, test_memory, test_isr,
                       #   test_reentrancy, test_threads
 make test-all         # test + test-static + test-minimal + test-c89 + test-newest
+                      #   + test-single (the suite against include/ss_lib_single.h)
                       #   + check-standards + check-single-header + check-version
                       #   + check-install (make install into build/, use it via
                       #     pkg-config flags and find_package, uninstall)
@@ -47,7 +48,7 @@ For bug fixes write the failing test first; use-after-free tests only fail under
 cmake -B build/cmake -DSS_ENABLE_ISR_SAFE=ON && cmake --build build/cmake && ctest --test-dir build/cmake
 ```
 
-ctest names: `test_basic`, `test_simple`, `test_memory`, `test_isr`, `test_reentrancy`, `test_threads`. `CMAKE_C_STANDARD` defaults to 11 and can be overridden. Feature options are always passed as 0/1 and exported as PUBLIC compile definitions of `ss_lib::ss_lib`. The version comes from the header.
+ctest names: `test_basic`, `test_simple`, `test_memory`, `test_isr`, `test_reentrancy`, `test_single` and `test_reentrancy_single` (those two against the single header), `test_threads`. `CMAKE_C_STANDARD` defaults to 11 and can be overridden. Feature options are always passed as 0/1 and exported as PUBLIC compile definitions of `ss_lib::ss_lib`. The version comes from the header.
 
 ## Configuration Must Match Across Library and Callers
 
