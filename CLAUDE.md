@@ -20,6 +20,9 @@ make test-all         # test + test-static + test-minimal + test-c89 + test-newe
                       #   (run before finishing)
 make test-asan        # also test-ubsan, test-tsan, test-msan (clang), test-valgrind
 make test_embedded    # embedded examples against an SS_EMBEDDED_BUILD library
+make test-pauth       # arm64 only: library built with -march=armv8-a+pauth
+                      #   -mbranch-protection=standard (see the GCC workaround
+                      #   at the top of src/ss_lib.c); CI runs it on arm64
 make cppcheck         # static analysis exactly as CI runs it
 make single-header    # regenerate include/ss_lib_single.h
 make benchmark        # also benchmark-all (benchmarks/run_benchmarks.sh)

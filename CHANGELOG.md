@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- arm64 Linux: with GCC before 13.4 and 14.3 (GCC 11, 12, 13.3 and 14.2 on
+  Ubuntu 22.04/24.04 and Debian 12/13), a library built with
+  `-mbranch-protection=standard` for a target with pointer authentication
+  below Armv8.3 crashed in its first call. `-march=native` gives such a
+  target on several Arm cores, and Homebrew on Linux builds with both flags.
+  GCC authenticates the return address twice (`autiasp`, then `retaa`; GCC
+  PR target/119372). `src/ss_lib.c` now compiles itself without the PAuth
+  extension with those compilers, which keeps return-address signing.
+- `make test-pauth` builds the library that way and runs the tests against
+  it; a new Linux arm64 CI job runs it with every GCC on the runner and
+  clang, and runs `make test-all`.
+
 ## [2.2.2] - 2026-11-05
 
 ### Fixed
