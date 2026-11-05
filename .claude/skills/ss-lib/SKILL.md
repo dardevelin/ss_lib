@@ -222,15 +222,15 @@ size_t ss_get_max_slots_per_signal(ss_bus_t* bus);
 ### Namespace (3 functions)
 
 ```c
-ss_error_t  ss_set_namespace(ss_bus_t* bus, const char* ns);
-const char* ss_get_namespace(ss_bus_t* bus);
-ss_error_t  ss_emit_namespaced(ss_bus_t* bus, const char* ns, const char* signal_name,
-                               const ss_data_t* data);
+ss_error_t ss_set_namespace(ss_bus_t* bus, const char* ns);
+ss_error_t ss_get_namespace(ss_bus_t* bus, char* buf, size_t size);
+ss_error_t ss_emit_namespaced(ss_bus_t* bus, const char* ns, const char* signal_name,
+                              const ss_data_t* data);
 ```
 
 - Convention: `ns::signal_name`. The default namespace belongs to the bus.
 - While a default namespace is set, **every** name without `"::"` is resolved as `"ns::name"` by all name-taking functions on that bus (register, unregister, exists, connect(_ex), disconnect(_all), emit*, emit_deferred, batch_add for batches of that bus, get_perf_stats; ISR events at delivery by `ss_process_isr_queue(bus)`). Names containing `"::"` are used as given. Register and connect while the same namespace is set, or use fully qualified names.
-- `NULL` or `""` clears it. `SS_ERR_WOULD_OVERFLOW` if even `"ns::x"` would not fit. `ss_get_namespace()` returns NULL when unset; the pointer is the bus's buffer, valid until the next change (with several threads, read it only while no other thread can change it). `ss_set_namespace(bus, ss_get_namespace(bus))` is a safe no-op.
+- `NULL` or `""` clears it. `SS_ERR_WOULD_OVERFLOW` if even `"ns::x"` would not fit. `ss_get_namespace(bus, buf, size)` copies the namespace into `buf` under the bus lock (safe while other threads set it): `""` when unset; `SS_ERR_NULL_PARAM` for a NULL bus or `buf`; `SS_ERR_BUFFER_TOO_SMALL` when it does not fit, and then `buf` holds `""` (never a truncated namespace). `char ns[SS_MAX_SIGNAL_NAME_LENGTH]` always fits. Save with `ss_get_namespace`, restore with `ss_set_namespace(bus, ns)`.
 - `ss_emit_namespaced(bus, ns, name, data)` always emits `"ns::name"` and ignores the default namespace.
 
 ### Batch Operations (4 functions)
@@ -316,13 +316,13 @@ SS_ERR_MEMORY            // Memory allocation failed
 SS_ERR_NOT_FOUND         // Signal or slot not found
 SS_ERR_ALREADY_EXISTS    // Signal already registered
 SS_ERR_INVALID_TYPE      // Custom data queued in a library built without SS_ENABLE_CUSTOM_DATA
-SS_ERR_BUFFER_TOO_SMALL  // Pool too small for ss_bus_create_in()
+SS_ERR_BUFFER_TOO_SMALL  // Pool too small for ss_bus_create_in(), or buf for ss_get_namespace()
 SS_ERR_MAX_SLOTS         // Signal already has max_slots_per_signal live slots
-SS_ERR_TIMEOUT           // Reserved, not currently returned
 SS_ERR_WOULD_OVERFLOW    // Name, payload, description, queue/pool or the built-in buses exceed a fixed limit
-SS_ERR_ISR_UNSAFE        // Reserved, not currently returned
 SS_ERR_CONFIG_MISMATCH   // Caller's SS_ABI_TAG differs, or a bus flag the library lacks
 ```
+
+The values are fixed (0 to 7, then 9 and 11; 8 and 10 are unused), so they may be stored or compared as numbers.
 
 Most functions return `ss_error_t`. Always check return values, especially `ss_bus_create()`, `ss_connect()`, and `ss_emit()`.
 

@@ -21,21 +21,23 @@ const char* ss_version(void);   /* returns SS_VERSION_STRING of the compiled lib
 
 ```c
 typedef enum {
-    SS_OK = 0,              /* Success */
-    SS_ERR_NULL_PARAM,      /* NULL parameter passed */
-    SS_ERR_MEMORY,          /* Memory allocation failed */
-    SS_ERR_NOT_FOUND,       /* Signal or slot not found */
-    SS_ERR_ALREADY_EXISTS,  /* Signal already registered */
-    SS_ERR_INVALID_TYPE,    /* Custom data queued without SS_ENABLE_CUSTOM_DATA */
-    SS_ERR_BUFFER_TOO_SMALL,/* Pool too small for ss_bus_create_in() */
-    SS_ERR_MAX_SLOTS,       /* Maximum slots per signal reached */
-    SS_ERR_TIMEOUT,         /* Reserved, not currently returned */
-    SS_ERR_WOULD_OVERFLOW,  /* Name, payload, queue or the built-in buses exceed a fixed limit */
-    SS_ERR_ISR_UNSAFE,      /* Reserved, not currently returned */
-    SS_ERR_CONFIG_MISMATCH  /* Caller's SS_ABI_TAG differs from the library's,
-                               or a bus flag the library does not support */
+    SS_OK = 0,                    /* Success */
+    SS_ERR_NULL_PARAM = 1,        /* NULL parameter passed */
+    SS_ERR_MEMORY = 2,            /* Memory allocation failed */
+    SS_ERR_NOT_FOUND = 3,         /* Signal or slot not found */
+    SS_ERR_ALREADY_EXISTS = 4,    /* Signal already registered */
+    SS_ERR_INVALID_TYPE = 5,      /* Custom data queued without SS_ENABLE_CUSTOM_DATA */
+    SS_ERR_BUFFER_TOO_SMALL = 6,  /* Pool too small for ss_bus_create_in(), or
+                                     buffer too small for ss_get_namespace() */
+    SS_ERR_MAX_SLOTS = 7,         /* Maximum slots per signal reached */
+    SS_ERR_WOULD_OVERFLOW = 9,    /* Name, payload, queue or the built-in buses
+                                     exceed a fixed limit */
+    SS_ERR_CONFIG_MISMATCH = 11   /* Caller's SS_ABI_TAG differs from the library's,
+                                     or a bus flag the library does not support */
 } ss_error_t;
 ```
+
+The values are explicit and do not change between releases. 8 and 10 are unused: they belonged to two 2.x codes that were never returned and are removed in 3.0 (see the [migration guide](migration-3.0.md#removed-and-changed-in-passing)). `ss_error_string()` returns `"Unknown error"` for them.
 
 Functions that take a bus return `SS_ERR_NULL_PARAM` (or 0 / NULL, or do nothing) when the bus is NULL or is being destroyed (see [ss_bus_destroy](#ss_bus_destroy)).
 
@@ -502,12 +504,22 @@ Set the bus's default namespace. Pass NULL or `""` to clear. While it is set, ev
 ### ss_get_namespace
 
 ```c
-const char* ss_get_namespace(ss_bus_t* bus);
+ss_error_t ss_get_namespace(ss_bus_t* bus, char* buf, size_t size);
 ```
 
-Get the bus's current default namespace.
+Copy the bus's current default namespace, with its terminator, into `buf` of `size` bytes; `""` when none is set. The copy is made under the bus's lock, so it is safe while other threads call `ss_set_namespace()` on a thread-safe bus. A buffer of `SS_MAX_SIGNAL_NAME_LENGTH` bytes always fits. The copy can be passed back to `ss_set_namespace()` later to restore the namespace.
 
-**Returns:** Namespace string (valid until the next change), or NULL if not set or the bus is NULL. Passing it back to `ss_set_namespace()` is safe (no-op). The string is the bus's own buffer and is read without the lock, so with several threads read it only while no other thread can call `ss_set_namespace()` on the bus, or copy it then.
+On an error, `buf` holds `""` when `size` is at least 1 (it is never left with a truncated namespace, which would name other signals); with `size` 0 nothing is written.
+
+**Returns:** `SS_OK`; `SS_ERR_NULL_PARAM` if the bus or `buf` is NULL (or the bus is being destroyed); `SS_ERR_BUFFER_TOO_SMALL` if the namespace and its terminator need more than `size` bytes. Errors are reported to the bus's error handler like those of other calls.
+
+```c
+char ns[SS_MAX_SIGNAL_NAME_LENGTH];
+ss_get_namespace(bus, ns, sizeof(ns));   /* save */
+ss_set_namespace(bus, "plugin");
+/* ... */
+ss_set_namespace(bus, ns);               /* restore ("" clears) */
+```
 
 ### ss_emit_namespaced
 
@@ -968,7 +980,6 @@ Disable the bus's debug trace output.
 | `SS_STRDUP(str)` | undefined (copies with `SS_MALLOC`) | Optional string duplicator |
 | `SS_MINIMAL_BUILD` | undefined | Strip all optional features |
 | `SS_EMBEDDED_BUILD` | undefined | Static memory, no threading, 10 slots per signal, deferred queue of 16 |
-| `SS_TRACE(...)` | defined | Deprecated, kept for source compatibility; not used by the library |
 
 No macro changes a public type layout or enum value. Configuration must still be identical for the library and every caller, because it decides which functions are declared and the library's limits; pass it on the command line. See the [Configuration Guide](configuration.md).
 

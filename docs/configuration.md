@@ -118,7 +118,7 @@ Queue entries are claimed with C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtin
 #define SS_ENABLE_DEBUG_TRACE 0  /* default: 0 */
 ```
 
-Enables `ss_enable_trace(bus, FILE*)` and `ss_disable_trace(bus)`. A bus's trace is off until `ss_enable_trace()` names a stream; then registration, connection and emission events are logged to it. The `SS_TRACE` macro in `ss_config.h` is deprecated: it is kept for source compatibility, but the library no longer uses it.
+Enables `ss_enable_trace(bus, FILE*)` and `ss_disable_trace(bus)`. A bus's trace is off until `ss_enable_trace()` names a stream; then registration, connection and emission events are logged to it. These two functions are the only trace interface; `ss_config.h` defines no trace macro.
 
 ## Limits
 

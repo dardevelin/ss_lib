@@ -427,6 +427,7 @@ void test_isr_null_signal(void) {
 #endif
 
 void test_namespace(void) {
+    char ns_buf[SS_MAX_SIGNAL_NAME_LENGTH];
     printf("\n=== Testing Namespace Support ===\n");
 
     bus = new_bus();
@@ -446,11 +447,13 @@ void test_namespace(void) {
 
     /* Set/get namespace */
     assert(ss_set_namespace(bus, "app") == SS_OK);
-    assert(strcmp(ss_get_namespace(bus), "app") == 0);
+    assert(ss_get_namespace(bus, ns_buf, sizeof(ns_buf)) == SS_OK);
+    assert(strcmp(ns_buf, "app") == 0);
 
     /* Clear namespace */
     assert(ss_set_namespace(bus, NULL) == SS_OK);
-    assert(ss_get_namespace(bus) == NULL);
+    assert(ss_get_namespace(bus, ns_buf, sizeof(ns_buf)) == SS_OK);
+    assert(ns_buf[0] == '\0');
 
     /* NULL params */
     assert(ss_emit_namespaced(bus, NULL, "x", NULL) == SS_ERR_NULL_PARAM);
@@ -1221,6 +1224,7 @@ void test_batch_reentrancy(void) {
 /* A6: the default namespace qualifies unqualified names */
 void test_default_namespace(void) {
     char long_ns[300];
+    char ns_buf[SS_MAX_SIGNAL_NAME_LENGTH];
     int calls = 0;
     ss_data_t none = {0};                     /* SS_TYPE_VOID */
     printf("\n=== Testing Default Namespace (A6) ===\n");
@@ -1249,13 +1253,16 @@ void test_default_namespace(void) {
     assert(ss_signal_exists(bus, "app::click") == 1);
 
     /* An empty namespace clears it too */
+    assert(ss_set_namespace(bus, "app") == SS_OK);
     assert(ss_set_namespace(bus, "") == SS_OK);
-    assert(ss_get_namespace(bus) == NULL);
+    assert(ss_get_namespace(bus, ns_buf, sizeof(ns_buf)) == SS_OK);
+    assert(ns_buf[0] == '\0');
 
     memset(long_ns, 'n', sizeof(long_ns) - 1);
     long_ns[sizeof(long_ns) - 1] = '\0';
     assert(ss_set_namespace(bus, long_ns) == SS_ERR_WOULD_OVERFLOW);
-    assert(ss_get_namespace(bus) == NULL);
+    assert(ss_get_namespace(bus, ns_buf, sizeof(ns_buf)) == SS_OK);
+    assert(ns_buf[0] == '\0');
 
     ss_bus_destroy(bus);
     printf("Default namespace tests passed!\n");
@@ -1281,6 +1288,7 @@ void test_two_buses_independent(void) {
     ss_batch_t* batch;
     ss_connection_t handle_a = 0, handle_b = 0;
     int sum_a = 0, sum_b = 0;
+    char ns_buf[SS_MAX_SIGNAL_NAME_LENGTH];
     printf("\n=== Testing Two Independent Buses (A9) ===\n");
     assert(a != b);
 
@@ -1313,7 +1321,8 @@ void test_two_buses_independent(void) {
 
     /* Namespaces, limits and error handlers are per bus */
     assert(ss_set_namespace(a, "ns") == SS_OK);
-    assert(ss_get_namespace(b) == NULL);
+    assert(ss_get_namespace(b, ns_buf, sizeof(ns_buf)) == SS_OK);
+    assert(ns_buf[0] == '\0');
     assert(ss_signal_register(a, "same") == SS_OK);       /* "ns::same" */
     assert(ss_signal_exists(b, "ns::same") == 0);
     assert(ss_set_namespace(a, NULL) == SS_OK);
@@ -1364,7 +1373,7 @@ void test_two_buses_independent(void) {
     assert(ss_emit_void(NULL, "x") == SS_ERR_NULL_PARAM);
     assert(ss_signal_exists(NULL, "x") == 0);
     assert(ss_flush_deferred(NULL) == SS_ERR_NULL_PARAM);
-    assert(ss_get_namespace(NULL) == NULL);
+    assert(ss_get_namespace(NULL, ns_buf, sizeof(ns_buf)) == SS_ERR_NULL_PARAM);
     assert(ss_get_max_slots_per_signal(NULL) == 0);
     printf("Two independent buses tests passed!\n");
 }
@@ -1644,15 +1653,107 @@ void test_error_handler_coverage(void) {
     printf("Error handler coverage tests passed!\n");
 }
 
-/* Review R7: restoring the namespace from ss_get_namespace(bus) is safe */
+/* Review R7: restoring the namespace from ss_get_namespace() is safe */
 void test_namespace_self_assign(void) {
+    char saved[SS_MAX_SIGNAL_NAME_LENGTH];
+    char now[SS_MAX_SIGNAL_NAME_LENGTH];
     printf("\n=== Testing Namespace Self-assignment ===\n");
     bus = new_bus();
     assert(ss_set_namespace(bus, "keep") == SS_OK);
-    assert(ss_set_namespace(bus, ss_get_namespace(bus)) == SS_OK);
-    assert(strcmp(ss_get_namespace(bus), "keep") == 0);
+    assert(ss_get_namespace(bus, saved, sizeof(saved)) == SS_OK);
+    assert(ss_set_namespace(bus, "other") == SS_OK);
+    assert(ss_set_namespace(bus, saved) == SS_OK);
+    assert(ss_set_namespace(bus, saved) == SS_OK);       /* same value again */
+    assert(ss_get_namespace(bus, now, sizeof(now)) == SS_OK);
+    assert(strcmp(now, "keep") == 0);
+    assert(ss_signal_register(bus, "x") == SS_OK);
+    assert(ss_signal_exists(bus, "keep::x") == 1);
     ss_bus_destroy(bus);
     printf("Namespace self-assignment tests passed!\n");
+}
+
+/* 3.0 plan 8.5c: ss_get_namespace copies the namespace into the caller's
+ * buffer under the bus lock, so no pointer into the bus is handed out */
+void test_get_namespace_buffer(void) {
+    char buf[SS_MAX_SIGNAL_NAME_LENGTH];
+    char longest[SS_MAX_SIGNAL_NAME_LENGTH];
+    char small[4];
+    printf("\n=== Testing ss_get_namespace Buffer ===\n");
+    bus = new_bus();
+    ss_set_error_handler(bus, count_errors);
+    g_handler_calls = 0;
+
+    /* None set: the empty string, which also fits in one byte */
+    memset(buf, 'x', sizeof(buf));
+    assert(ss_get_namespace(bus, buf, sizeof(buf)) == SS_OK);
+    assert(buf[0] == '\0');
+    small[0] = 'x';
+    assert(ss_get_namespace(bus, small, 1) == SS_OK);
+    assert(small[0] == '\0');
+
+    /* Fits, also exactly (three characters and the terminator) */
+    assert(ss_set_namespace(bus, "app") == SS_OK);
+    assert(ss_get_namespace(bus, buf, sizeof(buf)) == SS_OK);
+    assert(strcmp(buf, "app") == 0);
+    memset(small, 'x', sizeof(small));
+    assert(ss_get_namespace(bus, small, sizeof(small)) == SS_OK);
+    assert(strcmp(small, "app") == 0);
+    assert(g_handler_calls == 0);
+
+    /* Does not fit: buf holds the empty string, nothing else is written */
+    memset(small, 'x', sizeof(small));
+    assert(ss_get_namespace(bus, small, 3) == SS_ERR_BUFFER_TOO_SMALL);
+    assert(small[0] == '\0' && small[1] == 'x' && small[2] == 'x' && small[3] == 'x');
+    small[0] = 'x';
+    assert(ss_get_namespace(bus, small, 0) == SS_ERR_BUFFER_TOO_SMALL);
+    assert(small[0] == 'x');                             /* size 0: untouched */
+    assert(g_handler_calls == 2);                        /* both reported */
+
+    /* NULL parameters */
+    assert(ss_get_namespace(bus, NULL, sizeof(buf)) == SS_ERR_NULL_PARAM);
+    assert(g_handler_calls == 3);
+    strcpy(buf, "stale");
+    assert(ss_get_namespace(NULL, buf, sizeof(buf)) == SS_ERR_NULL_PARAM);
+    assert(buf[0] == '\0');
+    assert(ss_get_namespace(NULL, NULL, 0) == SS_ERR_NULL_PARAM);
+
+    /* The longest namespace accepted fits in SS_MAX_SIGNAL_NAME_LENGTH bytes */
+    memset(longest, 'n', SS_MAX_SIGNAL_NAME_LENGTH - 4);
+    longest[SS_MAX_SIGNAL_NAME_LENGTH - 4] = '\0';    /* "ns::x" just fits */
+    assert(ss_set_namespace(bus, longest) == SS_OK);
+    assert(ss_get_namespace(bus, buf, sizeof(buf)) == SS_OK);
+    assert(strcmp(buf, longest) == 0);
+    assert(ss_get_namespace(bus, buf, SS_MAX_SIGNAL_NAME_LENGTH - 4) == SS_ERR_BUFFER_TOO_SMALL);
+    assert(buf[0] == '\0');
+    assert(ss_get_namespace(bus, buf, SS_MAX_SIGNAL_NAME_LENGTH - 3) == SS_OK);
+    assert(strcmp(buf, longest) == 0);
+
+    /* Clearing gives the empty string again */
+    assert(ss_set_namespace(bus, NULL) == SS_OK);
+    assert(ss_get_namespace(bus, buf, sizeof(buf)) == SS_OK);
+    assert(buf[0] == '\0');
+    ss_bus_destroy(bus);
+    printf("ss_get_namespace buffer tests passed!\n");
+}
+
+/* 3.0 plan 8.5b: the two codes 2.x never returned (8 and 10) are gone and
+ * every other code keeps its 2.x value */
+void test_error_code_values(void) {
+    printf("\n=== Testing Error Code Values ===\n");
+    assert(SS_OK == 0);
+    assert(SS_ERR_NULL_PARAM == 1);
+    assert(SS_ERR_MEMORY == 2);
+    assert(SS_ERR_NOT_FOUND == 3);
+    assert(SS_ERR_ALREADY_EXISTS == 4);
+    assert(SS_ERR_INVALID_TYPE == 5);
+    assert(SS_ERR_BUFFER_TOO_SMALL == 6);
+    assert(SS_ERR_MAX_SLOTS == 7);
+    assert(SS_ERR_WOULD_OVERFLOW == 9);
+    assert(SS_ERR_CONFIG_MISMATCH == 11);
+    assert(strcmp(ss_error_string((ss_error_t)8), "Unknown error") == 0);
+    assert(strcmp(ss_error_string((ss_error_t)10), "Unknown error") == 0);
+    assert(strcmp(ss_error_string(SS_ERR_WOULD_OVERFLOW), "Unknown error") != 0);
+    printf("Error code value tests passed!\n");
 }
 
 /* Version macros match the runtime string */
@@ -1720,6 +1821,8 @@ int main(void) {
     test_nested_flush();
     test_error_handler_coverage();
     test_namespace_self_assign();
+    test_get_namespace_buffer();
+    test_error_code_values();
     test_version();
 #if SS_ENABLE_DEBUG_TRACE
     test_debug_trace();

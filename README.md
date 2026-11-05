@@ -231,7 +231,7 @@ Both create macros pass `SS_ABI_TAG` to `ss_bus_create_abi()` / `ss_bus_create_i
 | Function | Description |
 |----------|-------------|
 | `ss_set_namespace(ns)` | Set default namespace (NULL clears) |
-| `ss_get_namespace()` | Get current namespace |
+| `ss_get_namespace(buf, size)` | Copy current namespace into `buf` (`""` when none) |
 | `ss_emit_namespaced(ns, signal, data)` | Emit with namespace prefix |
 
 ### Deferred Emission

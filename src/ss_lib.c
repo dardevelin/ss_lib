@@ -257,10 +257,10 @@ static void account(ss_bus_t* bus, size_t add, size_t sub) {
 #define SS_ACCOUNT(bus, add, sub) ((void)0)
 #endif
 
-/* SS_TRACE((bus, fmt, args...)): double parentheses keep it valid C89.
- * Writes to bus's trace stream. Replaces the deprecated public SS_TRACE
- * from ss_config.h inside the library. */
-#undef SS_TRACE
+/* SS_LIB_TRACE((bus, fmt, args...)): double parentheses keep it valid C89.
+ * Writes to bus's trace stream. Internal to this file; named apart from
+ * the public SS_TRACE macro of 2.x so a program defining SS_TRACE cannot
+ * collide with it. */
 #if SS_ENABLE_DEBUG_TRACE
 static void ss_trace(const ss_bus_t* bus, const char* fmt, ...) {
     va_list args;
@@ -272,9 +272,9 @@ static void ss_trace(const ss_bus_t* bus, const char* fmt, ...) {
     fputc('\n', out);
     va_end(args);
 }
-#define SS_TRACE(args) ss_trace args
+#define SS_LIB_TRACE(args) ss_trace args
 #else
-#define SS_TRACE(args) ((void)0)
+#define SS_LIB_TRACE(args) ((void)0)
 #endif
 
 #if SS_ENABLE_PERFORMANCE_STATS
@@ -654,7 +654,7 @@ SS_INLINE ss_error_t emit_locked(ss_bus_t* bus, const char* name, const ss_data_
 #endif
 
     if (!sig) return SS_ERR_NOT_FOUND;
-    SS_TRACE((bus, "Emitting signal: %s to %lu slots", name, (unsigned long)sig->slot_count));
+    SS_LIB_TRACE((bus, "Emitting signal: %s to %lu slots", name, (unsigned long)sig->slot_count));
 
     sig->emitting++;
     for (slot = sig->slots; slot; ) {
@@ -1149,7 +1149,7 @@ ss_error_t ss_signal_register_ex(ss_bus_t* bus, const char* signal_name,
         if (sig) {
             sig->priority = priority;
             bus->signal_count++;
-            SS_TRACE((bus, "Registered signal: %s", name));
+            SS_LIB_TRACE((bus, "Registered signal: %s", name));
         }
     }
     return bus_leave(bus, locked, err, signal_name);
@@ -1231,7 +1231,7 @@ ss_error_t ss_connect_ex(ss_bus_t* bus, const char* signal_name, ss_slot_func_t 
                 s->next = node;
             }
             sig->slot_count++;
-            SS_TRACE((bus, "Connected slot to signal: %s (handle: %lu)", sig->name,
+            SS_LIB_TRACE((bus, "Connected slot to signal: %s (handle: %lu)", sig->name,
                      (unsigned long)node->handle));
         }
     }
@@ -1378,23 +1378,36 @@ ss_error_t ss_set_namespace(ss_bus_t* bus, const char* ns) {
     int locked;
     if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
+    /* ns cannot point into bus->ns: ss_get_namespace() copies, and no
+     * other call hands out the buffer */
     if (!ns || ns[0] == '\0') {
         bus->ns[0] = '\0';
     } else if (!qualify(ns, "x", probe)) {
         err = SS_ERR_WOULD_OVERFLOW;       /* not even "ns::x" would fit */
-    } else if (ns != bus->ns) {            /* ss_get_namespace() result: no-op */
+    } else {
         strcpy(bus->ns, ns);
     }
     return bus_leave(bus, locked, err, ns);
 }
 
-const char* ss_get_namespace(ss_bus_t* bus) {
-    const char* ns;
+ss_error_t ss_get_namespace(ss_bus_t* bus, char* buf, size_t size) {
+    ss_error_t err = SS_OK;
+    size_t len;
     int locked;
-    if (!bus_enter(bus, &locked)) return NULL;
-    ns = bus->ns[0] ? bus->ns : NULL;
-    (void)bus_leave(bus, locked, SS_OK, NULL);
-    return ns;
+    if (buf && size > 0) buf[0] = '\0';  /* what buf holds on any error */
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
+
+    if (!buf) {
+        err = SS_ERR_NULL_PARAM;
+    } else {
+        len = strlen(bus->ns);
+        if (len >= size) {
+            err = SS_ERR_BUFFER_TOO_SMALL;
+        } else {
+            memcpy(buf, bus->ns, len + 1);
+        }
+    }
+    return bus_leave(bus, locked, err, NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1779,9 +1792,7 @@ const char* ss_error_string(ss_error_t error) {
         case SS_ERR_INVALID_TYPE: return "Invalid data type";
         case SS_ERR_BUFFER_TOO_SMALL: return "Buffer too small";
         case SS_ERR_MAX_SLOTS: return "Maximum slots reached";
-        case SS_ERR_TIMEOUT: return "Operation timed out";
         case SS_ERR_WOULD_OVERFLOW: return "Would overflow static buffer";
-        case SS_ERR_ISR_UNSAFE: return "Operation not ISR-safe";
         case SS_ERR_CONFIG_MISMATCH: return "Library and caller built with different configuration";
         default: return "Unknown error";
     }

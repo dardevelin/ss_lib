@@ -2,7 +2,7 @@
  * Concurrency stress test (POSIX threads). Run under ThreadSanitizer:
  *   make test-tsan
  *
- * Three phases:
+ * Four phases:
  *   1. one bus created with SS_BUS_THREAD_SAFE, shared by every thread:
  *      every public operation that touches its state is hammered, including
  *      slots that call back into the library and producers on the ISR queue;
@@ -10,7 +10,9 @@
  *      so they need no lock;
  *   3. two thread-safe buses, where slots of the first emit on the second
  *      (cross-bus calls in one direction only) while other threads use the
- *      second directly.
+ *      second directly;
+ *   4. one thread-safe bus whose namespace some threads set while the
+ *      others read it with ss_get_namespace().
  * Any data race, deadlock, lost or duplicated event fails the run.
  */
 #include "ss_lib.h"
@@ -219,6 +221,27 @@ static void* cross_worker(void* arg) {
     return NULL;
 }
 
+/* Phase 4: two threads set the shared bus's namespace while the others
+ * read it. ss_get_namespace() copies it under the bus lock, so a reader
+ * sees one of the values set, never a mix or a race. */
+static const char* const g_namespaces[] = { "", "short", "a_much_longer_namespace" };
+
+static void* namespace_worker(void* arg) {
+    long id = (long)(size_t)arg;
+    char buf[SS_MAX_SIGNAL_NAME_LENGTH];
+    int i;
+    for (i = 0; i < ITERATIONS; i++) {
+        if (id < 2) {
+            assert(ss_set_namespace(bus, g_namespaces[(i + id) % 3]) == SS_OK);
+        } else {
+            assert(ss_get_namespace(bus, buf, sizeof(buf)) == SS_OK);
+            assert(strcmp(buf, g_namespaces[0]) == 0 || strcmp(buf, g_namespaces[1]) == 0 ||
+                   strcmp(buf, g_namespaces[2]) == 0);
+        }
+    }
+    return NULL;
+}
+
 static void run_threads(void* (*fn)(void*)) {
     pthread_t threads[THREADS];
     long i;
@@ -288,6 +311,12 @@ int main(void) {
     ss_bus_destroy(g_downstream);
     free(pool);
     printf("Cross-bus calls passed (%ld events)\n", (long)atomic_load(&g_sunk));
+
+    /* Phase 4: the namespace read while other threads set it */
+    assert(ss_bus_create(&bus, SS_BUS_THREAD_SAFE) == SS_OK);
+    run_threads(namespace_worker);
+    ss_bus_destroy(bus);
+    printf("Namespace reads passed\n");
 
     printf("Concurrency stress test passed\n");
     return 0;

@@ -72,6 +72,15 @@ lists what changes for programs written for 2.x.
 - `ss_emit_deferred()` and `ss_batch_add()` return `SS_ERR_INVALID_TYPE` for
   custom data in a library built without `SS_ENABLE_CUSTOM_DATA`, which
   cannot copy it. The code was reserved before.
+- **Breaking:** `ss_error_t ss_get_namespace(ss_bus_t* bus, char* buf, size_t
+  size)` copies the namespace into the caller's buffer under the bus's lock
+  (`""` when none is set) instead of returning a pointer into the bus, so it
+  may be read while another thread sets it. It returns `SS_ERR_NULL_PARAM`
+  for a NULL bus or buffer and `SS_ERR_BUFFER_TOO_SMALL` (with `buf` set to
+  `""`) when the namespace does not fit; `SS_MAX_SIGNAL_NAME_LENGTH` bytes
+  always do. `ss_set_namespace()` no longer checks for its own buffer, which
+  is never handed out.
+- The error codes have explicit values; none changes.
 
 ### Added
 - `ss_bus_create(&bus, flags)` and `ss_bus_create_in(&bus, pool, size,
@@ -100,6 +109,10 @@ lists what changes for programs written for 2.x.
   `ss_bus_pool_size()`), `ss_cleanup()` (now `ss_bus_destroy()`),
   `ss_set_thread_safe()` and `ss_is_thread_safe()` (now `SS_BUS_THREAD_SAFE`),
   and the `SS_STATIC_CONTEXT` configuration macro (now `SS_STATIC_BUSES`).
+- **Breaking:** the deprecated `SS_TRACE` macro in `ss_config.h`, unused by
+  the library; `ss_enable_trace()` remains.
+- **Breaking:** `SS_ERR_TIMEOUT` and `SS_ERR_ISR_UNSAFE`, which no function
+  returned. The other codes keep their values (8 and 10 stay unused).
 
 ### Fixed
 - `docs/api-reference.md` showed `SS_VERSION_PATCH 1` next to version 2.2.4.

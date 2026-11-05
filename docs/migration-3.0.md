@@ -86,7 +86,7 @@ number of arguments changes; no call silently changes meaning.
 | `ss_connect`, `ss_connect_ex`, `ss_disconnect`, `ss_disconnect_handle`, `ss_disconnect_all` | `ss_data_*` |
 | `ss_emit`, `ss_emit_void`, `ss_emit_int`, `ss_emit_float`, `ss_emit_double`, `ss_emit_string`, `ss_emit_pointer`, `ss_emit_namespaced` | `ss_free_signal_list` |
 | `ss_emit_deferred`, `ss_flush_deferred` | `ss_batch_add`, `ss_batch_emit`, `ss_batch_destroy` (the batch knows its bus) |
-| `ss_set_namespace`, `ss_get_namespace` | `ss_emit_from_isr` (until the ISR queue moves into the bus) |
+| `ss_set_namespace`, `ss_get_namespace` (which also copies into a buffer, see [below](#removed-and-changed-in-passing)) | `ss_emit_from_isr` (until the ISR queue moves into the bus) |
 | `ss_get_signal_count`, `ss_get_signal_list` | |
 | `ss_get_memory_stats`, `ss_reset_memory_stats` | |
 | `ss_get_perf_stats`, `ss_enable_profiling`, `ss_reset_perf_stats` | |
@@ -101,12 +101,14 @@ across lines before the opening parenthesis.
 
 ```sh
 sed -i -E \
-  -e 's/\b(ss_flush_deferred|ss_get_namespace|ss_get_signal_count|ss_reset_memory_stats|ss_reset_perf_stats|ss_get_max_slots_per_signal|ss_disable_trace|ss_process_isr_queue|ss_batch_create)\(\s*\)/\1(bus)/g' \
+  -e 's/\b(ss_flush_deferred|ss_get_signal_count|ss_reset_memory_stats|ss_reset_perf_stats|ss_get_max_slots_per_signal|ss_disable_trace|ss_process_isr_queue|ss_batch_create)\(\s*\)/\1(bus)/g' \
   -e 's/\b(ss_signal_register(_ex)?|ss_signal_unregister|ss_signal_exists|ss_connect(_ex)?|ss_disconnect(_handle|_all)?|ss_emit(_void|_int|_float|_double|_string|_pointer|_namespaced|_deferred)?|ss_set_namespace|ss_get_signal_list|ss_get_memory_stats|ss_get_perf_stats|ss_enable_profiling|ss_set_error_handler|ss_set_max_slots_per_signal|ss_enable_trace)\(/\1(bus, /g' \
   src/*.c
 ```
 
-Then replace `ss_init()` and `ss_cleanup()` as shown in the previous section.
+Then replace `ss_init()` and `ss_cleanup()` as shown in the previous section,
+and `ss_get_namespace()` as shown in
+[Removed and changed in passing](#removed-and-changed-in-passing).
 
 **Slots that call the library** need the bus too. The slot signature does
 not change; pass the bus as `user_data`, or in a struct that `user_data`
@@ -306,3 +308,48 @@ What to change:
   `SS_STATIC_BUSES=0` with `ss_bus_create_in()`; `ss_bus_create()` then
   returns `SS_ERR_WOULD_OVERFLOW` instead of allocating, because static mode
   never allocates a bus.
+
+## Removed and changed in passing
+
+Smaller cleanups that 3.0 makes while it breaks the API anyway. Each one is
+a compile error until the code is changed.
+
+- **The `SS_TRACE` macro is removed** from `ss_config.h`. It was deprecated
+  in 2.x and the library no longer used it. Use `ss_enable_trace(bus,
+  stream)` to see the library's trace (with `SS_ENABLE_DEBUG_TRACE=1`), and
+  your own logging for your own messages.
+- **`SS_ERR_TIMEOUT` and `SS_ERR_ISR_UNSAFE` are removed.** No function ever
+  returned them, so a `case` or comparison for them can be deleted. Every
+  other code keeps its number (`SS_ERR_WOULD_OVERFLOW` is still 9,
+  `SS_ERR_CONFIG_MISMATCH` still 11); 8 and 10 stay unused, and
+  `ss_error_string()` returns `"Unknown error"` for them.
+- **`ss_get_namespace()` copies the namespace into a buffer you pass** and
+  returns an error code. In 2.x it returned a pointer into the library's
+  context, which another thread's `ss_set_namespace()` could change while it
+  was read; the copy is made under the bus's lock, so that rule is gone. The
+  copy is `""` when no namespace is set (2.x returned NULL). A buffer of
+  `SS_MAX_SIGNAL_NAME_LENGTH` bytes always fits; a smaller one that cannot
+  hold the namespace gives `SS_ERR_BUFFER_TOO_SMALL` and holds `""`.
+
+  2.x:
+
+  ```c
+  const char* ns = ss_get_namespace();
+  if (ns) printf("namespace %s\n", ns);
+
+  const char* saved = ss_get_namespace();   /* a pointer, not a copy */
+  ```
+
+  3.0:
+
+  ```c
+  char ns[SS_MAX_SIGNAL_NAME_LENGTH];
+  if (ss_get_namespace(bus, ns, sizeof(ns)) == SS_OK && ns[0] != '\0') {
+      printf("namespace %s\n", ns);
+  }
+
+  char saved[SS_MAX_SIGNAL_NAME_LENGTH];    /* a copy: restore it with */
+  ss_get_namespace(bus, saved, sizeof(saved));
+  /* ... */
+  ss_set_namespace(bus, saved);             /* "" clears */
+  ```
