@@ -153,13 +153,13 @@ In 3.0 an `ss_data_t` records ownership in `owned`, set only by the copying sett
 
 **Fix:** Pass only `int` from ISR. Use the int as an event code, and look up full data in the main loop.
 
-### 8b. ISR Events Never Delivered (or Delivered to the Wrong Bus)
+### 8b. ISR Events Never Delivered, or Queued on the Wrong Bus
 
-**Look for:** `ss_emit_from_isr()` without a regular `ss_process_isr_queue(bus)` call in normal context (main loop, task); programs with several buses where more than one processes the ISR queue.
+**Look for:** `ss_emit_from_isr(bus, ...)` on a bus whose `ss_process_isr_queue(bus)` is never called regularly in normal context (main loop, task); programs with several buses where the ISR emits on one bus and the main loop drains another; ISRs that read the bus from a global that is still NULL when the interrupt is enabled; `ss_bus_destroy()` while the interrupts (or threads) that emit on that bus are still enabled.
 
-**Consequence:** Events stay queued; once `SS_ISR_QUEUE_SIZE` (16) entries are pending, `ss_emit_from_isr()` returns `SS_ERR_WOULD_OVERFLOW` and events are lost. The ISR queue is a single queue shared by every bus: `ss_emit_from_isr()` takes no bus, and each event goes to whichever bus next calls `ss_process_isr_queue()`. Destroying a bus does not drop queued events; the next bus that processes the queue receives them.
+**Consequence:** Each bus has its own ISR queue, and `ss_process_isr_queue(bus)` delivers only that bus's events. Events on an undrained bus stay queued; once `SS_ISR_QUEUE_SIZE` (16) entries are pending on it, `ss_emit_from_isr()` returns `SS_ERR_WOULD_OVERFLOW` and events are lost. A NULL bus returns `SS_ERR_NULL_PARAM` and the event is lost. Destroying a bus drops its queued events, and an interrupt that emits on it during or after destruction writes into freed or recycled memory.
 
-**Fix:** Call `ss_process_isr_queue(bus)` from the main loop, on the one bus that owns the ISR signals. Also check: it is never called from an ISR (it may take the bus mutex and runs slots); on cores without compare-and-swap (Cortex-M0, AVR) `SS_ISR_CRITICAL_ENTER()`/`SS_ISR_CRITICAL_EXIT()` are defined, otherwise the build fails or uses the wrong atomics; names are resolved against that bus's default namespace at delivery, not at enqueue.
+**Fix:** Queue each event on the bus whose slots should receive it, and call `ss_process_isr_queue(bus)` for that bus from the main loop. Create the bus and store it in the global before enabling the interrupts that emit; disable them before `ss_bus_destroy()`. Also check: it is never called from an ISR (it may take the bus mutex and runs slots); on cores without compare-and-swap (Cortex-M0, AVR) `SS_ISR_CRITICAL_ENTER()`/`SS_ISR_CRITICAL_EXIT()` are defined, otherwise the build fails or uses the wrong atomics; names are resolved against that bus's default namespace at delivery, not at enqueue.
 
 ### 9. Missing `ss_bus_destroy()`
 
@@ -358,9 +358,9 @@ void EXTI0_IRQHandler(void) {
     ss_emit_int(bus, "button", 1);  // NOT ISR-safe!
 }
 
-// CORRECT — use ISR-safe variant (int only, lock-free, no malloc, no bus)
+// CORRECT — use ISR-safe variant (int only, lock-free, no malloc)
 void EXTI0_IRQHandler(void) {
-    ss_emit_from_isr("button", 1);  // Queues to the fixed ISR queue
+    ss_emit_from_isr(bus, "button", 1);  // Queues to the bus's fixed ISR queue
 }
 // ...and deliver from the main loop
 for (;;) { ss_process_isr_queue(bus); /* ... */ }

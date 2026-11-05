@@ -99,11 +99,13 @@ Enables `ss_get_memory_stats()` and `ss_reset_memory_stats()`, per bus: live and
 #define SS_ENABLE_ISR_SAFE 0  /* default: 0 */
 ```
 
-Enables `ss_emit_from_isr()`, which queues an integer event from an interrupt service routine without locks or allocation, and `ss_process_isr_queue(bus)`, which delivers the queued events to a bus from the main loop. The queue is shared by every bus. Configure the queue depth:
+Enables `ss_emit_from_isr(bus, ...)`, which queues an integer event on a bus from an interrupt service routine without locks or allocation, and `ss_process_isr_queue(bus)`, which delivers that bus's queued events from the main loop. Each bus has its own queue. Configure its depth:
 
 ```c
-#define SS_ISR_QUEUE_SIZE 16  /* default */
+#define SS_ISR_QUEUE_SIZE 16  /* default, entries per bus */
 ```
+
+Every bus holds a queue of this many entries, each with a `SS_MAX_SIGNAL_NAME_LENGTH` name buffer and three ints: 704 bytes per bus with the static-mode defaults on 32-bit targets, and about 4.2 KB per bus in dynamic mode, where names may be 256 bytes long.
 
 Queue entries are claimed with C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins or MSVC Interlocked functions. On targets without atomic compare-and-swap (Cortex-M0, AVR), define both of these to disable and restore interrupts, for example in `ss_config.h` (the CMSIS functions must be declared where `src/ss_lib.c` sees them). Both must also be compiler memory barriers, as the CMSIS functions are, so the compiler cannot move the queue's reads and writes out of the critical section:
 

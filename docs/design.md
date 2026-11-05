@@ -72,9 +72,9 @@ This keeps callback code free of "not from a slot" rules, at the cost of a small
 ### ISR Safety
 
 ISR-safe mode provides:
-- `ss_emit_from_isr`: no locks, no allocation, no slot calls; entries claimed with atomic compare-and-swap
-- A fixed queue of `SS_ISR_QUEUE_SIZE` int events
-- Delivery from normal context by `ss_process_isr_queue(bus)`, oldest first; the queue is shared by every bus
+- `ss_emit_from_isr(bus, ...)`: no locks, no allocation, no slot calls; entries claimed with atomic compare-and-swap
+- A fixed queue of `SS_ISR_QUEUE_SIZE` int events in each bus
+- Delivery from normal context by `ss_process_isr_queue(bus)`, oldest first, of that bus's events only
 - A critical-section hook (`SS_ISR_CRITICAL_ENTER/EXIT`) for cores without compare-and-swap
 
 ### Configuration Consistency (ABI Check)
@@ -96,7 +96,7 @@ Choices made along the way:
 - The library has no default bus. A default would bring back the global with its init-order and thread questions, and a failed creation could quietly run against it. A program that wants one global bus keeps the pointer in its own global.
 - Slots keep their signature. A slot that needs its bus gets it through `user_data`; adding a bus parameter would break every slot in every program.
 - Static mode keeps a small table of built-in buses (`SS_STATIC_BUSES`, default 1) so a one-bus program uses the same RAM as 2.x and never the heap. Each bus has its own signal and slot arrays, so one bus cannot starve another.
-- The ISR queue is still global and shared by the buses in this version; an event goes to the bus that processes the queue.
+- Each bus has its own ISR queue, so `ss_emit_from_isr()` takes the bus. A global queue whose entries name their bus would keep the queue usable before any bus exists, but brings back global state: each drain would have to skip other buses' events, and a destroyed bus would leave orphan events. The cost is that the bus must exist before the interrupts that emit are enabled, and those interrupts must be disabled before the bus is destroyed.
 
 ## Performance Considerations
 

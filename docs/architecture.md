@@ -22,12 +22,9 @@ SS_Lib is a signal-slot event system with two memory models (dynamic and static)
 
 ## Buses
 
-All state lives in a bus, `struct ss_bus` (public as the opaque `ss_bus_t`). A bus holds the signal storage, the default namespace (`char ns[SS_MAX_SIGNAL_NAME_LENGTH]`, an inline buffer), the error handler, the handle counter, the slot limit, the mutex (when it has one), the deferred queue entries, the statistics and trace settings, and the nesting counters `call_depth` and `closing`. Every public function that uses state takes the bus as its first argument, and every internal function (name resolution, the storage interface, emission, sweep and retire, the entry queue, error reporting, trace) takes it as its `bus` parameter. Buses share nothing, so two buses with the same signal names are independent.
+All state lives in a bus, `struct ss_bus` (public as the opaque `ss_bus_t`). A bus holds the signal storage, the default namespace (`char ns[SS_MAX_SIGNAL_NAME_LENGTH]`, an inline buffer), the error handler, the handle counter, the slot limit, the mutex (when it has one), the deferred queue entries, the ISR queue (with `SS_ENABLE_ISR_SAFE`), the statistics and trace settings, and the nesting counters `call_depth` and `closing`. Every public function that uses state takes the bus as its first argument, and every internal function (name resolution, the storage interface, emission, sweep and retire, the entry queue, error reporting, trace) takes it as its `bus` parameter. Buses share nothing, so two buses with the same signal names are independent.
 
-The library has no default bus and almost no global state. What remains:
-
-- in static mode, the table of built-in buses `g_static_buses[SS_STATIC_BUSES]` in `.bss`;
-- with `SS_ENABLE_ISR_SAFE`, the ISR queue, which every bus shares for now (see [ISR Queue](#isr-queue)).
+The library has no default bus and almost no global state. What remains is, in static mode, the table of built-in buses `g_static_buses[SS_STATIC_BUSES]` in `.bss`.
 
 ### Where a bus lives
 
@@ -185,25 +182,27 @@ The deferred queue is `deferred_entries[SS_DEFERRED_QUEUE_SIZE]` inside the bus.
 
 ## ISR Queue
 
-With `SS_ENABLE_ISR_SAFE`, `ss_emit_from_isr` writes into a fixed global array `g_isr_queue[SS_ISR_QUEUE_SIZE]`. It is shared by every bus and takes no bus, so it works before any bus exists; an event goes to whichever bus next processes the queue. Each entry has an atomic `state`, an atomic sequence number `seq`, the int value and the name.
+With `SS_ENABLE_ISR_SAFE`, each bus has its own ISR queue: a fixed array `isr_queue[SS_ISR_QUEUE_SIZE]` and a sequence counter `isr_seq`, the first members of `struct ss_bus` (small offsets for Thumb-1 code). `ss_emit_from_isr(bus, ...)` writes into that bus's queue and `ss_process_isr_queue(bus)` drains only that queue, so an event is delivered only by the bus it was queued on. Each entry has an atomic `state`, an atomic sequence number `seq`, the int value and the name. A zeroed bus (`bus_init`'s `memset`, `ISR_FREE` is 0) has an empty queue.
 
 Entry states: `FREE -> WRITING -> READY -> READING -> FREE`.
 
 `ss_emit_from_isr`:
-1. Rejects NULL/empty names and names of `SS_MAX_SIGNAL_NAME_LENGTH` or more
-2. Claims the first entry with compare-and-swap `FREE -> WRITING`; none free is `SS_ERR_WOULD_OVERFLOW`
-3. Copies name and value, stores the next global sequence number
+1. Rejects a NULL bus and NULL/empty names (`SS_ERR_NULL_PARAM`) and names of `SS_MAX_SIGNAL_NAME_LENGTH` or more (`SS_ERR_WOULD_OVERFLOW`), touching nothing
+2. Claims the first entry of the bus's queue with compare-and-swap `FREE -> WRITING`; none free is `SS_ERR_WOULD_OVERFLOW`
+3. Copies name and value, stores the bus's next sequence number
 4. Publishes with a release store `-> READY`
 
-No locks, no allocation, no slot calls. Because claiming is a CAS, nested interrupts and several threads may enqueue concurrently.
+No locks, no allocation, no slot calls, and no other field of the bus is read: no `bus_enter`, so neither the mutex of a `SS_BUS_THREAD_SAFE` bus nor `closing`. Because claiming is a CAS, nested interrupts and several threads may enqueue concurrently, also while another call on the bus is in progress.
 
 `ss_process_isr_queue(bus)` (normal context, through `bus_enter`):
 1. Snapshots the READY entries and sorts them by sequence number (wrap-around safe). An interrupt during the scan can queue one event in an entry already scanned and a newer one in an entry not yet scanned, so it scans again until a scan finds no new entry (at most `SS_ISR_QUEUE_SIZE` extra scans); READY entries stay READY until taken, so the snapshot then holds every event older than its newest
 2. For each, claims it `READY -> READING`, copies name and value, frees it (`-> FREE`), resolves the name against the bus's default namespace and emits it on the bus
 
-Events queued after the snapshot wait for the next call. Several buses may drain the queue concurrently: the `READY -> READING` claim gives each event to exactly one. Destroying a bus leaves READY entries in the queue (a drain interrupted by the bus's destruction leaves the rest too); they go to the next bus that processes the queue.
+Events queued after the snapshot wait for the next call. The `READY -> READING` claim gives each event to exactly one drain, also when a slot drains the same bus again from inside a drain. The ordering argument holds per bus: each queue has its own counter, and an interrupt that queues on another bus during the scan does not touch this queue.
 
-Atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins, or MSVC `Interlocked*`. If `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` are defined, they take precedence and wrap plain accesses, for cores without compare-and-swap (Cortex-M0, AVR); they must also be compiler memory barriers. `tests/test_isr.c` compiles the implementation with hooked macros to interrupt `ss_process_isr_queue` at every point of its scan.
+**Destruction.** The queue goes with the bus: `bus_free` releases or recycles the bus's memory without reading or waiting for any entry, so the events still queued are dropped (a drain interrupted by the bus's destruction stops, and its remaining events are dropped too). An entry an interrupt is still writing (`WRITING`) cannot stall destruction, but the interrupt would then write into freed or reused memory, so callers disable the interrupts that emit on a bus before `ss_bus_destroy()` (and create the bus before enabling them). During a deferred destruction (from a slot) the bus memory is still valid: `ss_emit_from_isr` still queues, and the event is dropped with the rest. A built-in or pool bus created again in the same memory starts with an empty queue.
+
+Atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins, or MSVC `Interlocked*`. If `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` are defined, they take precedence and wrap plain accesses, for cores without compare-and-swap (Cortex-M0, AVR); they must also be compiler memory barriers. `tests/test_isr.c` compiles the implementation with hooked macros to interrupt `ss_process_isr_queue` at every point of its scan, with two buses: the interrupt queues on the bus being drained or on the other one.
 
 ## Namespace Implementation
 
@@ -217,7 +216,7 @@ Thread safety is chosen per bus at creation. With `SS_ENABLE_THREAD_SAFETY=1`, a
 - Slots run with their bus's mutex held. Recursion lets a slot call back into the same bus on the same thread; a slot that waits for another thread that is itself calling that bus deadlocks.
 - Different buses share no mutable state and never contend. A slot of bus A that calls bus B holds A's lock while it takes B's, so two threads making cross-bus calls in opposite directions (A to B and B to A) can deadlock: cross-bus calls from slots must go in one direction only.
 - `ss_bus_destroy` is not thread-safe with respect to other threads using the same bus. Creating and destroying built-in buses (static mode) is not locked.
-- The ISR enqueue path never locks.
+- The ISR enqueue path never locks, on any bus.
 
 One mutex per bus, rather than fine-grained locking inside a bus, keeps the code small and free of lock-ordering issues within a bus. The trade-off is that concurrent emission of different signals on the same bus contends on its lock; an application that needs parallelism splits its signals over several buses.
 

@@ -123,8 +123,9 @@ In static mode each bus is a single object: one of the `SS_STATIC_BUSES` built-i
 
 - `SS_DEFERRED_QUEUE_SIZE` entries, each holding a name buffer plus `SS_DEFERRED_PAYLOAD_SIZE` payload bytes
 - `SS_MAX_DESCRIPTION_LENGTH` bytes per signal (only with `SS_ENABLE_INTROSPECTION`)
+- with `SS_ENABLE_ISR_SAFE`, `SS_ISR_QUEUE_SIZE` ISR queue entries, each holding a name buffer and three ints
 
-The ISR queue (`SS_ISR_QUEUE_SIZE` entries with a name buffer each) is a separate static array, shared by every bus. `ss_bus_pool_size()` reports the size of one bus, including alignment slack, for `ss_bus_create_in()`.
+`ss_bus_pool_size()` reports the size of one bus, including alignment slack, for `ss_bus_create_in()`.
 
 ## Benchmark Methodology
 
