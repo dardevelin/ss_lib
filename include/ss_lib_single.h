@@ -186,23 +186,6 @@
  * default the library copies strings with SS_MALLOC, so overriding
  * SS_MALLOC and SS_FREE is enough to route every allocation. */
 
-/* Deprecated: SS_TRACE is kept for source compatibility; the library no
- * longer uses it (see ss_enable_trace()). */
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
-    #if SS_ENABLE_DEBUG_TRACE
-        #include <stdio.h>
-        #define SS_TRACE(...) do { \
-            fprintf(stderr, "[SS_TRACE] "); \
-            fprintf(stderr, __VA_ARGS__); \
-            fprintf(stderr, "\n"); \
-        } while(0)
-    #else
-        #define SS_TRACE(...) ((void)0)
-    #endif
-#else
-    #define SS_TRACE (void)sizeof
-#endif
-
 /* ===== API ===== */
 
 #include <stddef.h>
@@ -220,23 +203,25 @@ extern "C" {
 
 /**
  * @brief Error codes returned by SS_Lib functions
+ *
+ * The values are explicit and never change. 8 and 10 are unused (two 2.x
+ * codes that were never returned, removed in 3.0).
  */
 typedef enum {
-    SS_OK = 0,                  /**< Success */
-    SS_ERR_NULL_PARAM,          /**< NULL parameter passed */
-    SS_ERR_MEMORY,              /**< Memory allocation failed */
-    SS_ERR_NOT_FOUND,           /**< Signal or slot not found */
-    SS_ERR_ALREADY_EXISTS,      /**< Signal already registered */
-    SS_ERR_INVALID_TYPE,        /**< Custom data queued (deferred or batch) in a
-                                     library built without SS_ENABLE_CUSTOM_DATA */
-    SS_ERR_BUFFER_TOO_SMALL,    /**< Pool too small for ss_bus_create_in() */
-    SS_ERR_MAX_SLOTS,           /**< Maximum slots per signal reached */
-    SS_ERR_TIMEOUT,             /**< Reserved, not currently returned */
-    SS_ERR_WOULD_OVERFLOW,      /**< Name, payload, queue or the built-in buses
-                                     exceed a fixed limit */
-    SS_ERR_ISR_UNSAFE,          /**< Reserved, not currently returned */
-    SS_ERR_CONFIG_MISMATCH      /**< Caller's SS_ABI_TAG differs from the library's,
-                                     or a bus flag the library does not support */
+    SS_OK = 0,                    /**< Success */
+    SS_ERR_NULL_PARAM = 1,        /**< NULL parameter passed */
+    SS_ERR_MEMORY = 2,            /**< Memory allocation failed */
+    SS_ERR_NOT_FOUND = 3,         /**< Signal or slot not found */
+    SS_ERR_ALREADY_EXISTS = 4,    /**< Signal already registered */
+    SS_ERR_INVALID_TYPE = 5,      /**< Custom data queued (deferred or batch) in a
+                                       library built without SS_ENABLE_CUSTOM_DATA */
+    SS_ERR_BUFFER_TOO_SMALL = 6,  /**< Pool too small for ss_bus_create_in(), or
+                                       buffer too small for ss_get_namespace() */
+    SS_ERR_MAX_SLOTS = 7,         /**< Maximum slots per signal reached */
+    SS_ERR_WOULD_OVERFLOW = 9,    /**< Name, payload, queue or the built-in buses
+                                       exceed a fixed limit */
+    SS_ERR_CONFIG_MISMATCH = 11   /**< Caller's SS_ABI_TAG differs from the library's,
+                                       or a bus flag the library does not support */
 } ss_error_t;
 
 /**
@@ -825,12 +810,18 @@ size_t ss_get_max_slots_per_signal(ss_bus_t* bus);
 ss_error_t ss_set_namespace(ss_bus_t* bus, const char* ns);
 
 /**
- * @brief Current default namespace, or NULL; valid until the next change
+ * @brief Copy the default namespace into buf ("" when none is set)
  *
- * The string is the bus's own buffer: with several threads, read it
- * only while no other thread can call ss_set_namespace() on the bus.
+ * The copy is made under the bus's lock, so it may run while other
+ * threads set the namespace. A buffer of SS_MAX_SIGNAL_NAME_LENGTH bytes
+ * always fits. On an error buf holds "" (when size > 0), never a
+ * truncated namespace.
+ *
+ * @return SS_OK, SS_ERR_NULL_PARAM for a NULL bus or buf, or
+ *         SS_ERR_BUFFER_TOO_SMALL if the namespace and its terminator
+ *         need more than size bytes
  */
-const char* ss_get_namespace(ss_bus_t* bus);
+ss_error_t ss_get_namespace(ss_bus_t* bus, char* buf, size_t size);
 
 /** @brief Emit "ns::signal_name" regardless of the default namespace */
 ss_error_t ss_emit_namespaced(ss_bus_t* bus, const char* ns, const char* signal_name,
@@ -1104,9 +1095,8 @@ static void account(ss_bus_t* bus, size_t add, size_t sub) {
 #endif
 
 /* SS_TRACE((bus, fmt, args...)): double parentheses keep it valid C89.
- * Writes to bus's trace stream. Replaces the deprecated public SS_TRACE
- * from ss_config.h inside the library. */
-#undef SS_TRACE
+ * Writes to bus's trace stream. Internal to this file; no public macro
+ * has this name since 3.0. */
 #if SS_ENABLE_DEBUG_TRACE
 static void ss_trace(const ss_bus_t* bus, const char* fmt, ...) {
     va_list args;
@@ -2224,23 +2214,36 @@ ss_error_t ss_set_namespace(ss_bus_t* bus, const char* ns) {
     int locked;
     if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
+    /* ns cannot point into bus->ns: ss_get_namespace() copies, and no
+     * other call hands out the buffer */
     if (!ns || ns[0] == '\0') {
         bus->ns[0] = '\0';
     } else if (!qualify(ns, "x", probe)) {
         err = SS_ERR_WOULD_OVERFLOW;       /* not even "ns::x" would fit */
-    } else if (ns != bus->ns) {            /* ss_get_namespace() result: no-op */
+    } else {
         strcpy(bus->ns, ns);
     }
     return bus_leave(bus, locked, err, ns);
 }
 
-const char* ss_get_namespace(ss_bus_t* bus) {
-    const char* ns;
+ss_error_t ss_get_namespace(ss_bus_t* bus, char* buf, size_t size) {
+    ss_error_t err = SS_OK;
+    size_t len;
     int locked;
-    if (!bus_enter(bus, &locked)) return NULL;
-    ns = bus->ns[0] ? bus->ns : NULL;
-    (void)bus_leave(bus, locked, SS_OK, NULL);
-    return ns;
+    if (buf && size > 0) buf[0] = '\0';  /* what buf holds on any error */
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
+
+    if (!buf) {
+        err = SS_ERR_NULL_PARAM;
+    } else {
+        len = strlen(bus->ns);
+        if (len >= size) {
+            err = SS_ERR_BUFFER_TOO_SMALL;
+        } else {
+            memcpy(buf, bus->ns, len + 1);
+        }
+    }
+    return bus_leave(bus, locked, err, NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -2625,9 +2628,7 @@ const char* ss_error_string(ss_error_t error) {
         case SS_ERR_INVALID_TYPE: return "Invalid data type";
         case SS_ERR_BUFFER_TOO_SMALL: return "Buffer too small";
         case SS_ERR_MAX_SLOTS: return "Maximum slots reached";
-        case SS_ERR_TIMEOUT: return "Operation timed out";
         case SS_ERR_WOULD_OVERFLOW: return "Would overflow static buffer";
-        case SS_ERR_ISR_UNSAFE: return "Operation not ISR-safe";
         case SS_ERR_CONFIG_MISMATCH: return "Library and caller built with different configuration";
         default: return "Unknown error";
     }

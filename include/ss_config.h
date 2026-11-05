@@ -160,21 +160,4 @@
  * default the library copies strings with SS_MALLOC, so overriding
  * SS_MALLOC and SS_FREE is enough to route every allocation. */
 
-/* Deprecated: SS_TRACE is kept for source compatibility; the library no
- * longer uses it (see ss_enable_trace()). */
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
-    #if SS_ENABLE_DEBUG_TRACE
-        #include <stdio.h>
-        #define SS_TRACE(...) do { \
-            fprintf(stderr, "[SS_TRACE] "); \
-            fprintf(stderr, __VA_ARGS__); \
-            fprintf(stderr, "\n"); \
-        } while(0)
-    #else
-        #define SS_TRACE(...) ((void)0)
-    #endif
-#else
-    #define SS_TRACE (void)sizeof
-#endif
-
 #endif /* SS_CONFIG_H */
