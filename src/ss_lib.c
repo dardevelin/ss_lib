@@ -701,6 +701,10 @@ static ss_error_t entry_fill(ss_entry_t* e, const char* name, const ss_data_t* d
     const void* src = NULL;
     size_t len = 0;
 
+#if !SS_ENABLE_CUSTOM_DATA
+    /* SS_TYPE_CUSTOM is always declared, but this build cannot copy it */
+    if (data && data->type == SS_TYPE_CUSTOM) return SS_ERR_INVALID_TYPE;
+#endif
     strcpy(e->signal_name, name);              /* length checked by resolve_name */
     e->has_payload = 0;
 #if !SS_USE_STATIC_MEMORY
@@ -719,12 +723,12 @@ static ss_error_t entry_fill(ss_entry_t* e, const char* name, const ss_data_t* d
         e->data.value.s_val = NULL;
     }
 #if SS_ENABLE_CUSTOM_DATA
-    if (data->type == SS_TYPE_CUSTOM && data->custom_data) {
-        src = data->custom_data;
-        len = data->size;
+    if (data->type == SS_TYPE_CUSTOM) {
+        src = data->value.custom.ptr;
+        len = data->value.custom.size;
+        e->data.value.custom.ptr = NULL;
+        e->data.value.custom.cleanup = NULL;   /* belongs to the caller's object */
     }
-    e->data.custom_data = NULL;
-    e->data.custom_cleanup = NULL;   /* belongs to the caller's object */
 #endif
     if (!src) return SS_OK;
 
@@ -752,7 +756,7 @@ static void entry_view(ss_entry_t* e, ss_data_t* out) {
 #endif
     if (e->data.type == SS_TYPE_STRING) out->value.s_val = (const char*)payload;
 #if SS_ENABLE_CUSTOM_DATA
-    if (e->data.type == SS_TYPE_CUSTOM) out->custom_data = payload;
+    if (e->data.type == SS_TYPE_CUSTOM) out->value.custom.ptr = payload;
 #endif
 }
 
@@ -1472,9 +1476,11 @@ void ss_data_clear(ss_data_t* data) {
             SS_FREE((void*)data->value.s_val);
         }
 #if SS_ENABLE_CUSTOM_DATA
-        if (data->type == SS_TYPE_CUSTOM && data->custom_data) {
-            if (data->custom_cleanup) data->custom_cleanup(data->custom_data, data->size);
-            SS_FREE(data->custom_data);
+        if (data->type == SS_TYPE_CUSTOM && data->value.custom.ptr) {
+            if (data->value.custom.cleanup) {
+                data->value.custom.cleanup(data->value.custom.ptr, data->value.custom.size);
+            }
+            SS_FREE(data->value.custom.ptr);
         }
 #endif
     }
@@ -1554,23 +1560,23 @@ ss_error_t ss_data_set_custom(ss_data_t* data, const void* value, size_t size,
     memcpy(copy, value, size);
     ss_data_clear(data);
     data->type = SS_TYPE_CUSTOM;
-    data->custom_data = copy;
-    data->custom_cleanup = cleanup;
-    data->size = size;
+    data->value.custom.ptr = copy;
+    data->value.custom.size = size;
+    data->value.custom.cleanup = cleanup;
     data->owned = 1;
     return SS_OK;
 }
 
 ss_error_t ss_data_set_custom_ref(ss_data_t* data, void* value, size_t size) {
     if (!data || !value || size == 0) return SS_ERR_NULL_PARAM;
-    if (data->owned && data->type == SS_TYPE_CUSTOM && data->custom_data == value &&
-        data->size == size) {
+    if (data->owned && data->type == SS_TYPE_CUSTOM && data->value.custom.ptr == value &&
+        data->value.custom.size == size) {
         return SS_OK;                      /* its own copy: keep owning it */
     }
     ss_data_clear(data);
     data->type = SS_TYPE_CUSTOM;
-    data->custom_data = value;
-    data->size = size;
+    data->value.custom.ptr = value;
+    data->value.custom.size = size;
     return SS_OK;
 }
 #endif
@@ -1603,8 +1609,8 @@ void* ss_data_get_pointer(const ss_data_t* data) {
 #if SS_ENABLE_CUSTOM_DATA
 void* ss_data_get_custom(const ss_data_t* data, size_t* size) {
     if (!data || data->type != SS_TYPE_CUSTOM) return NULL;
-    if (size) *size = data->size;
-    return data->custom_data;
+    if (size) *size = data->value.custom.size;
+    return data->value.custom.ptr;
 }
 #endif
 

@@ -110,8 +110,8 @@ static void run_core_paths(void) {
         ss_data_t c;
         memset(&c, 0, sizeof(c));
         c.type = SS_TYPE_CUSTOM;
-        c.custom_data = &value;
-        c.size = sizeof(value);
+        c.value.custom.ptr = &value;
+        c.value.custom.size = sizeof(value);
         assert(ss_emit_deferred("b", &c) == SS_OK);
     }
 #endif

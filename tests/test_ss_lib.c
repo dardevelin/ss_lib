@@ -663,9 +663,9 @@ void test_deferred_custom_copy(void) {
     assert(ss_connect("custom_sig", slot_record_pair, NULL) == SS_OK);
 
     d.type = SS_TYPE_CUSTOM;
-    d.custom_data = &pair;
-    d.size = sizeof(pair);
-    d.custom_cleanup = count_cleanup_on_copy;
+    d.value.custom.ptr = &pair;
+    d.value.custom.size = sizeof(pair);
+    d.value.custom.cleanup = count_cleanup_on_copy;
 
     g_custom_cleanup_on_copy = 0;
     assert(ss_emit_deferred("custom_sig", &d) == SS_OK);
@@ -739,8 +739,8 @@ void test_data_ownership(void) {
         test_pair_t pair = {3, 4};
         memset(&d, 0, sizeof(d));
         d.type = SS_TYPE_CUSTOM;
-        d.custom_data = &pair;
-        d.size = sizeof(pair);
+        d.value.custom.ptr = &pair;
+        d.value.custom.size = sizeof(pair);
         assert(ss_data_set_double(&d, 1.5) == SS_OK);
         assert(pair.a == 3 && pair.b == 4);
     }
@@ -864,8 +864,8 @@ void test_queued_payload_alignment(void) {
     assert(ss_signal_register("aligned") == SS_OK);
     assert(ss_connect("aligned", slot_check_payload_alignment, NULL) == SS_OK);
     d.type = SS_TYPE_CUSTOM;
-    d.custom_data = &value;
-    d.size = sizeof(value);
+    d.value.custom.ptr = &value;
+    d.value.custom.size = sizeof(value);
 
     g_payload_misalignment = 0;
     g_payload_calls = 0;

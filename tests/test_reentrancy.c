@@ -120,8 +120,8 @@ static ss_error_t emit_deferred_payload(const char* name) {
         p.n = (int)rnd(100000);
         p.not_n = ~p.n;
         d.type = SS_TYPE_CUSTOM;
-        d.custom_data = &p;
-        d.size = sizeof(p);
+        d.value.custom.ptr = &p;
+        d.value.custom.size = sizeof(p);
         err = ss_emit_deferred(name, &d);
         memset(&p, 0xEE, sizeof(p));          /* the queue holds a copy */
         return err;

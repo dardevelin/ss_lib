@@ -82,6 +82,7 @@ int main(void) {
     VALUE(SS_TYPE_DOUBLE);
     VALUE(SS_TYPE_STRING);
     VALUE(SS_TYPE_POINTER);
+    VALUE(SS_TYPE_CUSTOM);
 
     SIZE(ss_priority_t);
     VALUE(SS_PRIORITY_LOW);
@@ -102,6 +103,11 @@ int main(void) {
     MEMBER(ss_data_t, value.d_val);
     MEMBER(ss_data_t, value.s_val);
     MEMBER(ss_data_t, value.p_val);
+    MEMBER(ss_data_t, value.custom);
+    MEMBER(ss_data_t, value.custom.ptr);
+    MEMBER(ss_data_t, value.custom.size);
+    MEMBER(ss_data_t, value.custom.cleanup);
+    VALUE(SS_ABI_REVISION);
     VALUE(SS_ABI_TAG);
 
 #if SS_ENABLE_INTROSPECTION
