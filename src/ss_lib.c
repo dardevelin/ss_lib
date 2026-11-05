@@ -1527,6 +1527,9 @@ ss_error_t ss_data_set_string(ss_data_t* data, const char* value) {
 
 ss_error_t ss_data_set_string_ref(ss_data_t* data, const char* value) {
     if (!data) return SS_ERR_NULL_PARAM;
+    if (data->owned && data->type == SS_TYPE_STRING && data->value.s_val == value) {
+        return SS_OK;                      /* its own copy: keep owning it */
+    }
     ss_data_clear(data);
     data->type = SS_TYPE_STRING;
     data->value.s_val = value;
@@ -1560,6 +1563,10 @@ ss_error_t ss_data_set_custom(ss_data_t* data, const void* value, size_t size,
 
 ss_error_t ss_data_set_custom_ref(ss_data_t* data, void* value, size_t size) {
     if (!data || !value || size == 0) return SS_ERR_NULL_PARAM;
+    if (data->owned && data->type == SS_TYPE_CUSTOM && data->custom_data == value &&
+        data->size == size) {
+        return SS_OK;                      /* its own copy: keep owning it */
+    }
     ss_data_clear(data);
     data->type = SS_TYPE_CUSTOM;
     data->custom_data = value;

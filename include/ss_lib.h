@@ -479,7 +479,8 @@ ss_error_t ss_data_set_string(ss_data_t* data, const char* value);
 /**
  * @brief Store a borrowed string, which must outlive every use of the object
  *
- * Never allocates; the library never frees the string.
+ * Never allocates; the library never frees the string. Passing the
+ * object's own payload leaves it unchanged, still owned.
  * @return SS_OK, or SS_ERR_NULL_PARAM if data is NULL
  */
 ss_error_t ss_data_set_string_ref(ss_data_t* data, const char* value);
@@ -500,6 +501,8 @@ ss_error_t ss_data_set_custom(ss_data_t* data, const void* value, size_t size,
  * @brief Store borrowed custom data, which must outlive every use of the object
  *
  * Never allocates and has no cleanup; the library never frees the data.
+ * Passing the object's own payload (same pointer and size) leaves it
+ * unchanged, still owned.
  * @return SS_OK, or SS_ERR_NULL_PARAM (NULL data or value, or size 0)
  */
 ss_error_t ss_data_set_custom_ref(ss_data_t* data, void* value, size_t size);

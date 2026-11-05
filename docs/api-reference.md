@@ -621,7 +621,7 @@ Set the data to string type. The string is copied with `SS_MALLOC` (or `SS_STRDU
 ss_error_t ss_data_set_string_ref(ss_data_t* data, const char* value);
 ```
 
-Set the data to string type, borrowing `value` (which may be NULL): the string must stay valid while the object is used, and the library never frees it. Never allocates, so it works without a heap.
+Set the data to string type, borrowing `value` (which may be NULL): the string must stay valid while the object is used, and the library never frees it. Never allocates, so it works without a heap. Passing the object's own payload leaves it unchanged, still owned.
 
 **Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if data is NULL.
 
@@ -656,7 +656,7 @@ Set custom data. Requires `SS_ENABLE_CUSTOM_DATA=1`. Copies `size` bytes from `v
 ss_error_t ss_data_set_custom_ref(ss_data_t* data, void* value, size_t size);
 ```
 
-Set custom data, borrowing `size` bytes at `value`. Requires `SS_ENABLE_CUSTOM_DATA=1`. The data must stay valid while the object is used; the library never frees it and calls no cleanup. Never allocates, so it works without a heap. Deferred and batched emissions still copy it (see `ss_emit_deferred`).
+Set custom data, borrowing `size` bytes at `value`. Requires `SS_ENABLE_CUSTOM_DATA=1`. The data must stay valid while the object is used; the library never frees it and calls no cleanup. Never allocates, so it works without a heap. Passing the object's own payload (same pointer and size) leaves it unchanged, still owned. Deferred and batched emissions still copy it (see `ss_emit_deferred`).
 
 **Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if data or value is NULL or size is 0.
 
