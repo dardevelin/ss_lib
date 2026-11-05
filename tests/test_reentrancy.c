@@ -236,6 +236,16 @@ static void check_consistent(void) {
 #endif
 }
 
+/* After a slot destroyed the bus, which was released when the outermost
+ * call returned and must not be used again, continue on a new bus */
+static void replace_destroyed_bus(void) {
+    if (!g_destroyed) return;
+    assert(ss_bus_create(&bus, 0) == SS_OK);
+    assert(ss_signal_exists(bus, "a") == 0);
+    g_destroyed = 0;
+    memset(g_handles, 0, sizeof(g_handles));
+}
+
 static void run_program(unsigned long seed) {
     int i;
     g_rng = seed * 2654435761UL + 1;
@@ -250,17 +260,11 @@ static void run_program(unsigned long seed) {
     }
     for (i = 0; i < STEPS; i++) {
         step();
-        if (g_destroyed) {
-            /* Destroyed from a slot: the bus was released when the outermost
-             * call returned, and must not be used again */
-            assert(ss_bus_create(&bus, 0) == SS_OK);
-            assert(ss_signal_exists(bus, "a") == 0);
-            g_destroyed = 0;
-            memset(g_handles, 0, sizeof(g_handles));
-        }
+        replace_destroyed_bus();
         check_consistent();
     }
     (void)ss_flush_deferred(bus);
+    replace_destroyed_bus();
     check_consistent();
     ss_bus_destroy(bus);
 }
