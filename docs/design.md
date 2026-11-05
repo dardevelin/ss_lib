@@ -79,24 +79,62 @@ ISR-safe mode provides:
 
 ### Configuration Consistency (ABI Check)
 
-In 2.x feature flags changed public types (`SS_ENABLE_CUSTOM_DATA` changed `ss_data_t`), so a program compiled with different flags than the library silently corrupted memory. Since 3.0 no flag changes a public layout or enum value (`make check-abi` enforces it); flags only gate function declarations, so a mismatch is a compile or link error. The bus creation macros `ss_bus_create()` / `ss_bus_create_in()` pass the caller's `SS_ABI_TAG` (`sizeof(ss_data_t)` and `SS_ABI_REVISION`) to the library, which returns `SS_ERR_CONFIG_MISMATCH` on a difference (a header from another version, or layout-changing compiler options). The check runs on every creation without the caller asking for it; in 2.x it was opt-in, because turning an existing function into a macro could break code that re-declares it. The create functions are new in 3.0, so they could be macros from the start. Configuration must be identical for the library and every caller.
+No configuration macro changes a public layout or enum value (`make check-abi` enforces it); flags only gate function declarations, so a program built with different flags than the library fails to compile or link. The bus creation macros `ss_bus_create()` / `ss_bus_create_in()` pass the caller's `SS_ABI_TAG` (`sizeof(ss_data_t)` and `SS_ABI_REVISION`) to the library, which returns `SS_ERR_CONFIG_MISMATCH` on a difference: a header from another version, or layout-changing compiler options. Configuration must still be identical for the library and every caller.
 
-### Version 3.0: the bus
+## Version 3.0
+
+3.0 makes the three changes from the 2.1.1 review that could not be made without breaking 2.x code: A9 (an instance handle), S12 (payload ownership) and A8 (configuration mismatches). Semantic versioning allows them only in a major release, so they were made together, with the smaller cleanups that touched the same functions. [3.0-plan.md](3.0-plan.md) is the design record, including the alternatives that were rejected; [migration-3.0.md](migration-3.0.md) says what changes for 2.x programs.
+
+### A9: the bus
 
 2.x kept all state in one global context. 3.0 replaces it with an instance handle, `ss_bus_t*`, that every stateful function takes first; the names of the functions do not change. The reasons:
 
 - Several independent buses in one program, for example per subsystem or per test, with no shared state between them.
 - Tests in isolation: each test creates its own bus instead of resetting a global.
-- Thread safety decided at creation (`SS_BUS_THREAD_SAFE`), per bus, instead of a runtime switch.
-- The configuration check moves into bus creation, so it always runs.
+- Thread safety decided at creation (`SS_BUS_THREAD_SAFE`), per bus, instead of a runtime switch that could change while other threads used the library.
+- The configuration check moves into bus creation, so it always runs (see A8).
 
 Choices made along the way:
 
 - The bus is opaque. Its layout depends on the configuration, so a public struct would bring back layout mismatches between library and callers.
 - The library has no default bus. A default would bring back the global with its init-order and thread questions, and a failed creation could quietly run against it. A program that wants one global bus keeps the pointer in its own global.
+- There is no compatibility header with the 2.x names. It would need macros with the same names as the 3.0 functions, so the meaning of a call would depend on the header a file includes, and it could not cover the data and error-handler changes. The compiler finds every call that must change instead.
 - Slots keep their signature. A slot that needs its bus gets it through `user_data`; adding a bus parameter would break every slot in every program.
-- Static mode keeps a small table of built-in buses (`SS_STATIC_BUSES`, default 1) so a one-bus program uses the same RAM as 2.x and never the heap. Each bus has its own signal and slot arrays, so one bus cannot starve another.
+- The error handler belongs to the bus and receives the bus and a `user_data` pointer, so one handler can serve several buses and keep its state out of globals. A bus being destroyed reports no more errors, so `user_data` can be released right after `ss_bus_destroy()`.
+- A batch belongs to the bus it was created for (`ss_batch_create(bus)`), which supplies its namespace, emits it and reports its errors.
+- Static mode keeps a small table of built-in buses (`SS_STATIC_BUSES`, default 1) so a one-bus program uses the same RAM as 2.x and never the heap. Each bus has its own signal and slot arrays, so one bus cannot starve another. `ss_bus_create_in()` places a bus in caller memory in either mode, and a pool that is too small is now an error instead of a silent fallback to the heap.
 - Each bus has its own ISR queue, so `ss_emit_from_isr()` takes the bus. A global queue whose entries name their bus would keep the queue usable before any bus exists, but brings back global state: each drain would have to skip other buses' events, and a destroyed bus would leave orphan events. The cost is that the bus must exist before the interrupts that emit are enabled, and those interrupts must be disabled before the bus is destroyed.
+- One recursive mutex per bus, as in 2.x per context. A slot of one bus that calls another holds both locks, so cross-bus calls from slots must go in one direction only.
+
+### S12: payload ownership
+
+In 2.x the data setters and `ss_data_destroy()` freed any string or custom pointer they found in an `ss_data_t`, including one the caller had only lent. A borrowed pointer could therefore be freed by mistake, and a custom cleanup that freed its argument caused a double free. 3.0 records ownership in the object:
+
+- The `owned` member is set only by the copying setters, `ss_data_set_string()` and `ss_data_set_custom()`. The library frees a payload only when it is set, exactly once.
+- Everything else borrows: direct field writes, the new `ss_data_set_string_ref()` / `ss_data_set_custom_ref()`, the `ss_emit_*` helpers and the data slots receive. Misusing a borrowed object leaks at worst; it never frees memory the library does not own.
+- `SS_DATA_INIT`, `ss_data_init()` and `ss_data_clear()` make copying setters usable on stack objects, and the `_ref` setters fill an object without the heap.
+- The cleanup function receives the library's copy as `const void*` and its size. The `const` turns a cleanup that frees the copy into a compiler diagnostic.
+- `owned` fits in the padding after `type`, so it costs no space.
+
+Separate owning and borrowed types were rejected: cleaner in theory, but they double the data API for a feature few callers use.
+
+### A8: configuration mismatches
+
+In 2.x `SS_ENABLE_CUSTOM_DATA` changed `ss_data_t` and `ss_data_type_t`, so a program compiled with different flags than the library silently corrupted memory. The 2.x check (`ss_init_abi()`) was opt-in. 3.0 removes the cause and makes the remaining check automatic:
+
+- No configuration macro changes a public layout or enum value: custom data lives in the value union (`value.custom`) and `SS_TYPE_CUSTOM` is always declared. A flag mismatch is then a compile or link error. `make check-abi` compares every public struct's size and offsets and every enum value across all tested configurations, and rejects a conditional inside a public type.
+- The create macros pass `SS_ABI_TAG`, so the check runs on every bus creation. The tag combines `sizeof(ss_data_t)` with `SS_ABI_REVISION`, which is bumped when a public layout changes, and catches what flags no longer can: a header from another version and layout-changing compiler options. The create functions are new in 3.0, so they could be macros from the start; in 2.x, turning `ss_init()` into a macro could have broken code that re-declares it.
+- The cost: `ss_data_t` is 32 bytes on 64-bit hosts and 24 on Cortex-M in every configuration, so builds without custom data grow by 16 or 8 bytes per object, including deferred and batch entries. The cleanup pointer was kept, because without it an application whose payloads hold resources would have to release every library copy itself.
+
+Encoding the flags in every symbol name was rejected: it breaks `dlsym` and FFI users, and once layouts no longer depend on flags there is nothing left for it to protect.
+
+### Smaller changes
+
+Made in 3.0 because they break source compatibility too:
+
+- The deprecated public `SS_TRACE` macro is removed; `ss_enable_trace(bus, stream)` is the trace interface.
+- Two error codes that no function returned are removed. The other codes keep their numbers.
+- `ss_get_namespace(bus, buf, size)` copies the namespace into a caller buffer under the bus's lock, instead of returning a pointer into library state that another thread could change while it was read.
 
 ## Performance Considerations
 
@@ -155,7 +193,12 @@ Choices made along the way:
 ## Future Directions
 
 ### Later Considerations
+
+The first three are additive, so a 3.x minor release can bring them:
+
 - Signal handles returned by registration, to emit without a name lookup
+- A batch in caller memory, so static mode can batch without the heap
+- A compile-time bus size, for pools sized without a measurement
 - Lock-free signal emission
 - Type-safe signal definitions
 - Coroutine support
@@ -184,7 +227,7 @@ Choices made along the way:
 ## Contributing
 
 When contributing to SS_Lib, please consider:
-- Maintain backward compatibility
+- Keep source and binary compatibility within a major version
 - Add tests for new features
 - Update documentation
 - Consider embedded constraints
