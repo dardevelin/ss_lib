@@ -4,9 +4,10 @@
  * The bugs in that advisory were slots that changed the library while it
  * still used the memory involved: unregistering a signal that is being
  * emitted, tearing everything down during an emission (ss_bus_destroy()
- * from a slot), queuing a deferred emission during a flush. This test runs many seeded random programs in which
- * slots call those functions, and every other function that changes
- * state, on any signal and up to MAX_DEPTH emissions deep. Every payload
+ * from a slot), queuing a deferred emission during a flush. This test
+ * runs many seeded random programs in which slots call those functions,
+ * and every other function that changes state, on any signal and up to
+ * MAX_DEPTH emissions deep. Every payload
  * carries a check value that the slots verify, and the library's answers
  * are checked for consistency after each step. Built with make test-asan
  * or run under make test-valgrind, any use-after-free on these paths

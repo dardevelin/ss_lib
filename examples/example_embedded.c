@@ -76,15 +76,16 @@ void on_button_pressed(const ss_data_t* data, void* user_data) {
     }
 }
 
+/* user_data: the bus, connected below */
 void on_timer_tick(const ss_data_t* data, void* user_data) {
-    (void)user_data;
+    ss_bus_t* bus = (ss_bus_t*)user_data;
     static uint32_t last_report = 0;
     uint32_t ticks = ss_data_get_int(data, 0);
     
     /* Report every 10 ticks */
     if (ticks - last_report >= 10) {
         ss_memory_stats_t stats;
-        ss_get_memory_stats(&stats);
+        ss_get_memory_stats(bus, &stats);
         
         printf("[TIMER] Tick %lu - Signals: %zu/%zu, Slots: %zu/%zu\n",
                (unsigned long)ticks,
@@ -132,6 +133,7 @@ void GPIO_ISR(void) {
 
 /* Main application */
 int main(void) {
+    ss_bus_t* bus = NULL;
     ss_error_t err;
     ss_memory_stats_t mem_stats;
     ss_perf_stats_t perf_stats;
@@ -144,30 +146,32 @@ int main(void) {
     printf("- Thread safety: %s\n", SS_ENABLE_THREAD_SAFETY ? "ON" : "OFF");
     printf("\n");
     
-    /* Initialize signal-slot system */
-    err = ss_init();
+    /* Create the bus (a built-in one in static mode: no heap). Create it
+     * before enabling the interrupts that emit. */
+    err = ss_bus_create(&bus, 0);
     if (err != SS_OK) {
-        printf("Failed to initialize: %s\n", ss_error_string(err));
+        printf("Failed to create the bus: %s\n", ss_error_string(err));
         return 1;
     }
     
     /* Enable performance profiling */
-    ss_enable_profiling(1);
+    ss_enable_profiling(bus, 1);
     
     /* Register signals */
-    ss_signal_register_ex("adc_ready", "ADC conversion complete", SS_PRIORITY_HIGH);
-    ss_signal_register_ex("temp_critical", "Temperature above threshold", SS_PRIORITY_CRITICAL);
-    ss_signal_register_ex("button_press", "Button press detected", SS_PRIORITY_NORMAL);
-    ss_signal_register_ex("timer_tick", "Periodic timer tick", SS_PRIORITY_LOW);
+    ss_signal_register_ex(bus, "adc_ready", "ADC conversion complete", SS_PRIORITY_HIGH);
+    ss_signal_register_ex(bus, "temp_critical", "Temperature above threshold",
+                          SS_PRIORITY_CRITICAL);
+    ss_signal_register_ex(bus, "button_press", "Button press detected", SS_PRIORITY_NORMAL);
+    ss_signal_register_ex(bus, "timer_tick", "Periodic timer tick", SS_PRIORITY_LOW);
     
     /* Connect signal handlers */
-    ss_connect("adc_ready", on_adc_reading, NULL);
-    ss_connect("temp_critical", on_temp_critical, NULL);
-    ss_connect("button_press", on_button_pressed, NULL);
-    ss_connect("timer_tick", on_timer_tick, NULL);
+    ss_connect(bus, "adc_ready", on_adc_reading, NULL);
+    ss_connect(bus, "temp_critical", on_temp_critical, NULL);
+    ss_connect(bus, "button_press", on_button_pressed, NULL);
+    ss_connect(bus, "timer_tick", on_timer_tick, bus);
     
     /* Check initial memory usage */
-    ss_get_memory_stats(&mem_stats);
+    ss_get_memory_stats(bus, &mem_stats);
     printf("Initial memory usage:\n");
     printf("- Signals: %zu used, %zu allocated\n", 
            mem_stats.signals_used, mem_stats.signals_allocated);
@@ -189,7 +193,7 @@ int main(void) {
         }
         
         /* Main loop: deliver the events the ISRs queued */
-        ss_process_isr_queue();
+        ss_process_isr_queue(bus);
         
         /* Small delay */
         for (volatile int j = 0; j < 10000; j++);
@@ -200,7 +204,7 @@ int main(void) {
     /* Show performance stats for each signal */
     const char* signals[] = {"adc_ready", "temp_critical", "timer_tick", "button_press"};
     for (i = 0; i < 4; i++) {
-        if (ss_get_perf_stats(signals[i], &perf_stats) == SS_OK) {
+        if (ss_get_perf_stats(bus, signals[i], &perf_stats) == SS_OK) {
             if (perf_stats.total_emissions > 0) {
                 printf("Signal '%s':\n", signals[i]);
                 printf("  - Emissions: %llu\n", 
@@ -214,7 +218,7 @@ int main(void) {
     }
     
     /* Final memory report */
-    ss_get_memory_stats(&mem_stats);
+    ss_get_memory_stats(bus, &mem_stats);
     printf("\n=== Final Memory Report ===\n");
     printf("Signals: %zu/%zu used (%.1f%%)\n", 
            mem_stats.signals_used, mem_stats.signals_allocated,
@@ -222,11 +226,12 @@ int main(void) {
     printf("Slots: %zu/%zu used (%.1f%%)\n",
            mem_stats.slots_used, mem_stats.slots_allocated,
            100.0 * mem_stats.slots_used / mem_stats.slots_allocated);
-    printf("Total static allocation: ~%zu KB\n", 
-           (SS_MAX_SIGNALS * sizeof(void*) * 10 + SS_MAX_SLOTS * sizeof(void*) * 5) / 1024);
+    /* Everything the bus holds lives in its own storage in static mode */
+    printf("RAM per bus: %zu bytes (ss_bus_pool_size(), with alignment slack)\n",
+           ss_bus_pool_size());
     
-    /* Cleanup */
-    ss_cleanup();
+    /* Disable the interrupts that emit, then release the bus */
+    ss_bus_destroy(bus);
     
     return 0;
 }
