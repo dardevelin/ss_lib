@@ -237,7 +237,7 @@ check-single-header: | $(BUILD_DIR)
 	@./create_single_header.sh $(BUILD_DIR)/ss_lib_single.h > /dev/null
 	@diff -q include/ss_lib_single.h $(BUILD_DIR)/ss_lib_single.h > /dev/null || \
 	    { echo "include/ss_lib_single.h is stale: run 'make single-header'"; exit 1; }
-	@printf '#define SS_IMPLEMENTATION\n#include "ss_lib_single.h"\nint main(void){return ss_init()==SS_OK?0:1;}\n' \
+	@printf '#define SS_IMPLEMENTATION\n#include "ss_lib_single.h"\nint main(void){ss_bus_t* b;if(ss_bus_create(&b,0)!=SS_OK)return 1;ss_bus_destroy(b);return 0;}\n' \
 	    > $(BUILD_DIR)/single_header_check.c
 	@$(CC) $(CSTD) $(WARN) -Werror -Iinclude $(BUILD_DIR)/single_header_check.c $(LDFLAGS) \
 	    -o $(BUILD_DIR)/single_header_check && $(BUILD_DIR)/single_header_check

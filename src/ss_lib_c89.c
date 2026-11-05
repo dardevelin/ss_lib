@@ -156,7 +156,11 @@ typedef struct {
     unsigned long pushed;  /* entries ever pushed; next entry's seq */
 } ss_queue_t;
 
-typedef struct {
+/* Where a bus's own storage came from, so ss_bus_destroy() knows how to
+ * release it */
+enum { BUS_FREE = 0, BUS_BUILT_IN, BUS_ON_HEAP, BUS_IN_POOL };
+
+struct ss_bus {
 #if SS_USE_STATIC_MEMORY
     ss_signal_t signals[SS_MAX_SIGNALS];
     ss_slot_t slots[SS_MAX_SLOTS];
@@ -169,10 +173,10 @@ typedef struct {
     char ns[SS_MAX_SIGNAL_NAME_LENGTH];
     void (*error_handler)(ss_error_t, const char*);
     int call_depth;        /* public calls in progress (nested via slots) */
-    int closing;           /* ss_cleanup() requested from inside a call */
-    int heap_owned;        /* context itself came from SS_CALLOC */
+    int closing;           /* ss_bus_destroy() requested from inside a call */
+    int storage;           /* BUS_*; BUS_FREE marks an unused built-in bus */
 #if SS_ENABLE_THREAD_SAFETY
-    int thread_safe;
+    int thread_safe;       /* created with SS_BUS_THREAD_SAFE: mutex exists */
     ss_mutex_t mutex;
 #endif
 #if SS_ENABLE_PERFORMANCE_STATS
@@ -187,21 +191,19 @@ typedef struct {
 #endif
     ss_entry_t deferred_entries[SS_DEFERRED_QUEUE_SIZE];
     ss_queue_t deferred;
-} ss_context_t;
+};
 
 typedef struct {
     char c;
-    ss_context_t ctx;
-} ss_context_align_probe_t;
-#define SS_CONTEXT_ALIGN offsetof(ss_context_align_probe_t, ctx)
+    ss_bus_t bus;
+} ss_bus_align_probe_t;
+#define SS_BUS_ALIGN offsetof(ss_bus_align_probe_t, bus)
 
-/* The live context. Read only by the public entry points: ctx_enter(), the
- * init functions and ss_set/is_thread_safe(). ctx_leave() clears it when it
- * finishes a deferred cleanup. Internal functions get the context as a
- * parameter and never read this. */
-static ss_context_t* g_context = NULL;
-#if SS_USE_STATIC_MEMORY && SS_STATIC_CONTEXT
-static ss_context_t g_static_context;   /* ss_init() storage in static mode */
+/* Static mode: the built-in buses of ss_bus_create(), in .bss. Apart from
+ * the ISR queue, the only library state outside a bus. Claimed and
+ * released without a lock (see ss_bus_create_abi). */
+#if SS_USE_STATIC_MEMORY && SS_STATIC_BUSES > 0
+static ss_bus_t g_static_buses[SS_STATIC_BUSES];
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -232,23 +234,23 @@ static char* ss_strdup(const char* s) {
 }
 
 #if SS_ENABLE_MEMORY_STATS && !SS_USE_STATIC_MEMORY
-static void account(ss_context_t* ctx, size_t add, size_t sub) {
-    ctx->bytes_in_use = ctx->bytes_in_use + add - sub;
-    if (ctx->bytes_in_use > ctx->peak_bytes) ctx->peak_bytes = ctx->bytes_in_use;
+static void account(ss_bus_t* bus, size_t add, size_t sub) {
+    bus->bytes_in_use = bus->bytes_in_use + add - sub;
+    if (bus->bytes_in_use > bus->peak_bytes) bus->peak_bytes = bus->bytes_in_use;
 }
-#define SS_ACCOUNT(ctx, add, sub) account((ctx), (add), (sub))
+#define SS_ACCOUNT(bus, add, sub) account((bus), (add), (sub))
 #else
-#define SS_ACCOUNT(ctx, add, sub) ((void)0)
+#define SS_ACCOUNT(bus, add, sub) ((void)0)
 #endif
 
-/* SS_TRACE((ctx, fmt, args...)): double parentheses keep it valid C89.
- * Writes to ctx's trace stream. Replaces the deprecated public SS_TRACE
+/* SS_TRACE((bus, fmt, args...)): double parentheses keep it valid C89.
+ * Writes to bus's trace stream. Replaces the deprecated public SS_TRACE
  * from ss_config.h inside the library. */
 #undef SS_TRACE
 #if SS_ENABLE_DEBUG_TRACE
-static void ss_trace(const ss_context_t* ctx, const char* fmt, ...) {
+static void ss_trace(const ss_bus_t* bus, const char* fmt, ...) {
     va_list args;
-    FILE* out = ctx->trace_output;
+    FILE* out = bus->trace_output;
     if (!out) return;
     va_start(args, fmt);
     fputs("[SS_TRACE] ", out);
@@ -290,57 +292,55 @@ static ss_data_t data_of(ss_data_type_t type) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Context entry and exit                                              */
+/* Bus entry and exit                                                  */
 /* ------------------------------------------------------------------ */
 
-static void context_destroy(ss_context_t* ctx);
+static void bus_free(ss_bus_t* bus);
 
-/* Lock and return the live context, or NULL if uninitialized/closing.
- * *locked records whether this call took the mutex. */
-SS_INLINE ss_context_t* ctx_enter(int* locked) {
-    ss_context_t* ctx = g_context;
+/* Lock the bus and count the call; 0 (nothing taken) for a NULL bus or
+ * one being destroyed. *locked records whether this call took the mutex. */
+SS_INLINE int bus_enter(ss_bus_t* bus, int* locked) {
     *locked = 0;
-    if (!ctx) return NULL;
+    if (!bus) return 0;
 #if SS_ENABLE_THREAD_SAFETY
-    if (ctx->thread_safe) {
-        SS_MUTEX_LOCK(&ctx->mutex);
+    if (bus->thread_safe) {                /* fixed at creation */
+        SS_MUTEX_LOCK(&bus->mutex);
         *locked = 1;
     }
 #endif
-    if (ctx->closing) {
+    if (bus->closing) {
 #if SS_ENABLE_THREAD_SAFETY
-        if (*locked) SS_MUTEX_UNLOCK(&ctx->mutex);
+        if (*locked) SS_MUTEX_UNLOCK(&bus->mutex);
 #endif
-        return NULL;
+        return 0;
     }
-    ctx->call_depth++;
-    return ctx;
+    bus->call_depth++;
+    return 1;
 }
 
-/* After unlocking: finish a deferred cleanup or report err */
-static ss_error_t ctx_leave_slow(ss_context_t* ctx, int destroy, ss_error_t err,
+/* After unlocking: finish a deferred destroy or report err */
+static ss_error_t bus_leave_slow(ss_bus_t* bus, int destroy, ss_error_t err,
                                  const char* detail,
                                  void (*handler)(ss_error_t, const char*)) {
     if (destroy) {
-        g_context = NULL;                  /* uninitialized from here on */
-        context_destroy(ctx);
+        bus_free(bus);                     /* the bus is gone from here on */
     } else if (handler) {
         handler(err, detail ? detail : ss_error_string(err));
     }
     return err;
 }
 
-/* Unlock, finish a deferred cleanup, report err to the error handler. */
-SS_INLINE ss_error_t ctx_leave(ss_context_t* ctx, int locked, ss_error_t err,
+/* Unlock, finish a deferred destroy, report err to the error handler. */
+SS_INLINE ss_error_t bus_leave(ss_bus_t* bus, int locked, ss_error_t err,
                                const char* detail) {
-    void (*handler)(ss_error_t, const char*) = ctx->error_handler;
-    int destroy = (--ctx->call_depth == 0 && ctx->closing);
+    void (*handler)(ss_error_t, const char*) = bus->error_handler;
+    int destroy = (--bus->call_depth == 0 && bus->closing);
 #if SS_ENABLE_THREAD_SAFETY
-    if (locked) SS_MUTEX_UNLOCK(&ctx->mutex);
+    if (locked) SS_MUTEX_UNLOCK(&bus->mutex);
 #else
     (void)locked;
 #endif
-    if (destroy || err != SS_OK) return ctx_leave_slow(ctx, destroy, err, detail, handler);
+    if (destroy || err != SS_OK) return bus_leave_slow(bus, destroy, err, detail, handler);
     return SS_OK;
 }
 
@@ -362,15 +362,15 @@ static int qualify(const char* ns, const char* name, char* buf) {
 
 /* Qualify name with the default namespace into buf when needed. Returns
  * NULL with *err set when the name is empty or does not fit. */
-static const char* resolve_name(const ss_context_t* ctx, const char* name,
+static const char* resolve_name(const ss_bus_t* bus, const char* name,
                                 char* buf, ss_error_t* err) {
     if (!name || name[0] == '\0') {
         *err = SS_ERR_NULL_PARAM;
         return NULL;
     }
-    if (!ctx || ctx->ns[0] == '\0' || strstr(name, "::")) {
+    if (!bus || bus->ns[0] == '\0' || strstr(name, "::")) {
         if (strlen(name) < SS_MAX_SIGNAL_NAME_LENGTH) return name;
-    } else if (qualify(ctx->ns, name, buf)) {
+    } else if (qualify(bus->ns, name, buf)) {
         return buf;
     }
     *err = SS_ERR_WOULD_OVERFLOW;
@@ -383,15 +383,15 @@ static const char* resolve_name(const ss_context_t* ctx, const char* name,
 
 #if SS_USE_STATIC_MEMORY
 
-static ss_signal_t* signal_next(ss_context_t* ctx, ss_signal_t* sig) {
-    size_t i = sig ? (size_t)(sig - ctx->signals) + 1 : 0;
+static ss_signal_t* signal_next(ss_bus_t* bus, ss_signal_t* sig) {
+    size_t i = sig ? (size_t)(sig - bus->signals) + 1 : 0;
     for (; i < SS_MAX_SIGNALS; i++) {
-        if (ctx->signals[i].name[0]) return &ctx->signals[i];
+        if (bus->signals[i].name[0]) return &bus->signals[i];
     }
     return NULL;
 }
 
-static ss_signal_t* signal_create(ss_context_t* ctx, const char* name,
+static ss_signal_t* signal_create(ss_bus_t* bus, const char* name,
                                   const char* description, ss_error_t* err) {
     size_t i;
 #if SS_ENABLE_INTROSPECTION
@@ -403,7 +403,7 @@ static ss_signal_t* signal_create(ss_context_t* ctx, const char* name,
     (void)description;                     /* only introspection reads it */
 #endif
     for (i = 0; i < SS_MAX_SIGNALS; i++) {
-        ss_signal_t* sig = &ctx->signals[i];
+        ss_signal_t* sig = &bus->signals[i];
         if (!sig->name[0]) {
             memset(sig, 0, sizeof(*sig));
             strcpy(sig->name, name);           /* length checked by resolve_name */
@@ -423,31 +423,31 @@ static const char* signal_description(const ss_signal_t* sig) {
 }
 #endif
 
-static ss_slot_t* slot_alloc(ss_context_t* ctx) {
+static ss_slot_t* slot_alloc(ss_bus_t* bus) {
     size_t i;
     for (i = 0; i < SS_MAX_SLOTS; i++) {
-        if (!ctx->slots[i].func) {             /* caller sets func at once */
-            memset(&ctx->slots[i], 0, sizeof(ss_slot_t));
-            return &ctx->slots[i];
+        if (!bus->slots[i].func) {             /* caller sets func at once */
+            memset(&bus->slots[i], 0, sizeof(ss_slot_t));
+            return &bus->slots[i];
         }
     }
     return NULL;
 }
 
-static void slot_release(ss_context_t* ctx, ss_slot_t* slot) {
-    (void)ctx;
+static void slot_release(ss_bus_t* bus, ss_slot_t* slot) {
+    (void)bus;
     memset(slot, 0, sizeof(*slot));
 }
 
-static void signal_release_storage(ss_context_t* ctx, ss_signal_t* sig) {
-    (void)ctx;
+static void signal_release_storage(ss_bus_t* bus, ss_signal_t* sig) {
+    (void)bus;
     memset(sig, 0, sizeof(*sig));
 }
 
 #else /* dynamic memory */
 
-static ss_signal_t* signal_next(ss_context_t* ctx, ss_signal_t* sig) {
-    return sig ? sig->next : ctx->signals;
+static ss_signal_t* signal_next(ss_bus_t* bus, ss_signal_t* sig) {
+    return sig ? sig->next : bus->signals;
 }
 
 #if SS_ENABLE_MEMORY_STATS
@@ -461,9 +461,9 @@ static size_t signal_bytes(const ss_signal_t* sig) {
 }
 #endif
 
-static void signal_release_storage(ss_context_t* ctx, ss_signal_t* sig);
+static void signal_release_storage(ss_bus_t* bus, ss_signal_t* sig);
 
-static ss_signal_t* signal_create(ss_context_t* ctx, const char* name,
+static ss_signal_t* signal_create(ss_bus_t* bus, const char* name,
                                   const char* description, ss_error_t* err) {
     ss_signal_t* sig = (ss_signal_t*)SS_CALLOC(1, sizeof(ss_signal_t));
     int ok;
@@ -480,13 +480,13 @@ static ss_signal_t* signal_create(ss_context_t* ctx, const char* name,
     (void)description;                     /* only introspection reads it */
 #endif
     if (!ok) {
-        signal_release_storage(ctx, sig);
+        signal_release_storage(bus, sig);
         *err = SS_ERR_MEMORY;
         return NULL;
     }
-    sig->next = ctx->signals;
-    ctx->signals = sig;
-    SS_ACCOUNT(ctx, signal_bytes(sig), 0);
+    sig->next = bus->signals;
+    bus->signals = sig;
+    SS_ACCOUNT(bus, signal_bytes(sig), 0);
     return sig;
 }
 
@@ -496,25 +496,25 @@ static const char* signal_description(const ss_signal_t* sig) {
 }
 #endif
 
-static ss_slot_t* slot_alloc(ss_context_t* ctx) {
+static ss_slot_t* slot_alloc(ss_bus_t* bus) {
     ss_slot_t* slot = (ss_slot_t*)SS_CALLOC(1, sizeof(ss_slot_t));
-    if (slot) SS_ACCOUNT(ctx, sizeof(ss_slot_t), 0);
-    (void)ctx;
+    if (slot) SS_ACCOUNT(bus, sizeof(ss_slot_t), 0);
+    (void)bus;
     return slot;
 }
 
-static void slot_release(ss_context_t* ctx, ss_slot_t* slot) {
-    SS_ACCOUNT(ctx, 0, sizeof(ss_slot_t));
-    (void)ctx;
+static void slot_release(ss_bus_t* bus, ss_slot_t* slot) {
+    SS_ACCOUNT(bus, 0, sizeof(ss_slot_t));
+    (void)bus;
     SS_FREE(slot);
 }
 
-static void signal_release_storage(ss_context_t* ctx, ss_signal_t* sig) {
-    ss_signal_t** link = &ctx->signals;
+static void signal_release_storage(ss_bus_t* bus, ss_signal_t* sig) {
+    ss_signal_t** link = &bus->signals;
     while (*link && *link != sig) link = &(*link)->next;
     if (*link) {                           /* linked: it was accounted */
         *link = sig->next;
-        SS_ACCOUNT(ctx, 0, signal_bytes(sig));
+        SS_ACCOUNT(bus, 0, signal_bytes(sig));
     }
     SS_FREE(sig->name);
 #if SS_ENABLE_INTROSPECTION
@@ -526,17 +526,17 @@ static void signal_release_storage(ss_context_t* ctx, ss_signal_t* sig) {
 #endif
 
 /* Next registered signal that has not been retired */
-SS_INLINE ss_signal_t* live_next(ss_context_t* ctx, ss_signal_t* sig) {
+SS_INLINE ss_signal_t* live_next(ss_bus_t* bus, ss_signal_t* sig) {
     do {
-        sig = signal_next(ctx, sig);
+        sig = signal_next(bus, sig);
     } while (sig && sig->retired);
     return sig;
 }
 
 /* Live signal with this fully qualified name */
-SS_INLINE ss_signal_t* signal_find(ss_context_t* ctx, const char* name) {
+SS_INLINE ss_signal_t* signal_find(ss_bus_t* bus, const char* name) {
     ss_signal_t* sig;
-    for (sig = live_next(ctx, NULL); sig; sig = live_next(ctx, sig)) {
+    for (sig = live_next(bus, NULL); sig; sig = live_next(bus, sig)) {
         if (strcmp(sig->name, name) == 0) return sig;
     }
     return NULL;
@@ -545,43 +545,43 @@ SS_INLINE ss_signal_t* signal_find(ss_context_t* ctx, const char* name) {
 /* Name to look up: like resolve_name(), but a name that cannot fit is
  * simply not found, and without a namespace nothing needs scanning (the
  * emit fast path). */
-SS_INLINE const char* lookup_name(const ss_context_t* ctx, const char* name,
+SS_INLINE const char* lookup_name(const ss_bus_t* bus, const char* name,
                               char* buf, ss_error_t* err) {
     const char* qualified;
-    if (name && name[0] != '\0' && ctx->ns[0] == '\0') return name;
-    qualified = resolve_name(ctx, name, buf, err);
+    if (name && name[0] != '\0' && bus->ns[0] == '\0') return name;
+    qualified = resolve_name(bus, name, buf, err);
     if (!qualified && *err == SS_ERR_WOULD_OVERFLOW) *err = SS_ERR_NOT_FOUND;
     return qualified;
 }
 
-static ss_signal_t* signal_lookup(ss_context_t* ctx, const char* name, ss_error_t* err) {
+static ss_signal_t* signal_lookup(ss_bus_t* bus, const char* name, ss_error_t* err) {
     char buf[SS_MAX_SIGNAL_NAME_LENGTH];
     ss_signal_t* sig;
-    const char* qualified = lookup_name(ctx, name, buf, err);
+    const char* qualified = lookup_name(bus, name, buf, err);
     if (!qualified) return NULL;
-    sig = signal_find(ctx, qualified);
+    sig = signal_find(bus, qualified);
     if (!sig) *err = SS_ERR_NOT_FOUND;
     return sig;
 }
 
-static void signal_destroy(ss_context_t* ctx, ss_signal_t* sig) {
+static void signal_destroy(ss_bus_t* bus, ss_signal_t* sig) {
     ss_slot_t* slot = sig->slots;
     while (slot) {
         ss_slot_t* next = slot->next;
-        slot_release(ctx, slot);
+        slot_release(bus, slot);
         slot = next;
     }
-    signal_release_storage(ctx, sig);
+    signal_release_storage(bus, sig);
 }
 
 /* Free the slots marked removed. Never called while the signal emits. */
-static void sweep_removed_slots(ss_context_t* ctx, ss_signal_t* sig) {
+static void sweep_removed_slots(ss_bus_t* bus, ss_signal_t* sig) {
     ss_slot_t** link = &sig->slots;
     while (*link) {
         ss_slot_t* slot = *link;
         if (slot->removed) {
             *link = slot->next;
-            slot_release(ctx, slot);
+            slot_release(bus, slot);
         } else {
             link = &slot->next;
         }
@@ -591,19 +591,19 @@ static void sweep_removed_slots(ss_context_t* ctx, ss_signal_t* sig) {
 
 /* Disconnect a live slot. While the signal emits it is only marked, and
  * the sweep at the end of the emission frees it. */
-static void slot_remove(ss_context_t* ctx, ss_signal_t* sig, ss_slot_t* slot) {
+static void slot_remove(ss_bus_t* bus, ss_signal_t* sig, ss_slot_t* slot) {
     slot->removed = 1;
     sig->slot_count--;
     sig->dirty = 1;
-    if (!sig->emitting) sweep_removed_slots(ctx, sig);
+    if (!sig->emitting) sweep_removed_slots(bus, sig);
 }
 
-static void slots_remove_all(ss_context_t* ctx, ss_signal_t* sig) {
+static void slots_remove_all(ss_bus_t* bus, ss_signal_t* sig) {
     ss_slot_t* slot;
     for (slot = sig->slots; slot; slot = slot->next) slot->removed = 1;
     sig->slot_count = 0;
     sig->dirty = 1;
-    if (!sig->emitting) sweep_removed_slots(ctx, sig);
+    if (!sig->emitting) sweep_removed_slots(bus, sig);
 }
 
 /* First live slot calling func (when given), else with this handle */
@@ -631,16 +631,16 @@ SS_INLINE const ss_data_t* borrowed_view(const ss_data_t* data, ss_data_t* view)
     return view;
 }
 
-/* Emit a fully qualified name. Caller holds the context. */
-SS_INLINE ss_error_t emit_locked(ss_context_t* ctx, const char* name, const ss_data_t* data) {
-    ss_signal_t* sig = signal_find(ctx, name);
+/* Emit a fully qualified name. Caller holds the bus. */
+SS_INLINE ss_error_t emit_locked(ss_bus_t* bus, const char* name, const ss_data_t* data) {
+    ss_signal_t* sig = signal_find(bus, name);
     ss_slot_t* slot;
 #if SS_ENABLE_PERFORMANCE_STATS
-    uint64_t start_time = ctx->profiling_enabled ? get_time_ns() : 0;
+    uint64_t start_time = bus->profiling_enabled ? get_time_ns() : 0;
 #endif
 
     if (!sig) return SS_ERR_NOT_FOUND;
-    SS_TRACE((ctx, "Emitting signal: %s to %lu slots", name, (unsigned long)sig->slot_count));
+    SS_TRACE((bus, "Emitting signal: %s to %lu slots", name, (unsigned long)sig->slot_count));
 
     sig->emitting++;
     for (slot = sig->slots; slot; ) {
@@ -653,7 +653,7 @@ SS_INLINE ss_error_t emit_locked(ss_context_t* ctx, const char* name, const ss_d
     sig->emitting--;
 
 #if SS_ENABLE_PERFORMANCE_STATS
-    if (ctx->profiling_enabled) {
+    if (bus->profiling_enabled) {
         uint64_t elapsed = get_time_ns() - start_time;
         ss_perf_stats_t* ps = &sig->perf_stats;
         ps->total_emissions++;
@@ -666,9 +666,9 @@ SS_INLINE ss_error_t emit_locked(ss_context_t* ctx, const char* name, const ss_d
 
     if (sig->emitting == 0) {
         if (sig->retired) {
-            signal_destroy(ctx, sig);
+            signal_destroy(bus, sig);
         } else if (sig->dirty) {
-            sweep_removed_slots(ctx, sig);
+            sweep_removed_slots(bus, sig);
         }
     }
     return SS_OK;
@@ -788,18 +788,18 @@ static void queue_clear(ss_queue_t* q) {
  * queued meanwhile (by slots, or around a nested flush) wait for the next
  * flush. Each entry is popped before it is
  * emitted, so slots may push to (or flush) the same queue. Stops early
- * when *stop or ctx->closing is set. Caller holds the context. */
-static ss_error_t queue_flush(ss_context_t* ctx, ss_queue_t* q, const int* stop) {
+ * when *stop or bus->closing is set. Caller holds the bus. */
+static ss_error_t queue_flush(ss_bus_t* bus, ss_queue_t* q, const int* stop) {
     ss_error_t result = SS_OK;
     ss_entry_t entry;
     unsigned long limit = q->pushed;   /* entries pushed from now on wait */
     /* Queued entries have seq in [limit - count, limit): wrap-safe test */
     while (q->count > 0 && limit - q->entries[q->head].seq - 1UL < (unsigned long)q->capacity &&
-           !*stop && !ctx->closing && queue_pop(q, &entry)) {
+           !*stop && !bus->closing && queue_pop(q, &entry)) {
         ss_data_t view;
         ss_error_t err;
         entry_view(&entry, &view);
-        err = emit_locked(ctx, entry.signal_name, &view);
+        err = emit_locked(bus, entry.signal_name, &view);
         entry_release(&entry);
         if (err != SS_OK) result = err;
     }
@@ -902,9 +902,10 @@ typedef struct {
     char signal_name[SS_MAX_SIGNAL_NAME_LENGTH];
 } ss_isr_entry_t;
 
-/* The ISR queue stays global, outside the context: ss_emit_from_isr() works
- * before ss_init() and takes no context. It is the only library state that
- * internal functions (isr_queue_drop_ready) reach without a parameter. */
+/* The ISR queue is global, shared by every bus: ss_emit_from_isr() takes no
+ * bus and works before any bus exists, and ss_process_isr_queue(bus)
+ * delivers to the bus it is given. Destroying a bus leaves queued events
+ * for the next bus that processes the queue. */
 static ss_isr_entry_t g_isr_queue[SS_ISR_QUEUE_SIZE];
 static ss_atomic_int g_isr_seq;
 
@@ -928,17 +929,7 @@ ss_error_t ss_emit_from_isr(const char* signal_name, int value) {
     return SS_ERR_WOULD_OVERFLOW;
 }
 
-/* Discard queued events (used by cleanup) */
-static void isr_queue_drop_ready(void) {
-    size_t i;
-    for (i = 0; i < SS_ISR_QUEUE_SIZE; i++) {
-        if (ss_atomic_cas(&g_isr_queue[i].state, ISR_READY, ISR_READING)) {
-            ss_atomic_store(&g_isr_queue[i].state, ISR_FREE);
-        }
-    }
-}
-
-ss_error_t ss_process_isr_queue(void) {
+ss_error_t ss_process_isr_queue(ss_bus_t* bus) {
     char name[SS_MAX_SIGNAL_NAME_LENGTH];
     char buf[SS_MAX_SIGNAL_NAME_LENGTH];
     size_t order[SS_ISR_QUEUE_SIZE];
@@ -946,8 +937,7 @@ ss_error_t ss_process_isr_queue(void) {
     size_t n = 0, previous, scans = 0, i, j;
     ss_error_t result = SS_OK;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
     /* Snapshot the ready entries in queue order (insertion sort, N small).
      * An interrupt during a scan can queue an event in an entry already
@@ -972,7 +962,7 @@ ss_error_t ss_process_isr_queue(void) {
         }
     } while (n != previous && ++scans <= SS_ISR_QUEUE_SIZE);
 
-    for (i = 0; i < n && !ctx->closing; i++) {
+    for (i = 0; i < n && !bus->closing; i++) {
         ss_isr_entry_t* e = &g_isr_queue[order[i]];
         ss_data_t data = data_of(SS_TYPE_INT);
         ss_error_t err = SS_OK;
@@ -983,125 +973,138 @@ ss_error_t ss_process_isr_queue(void) {
         data.value.i_val = e->value;
         ss_atomic_store(&e->state, ISR_FREE);
 
-        qualified = lookup_name(ctx, name, buf, &err);
-        if (qualified) err = emit_locked(ctx, qualified, &data);
+        qualified = lookup_name(bus, name, buf, &err);
+        if (qualified) err = emit_locked(bus, qualified, &data);
         if (err != SS_OK) result = err;
     }
-    return ctx_leave(ctx, locked, result, NULL);
+    return bus_leave(bus, locked, result, NULL);
 }
 
 #endif /* SS_ENABLE_ISR_SAFE */
 
 /* ------------------------------------------------------------------ */
-/* Initialization and cleanup                                          */
+/* Bus creation and destruction                                        */
 /* ------------------------------------------------------------------ */
 
-static ss_error_t context_init(ss_context_t* ctx, int heap_owned) {
-    memset(ctx, 0, sizeof(*ctx));
-    ctx->max_slots_per_signal = SS_DEFAULT_MAX_SLOTS_PER_SIGNAL;
-    ctx->next_handle = 1;
-    ctx->heap_owned = heap_owned;
-    queue_init(&ctx->deferred, ctx->deferred_entries, SS_DEFERRED_QUEUE_SIZE);
+/* Make *bus an empty bus, whatever the memory held before */
+static ss_error_t bus_init(ss_bus_t* bus, int storage, unsigned int flags) {
+    memset(bus, 0, sizeof(*bus));
+    bus->max_slots_per_signal = SS_DEFAULT_MAX_SLOTS_PER_SIGNAL;
+    bus->next_handle = 1;
+    queue_init(&bus->deferred, bus->deferred_entries, SS_DEFERRED_QUEUE_SIZE);
 #if SS_ENABLE_THREAD_SAFETY
-    if (ss_mutex_init(&ctx->mutex) != 0) return SS_ERR_MEMORY;
+    if (flags & SS_BUS_THREAD_SAFE) {
+        if (ss_mutex_init(&bus->mutex) != 0) return SS_ERR_MEMORY;
+        bus->thread_safe = 1;
+    }
+#else
+    (void)flags;
 #endif
 #if SS_ENABLE_MEMORY_STATS
-    ctx->bytes_in_use = heap_owned ? sizeof(ss_context_t) : 0;
-    ctx->peak_bytes = ctx->bytes_in_use;
+    bus->bytes_in_use = storage == BUS_ON_HEAP ? sizeof(ss_bus_t) : 0;
+    bus->peak_bytes = bus->bytes_in_use;
 #endif
+    bus->storage = storage;                /* last: claims a built-in bus */
     return SS_OK;
 }
 
-/* Common checks against the current context (NULL if none); returns 1 when
- * initialization should proceed */
-static int init_precheck(const ss_context_t* current, size_t abi_tag, ss_error_t* err) {
-    if (abi_tag != SS_ABI_TAG) {
-        *err = SS_ERR_CONFIG_MISMATCH;
-        return 0;
-    }
-    if (current) {
-        *err = current->closing ? SS_ERR_ALREADY_EXISTS : SS_OK;
-        return 0;
-    }
-    return 1;
+/* Checks shared by both create functions. Clears *out first. */
+static ss_error_t create_check(ss_bus_t** out, unsigned int flags, size_t abi_tag) {
+    const unsigned int supported = SS_ENABLE_THREAD_SAFETY ? SS_BUS_THREAD_SAFE : 0u;
+    if (!out) return SS_ERR_NULL_PARAM;
+    *out = NULL;
+    if (abi_tag != SS_ABI_TAG || (flags & ~supported) != 0) return SS_ERR_CONFIG_MISMATCH;
+    return SS_OK;
 }
 
-ss_error_t ss_init_abi(size_t abi_tag) {
-    ss_error_t err = SS_OK;
-    ss_context_t* ctx;
-    if (!init_precheck(g_context, abi_tag, &err)) return err;
-#if SS_USE_STATIC_MEMORY && SS_STATIC_CONTEXT
-    ctx = &g_static_context;
-    err = context_init(ctx, 0);
+#if SS_USE_STATIC_MEMORY
+/* The first unused built-in bus, initialized, or NULL with *err set. Not
+ * locked: built-in buses are claimed and released from one thread. */
+static ss_bus_t* claim_built_in(unsigned int flags, ss_error_t* err) {
+#if SS_STATIC_BUSES > 0
+    size_t i;
+    for (i = 0; i < SS_STATIC_BUSES; i++) {
+        ss_bus_t* bus = &g_static_buses[i];
+        if (bus->storage == BUS_FREE) {
+            *err = bus_init(bus, BUS_BUILT_IN, flags);
+            return *err == SS_OK ? bus : NULL;
+        }
+    }
 #else
-    ctx = (ss_context_t*)SS_CALLOC(1, sizeof(ss_context_t));
-    if (!ctx) return SS_ERR_MEMORY;
-    err = context_init(ctx, 1);
-    if (err != SS_OK) SS_FREE(ctx);
+    (void)flags;
 #endif
-    if (err == SS_OK) g_context = ctx;
+    *err = SS_ERR_WOULD_OVERFLOW;          /* every built-in bus is in use */
+    return NULL;
+}
+#endif
+
+ss_error_t ss_bus_create_abi(ss_bus_t** out, unsigned int flags, size_t abi_tag) {
+    ss_error_t err = create_check(out, flags, abi_tag);
+    ss_bus_t* bus;
+    if (err != SS_OK) return err;
+#if SS_USE_STATIC_MEMORY
+    bus = claim_built_in(flags, &err);     /* never the heap */
+#else
+    bus = (ss_bus_t*)SS_CALLOC(1, sizeof(ss_bus_t));
+    if (!bus) return SS_ERR_MEMORY;
+    err = bus_init(bus, BUS_ON_HEAP, flags);
+    if (err != SS_OK) {
+        SS_FREE(bus);
+        bus = NULL;
+    }
+#endif
+    *out = bus;
     return err;
 }
 
-ss_error_t ss_init(void) {
-    return ss_init_abi(SS_ABI_TAG);
+size_t ss_bus_pool_size(void) {
+    return sizeof(ss_bus_t) + SS_BUS_ALIGN - 1;
 }
 
-size_t ss_get_required_pool_size(void) {
-    return sizeof(ss_context_t) + SS_CONTEXT_ALIGN - 1;
-}
-
-ss_error_t ss_init_static_abi(void* memory_pool, size_t pool_size, size_t abi_tag) {
-    ss_error_t err = SS_OK;
-    ss_context_t* ctx;
-    size_t pad = 0;
-    if (memory_pool) {
-        pad = (SS_CONTEXT_ALIGN - (size_t)((uintptr_t)memory_pool % SS_CONTEXT_ALIGN)) %
-              SS_CONTEXT_ALIGN;
-    }
-    /* Like 2.1: without a pool large enough, behave as ss_init() */
-    if (!memory_pool || pool_size < pad || pool_size - pad < sizeof(ss_context_t)) {
-        return ss_init_abi(abi_tag);
-    }
-    if (!init_precheck(g_context, abi_tag, &err)) return err;
-    ctx = (ss_context_t*)((unsigned char*)memory_pool + pad);
-    err = context_init(ctx, 0);
-    if (err == SS_OK) g_context = ctx;
+ss_error_t ss_bus_create_in_abi(ss_bus_t** out, void* pool, size_t pool_size,
+                                unsigned int flags, size_t abi_tag) {
+    ss_error_t err = create_check(out, flags, abi_tag);
+    ss_bus_t* bus;
+    size_t pad;
+    if (err != SS_OK) return err;
+    if (!pool) return SS_ERR_NULL_PARAM;
+    pad = (SS_BUS_ALIGN - (size_t)((uintptr_t)pool % SS_BUS_ALIGN)) % SS_BUS_ALIGN;
+    if (pool_size < pad || pool_size - pad < sizeof(ss_bus_t)) return SS_ERR_BUFFER_TOO_SMALL;
+    bus = (ss_bus_t*)((unsigned char*)pool + pad);
+    err = bus_init(bus, BUS_IN_POOL, flags);
+    if (err == SS_OK) *out = bus;
     return err;
 }
 
-ss_error_t ss_init_static(void* memory_pool, size_t pool_size) {
-    return ss_init_static_abi(memory_pool, pool_size, SS_ABI_TAG);
-}
-
-/* Release everything ctx holds. The caller has already detached it. */
-static void context_destroy(ss_context_t* ctx) {
+/* Release everything bus holds, then the bus itself (heap) or its place
+ * (built-in). A pool is left to its owner. */
+static void bus_free(ss_bus_t* bus) {
     ss_signal_t* sig;
-    queue_clear(&ctx->deferred);
-    while ((sig = signal_next(ctx, NULL)) != NULL) {
-        signal_destroy(ctx, sig);
+    queue_clear(&bus->deferred);
+    while ((sig = signal_next(bus, NULL)) != NULL) {
+        signal_destroy(bus, sig);
     }
-#if SS_ENABLE_ISR_SAFE
-    isr_queue_drop_ready();
-#endif
 #if SS_ENABLE_THREAD_SAFETY
-    SS_MUTEX_DESTROY(&ctx->mutex);
+    if (bus->thread_safe) SS_MUTEX_DESTROY(&bus->mutex);
 #endif
-    if (ctx->heap_owned) SS_FREE(ctx);
+    if (bus->storage == BUS_ON_HEAP) {
+        SS_FREE(bus);
+    } else {
+        bus->storage = BUS_FREE;           /* a built-in bus can be claimed again */
+    }
 }
 
-void ss_cleanup(void) {
+void ss_bus_destroy(ss_bus_t* bus) {
     ss_signal_t* sig;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return;
-    /* Called from a slot, this ends every emission in progress; the
-     * context is destroyed when the outermost call returns. */
-    ctx->closing = 1;
-    for (sig = signal_next(ctx, NULL); sig; sig = signal_next(ctx, sig)) {
-        slots_remove_all(ctx, sig);
+    if (!bus_enter(bus, &locked)) return;  /* NULL, or already being destroyed */
+    /* Called from a slot, this ends every emission in progress on the bus;
+     * the bus is freed when its outermost call returns (bus_leave). */
+    bus->closing = 1;
+    for (sig = signal_next(bus, NULL); sig; sig = signal_next(bus, sig)) {
+        slots_remove_all(bus, sig);
     }
-    (void)ctx_leave(ctx, locked, SS_OK, NULL);
+    (void)bus_leave(bus, locked, SS_OK, NULL);
 }
 
 const char* ss_version(void) {
@@ -1112,62 +1115,58 @@ const char* ss_version(void) {
 /* Signals                                                             */
 /* ------------------------------------------------------------------ */
 
-ss_error_t ss_signal_register(const char* signal_name) {
-    return ss_signal_register_ex(signal_name, NULL, SS_PRIORITY_NORMAL);
+ss_error_t ss_signal_register(ss_bus_t* bus, const char* signal_name) {
+    return ss_signal_register_ex(bus, signal_name, NULL, SS_PRIORITY_NORMAL);
 }
 
-ss_error_t ss_signal_register_ex(const char* signal_name,
-                                const char* description,
-                                ss_priority_t priority) {
+ss_error_t ss_signal_register_ex(ss_bus_t* bus, const char* signal_name,
+                                 const char* description, ss_priority_t priority) {
     char buf[SS_MAX_SIGNAL_NAME_LENGTH];
     ss_error_t err = SS_OK;
     ss_signal_t* sig;
     const char* name;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
-    name = resolve_name(ctx, signal_name, buf, &err);
-    if (name && signal_find(ctx, name)) err = SS_ERR_ALREADY_EXISTS;
+    name = resolve_name(bus, signal_name, buf, &err);
+    if (name && signal_find(bus, name)) err = SS_ERR_ALREADY_EXISTS;
     if (name && err == SS_OK) {
-        sig = signal_create(ctx, name, description, &err);
+        sig = signal_create(bus, name, description, &err);
         if (sig) {
             sig->priority = priority;
-            ctx->signal_count++;
-            SS_TRACE((ctx, "Registered signal: %s", name));
+            bus->signal_count++;
+            SS_TRACE((bus, "Registered signal: %s", name));
         }
     }
-    return ctx_leave(ctx, locked, err, signal_name);
+    return bus_leave(bus, locked, err, signal_name);
 }
 
-ss_error_t ss_signal_unregister(const char* signal_name) {
+ss_error_t ss_signal_unregister(ss_bus_t* bus, const char* signal_name) {
     ss_error_t err = SS_OK;
     ss_signal_t* sig;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
-    sig = signal_lookup(ctx, signal_name, &err);
+    sig = signal_lookup(bus, signal_name, &err);
     if (sig) {
-        slots_remove_all(ctx, sig);        /* also ends an emission in progress */
-        ctx->signal_count--;
+        slots_remove_all(bus, sig);        /* also ends an emission in progress */
+        bus->signal_count--;
         if (sig->emitting) {
             sig->retired = 1;              /* freed when its emission ends */
         } else {
-            signal_destroy(ctx, sig);
+            signal_destroy(bus, sig);
         }
     }
-    return ctx_leave(ctx, locked, err, signal_name);
+    return bus_leave(bus, locked, err, signal_name);
 }
 
-int ss_signal_exists(const char* signal_name) {
+int ss_signal_exists(ss_bus_t* bus, const char* signal_name) {
     ss_error_t err = SS_OK;
     int exists;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return 0;
-    exists = signal_lookup(ctx, signal_name, &err) != NULL;
-    (void)ctx_leave(ctx, locked, SS_OK, NULL);
+    if (!bus_enter(bus, &locked)) return 0;
+    exists = signal_lookup(bus, signal_name, &err) != NULL;
+    (void)bus_leave(bus, locked, SS_OK, NULL);
     return exists;
 }
 
@@ -1175,36 +1174,36 @@ int ss_signal_exists(const char* signal_name) {
 /* Connections                                                         */
 /* ------------------------------------------------------------------ */
 
-ss_error_t ss_connect(const char* signal_name, ss_slot_func_t slot, void* user_data) {
-    return ss_connect_ex(signal_name, slot, user_data, SS_PRIORITY_NORMAL, NULL);
+ss_error_t ss_connect(ss_bus_t* bus, const char* signal_name, ss_slot_func_t slot,
+                      void* user_data) {
+    return ss_connect_ex(bus, signal_name, slot, user_data, SS_PRIORITY_NORMAL, NULL);
 }
 
-ss_error_t ss_connect_ex(const char* signal_name, ss_slot_func_t slot,
-                        void* user_data, ss_priority_t priority,
-                        ss_connection_t* handle) {
+ss_error_t ss_connect_ex(ss_bus_t* bus, const char* signal_name, ss_slot_func_t slot,
+                         void* user_data, ss_priority_t priority,
+                         ss_connection_t* handle) {
     ss_error_t err = SS_OK;
     ss_signal_t* sig = NULL;
     ss_slot_t* node;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
     if (!slot) {
         err = SS_ERR_NULL_PARAM;
     } else {
-        sig = signal_lookup(ctx, signal_name, &err);
+        sig = signal_lookup(bus, signal_name, &err);
     }
-    if (sig && sig->slot_count >= ctx->max_slots_per_signal) err = SS_ERR_MAX_SLOTS;
+    if (sig && sig->slot_count >= bus->max_slots_per_signal) err = SS_ERR_MAX_SLOTS;
     if (sig && err == SS_OK) {
-        node = slot_alloc(ctx);
+        node = slot_alloc(bus);
         if (!node) {
             err = SS_USE_STATIC_MEMORY ? SS_ERR_WOULD_OVERFLOW : SS_ERR_MEMORY;
         } else {
             node->func = slot;
             node->user_data = user_data;
             node->priority = priority;
-            node->handle = ctx->next_handle++;
-            if (ctx->next_handle == 0) ctx->next_handle = 1;
+            node->handle = bus->next_handle++;
+            if (bus->next_handle == 0) bus->next_handle = 1;
             if (handle) *handle = node->handle;
 
             /* Higher priority first; equal priorities keep connection order */
@@ -1218,178 +1217,169 @@ ss_error_t ss_connect_ex(const char* signal_name, ss_slot_func_t slot,
                 s->next = node;
             }
             sig->slot_count++;
-            SS_TRACE((ctx, "Connected slot to signal: %s (handle: %lu)", sig->name,
+            SS_TRACE((bus, "Connected slot to signal: %s (handle: %lu)", sig->name,
                      (unsigned long)node->handle));
         }
     }
-    return ctx_leave(ctx, locked, err, signal_name);
+    return bus_leave(bus, locked, err, signal_name);
 }
 
-ss_error_t ss_disconnect(const char* signal_name, ss_slot_func_t slot) {
+ss_error_t ss_disconnect(ss_bus_t* bus, const char* signal_name, ss_slot_func_t slot) {
     ss_error_t err = SS_ERR_NULL_PARAM;
     ss_signal_t* sig = NULL;
     ss_slot_t* node;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
-    if (slot) sig = signal_lookup(ctx, signal_name, &err);
+    if (slot) sig = signal_lookup(bus, signal_name, &err);
     if (sig) {
         node = slot_find(sig, slot, 0);
         err = node ? SS_OK : SS_ERR_NOT_FOUND;
-        if (node) slot_remove(ctx, sig, node);
+        if (node) slot_remove(bus, sig, node);
     }
-    return ctx_leave(ctx, locked, err, signal_name);
+    return bus_leave(bus, locked, err, signal_name);
 }
 
-ss_error_t ss_disconnect_handle(ss_connection_t handle) {
+ss_error_t ss_disconnect_handle(ss_bus_t* bus, ss_connection_t handle) {
     ss_signal_t* sig;
     ss_slot_t* node = NULL;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
-    if (handle == 0) return ctx_leave(ctx, locked, SS_ERR_NULL_PARAM, NULL);
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
+    if (handle == 0) return bus_leave(bus, locked, SS_ERR_NULL_PARAM, NULL);
 
-    for (sig = live_next(ctx, NULL); sig; sig = live_next(ctx, sig)) {
+    for (sig = live_next(bus, NULL); sig; sig = live_next(bus, sig)) {
         node = slot_find(sig, NULL, handle);
         if (node) {
-            slot_remove(ctx, sig, node);
+            slot_remove(bus, sig, node);
             break;
         }
     }
-    return ctx_leave(ctx, locked, node ? SS_OK : SS_ERR_NOT_FOUND, NULL);
+    return bus_leave(bus, locked, node ? SS_OK : SS_ERR_NOT_FOUND, NULL);
 }
 
-ss_error_t ss_disconnect_all(const char* signal_name) {
+ss_error_t ss_disconnect_all(ss_bus_t* bus, const char* signal_name) {
     ss_error_t err = SS_OK;
     ss_signal_t* sig;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
-    sig = signal_lookup(ctx, signal_name, &err);
-    if (sig) slots_remove_all(ctx, sig);
-    return ctx_leave(ctx, locked, err, signal_name);
+    sig = signal_lookup(bus, signal_name, &err);
+    if (sig) slots_remove_all(bus, sig);
+    return bus_leave(bus, locked, err, signal_name);
 }
 
 /* ------------------------------------------------------------------ */
 /* Emission API                                                        */
 /* ------------------------------------------------------------------ */
 
-ss_error_t ss_emit(const char* signal_name, const ss_data_t* data) {
+ss_error_t ss_emit(ss_bus_t* bus, const char* signal_name, const ss_data_t* data) {
     char buf[SS_MAX_SIGNAL_NAME_LENGTH];
     ss_error_t err = SS_OK;
     const char* name;
     ss_data_t view;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
-    name = lookup_name(ctx, signal_name, buf, &err);
-    if (name) err = emit_locked(ctx, name, borrowed_view(data, &view));
-    return ctx_leave(ctx, locked, err, signal_name);
+    name = lookup_name(bus, signal_name, buf, &err);
+    if (name) err = emit_locked(bus, name, borrowed_view(data, &view));
+    return bus_leave(bus, locked, err, signal_name);
 }
 
-ss_error_t ss_emit_void(const char* signal_name) {
+ss_error_t ss_emit_void(ss_bus_t* bus, const char* signal_name) {
     ss_data_t data = data_of(SS_TYPE_VOID);
-    return ss_emit(signal_name, &data);
+    return ss_emit(bus, signal_name, &data);
 }
 
-ss_error_t ss_emit_int(const char* signal_name, int value) {
+ss_error_t ss_emit_int(ss_bus_t* bus, const char* signal_name, int value) {
     ss_data_t data = data_of(SS_TYPE_INT);
     data.value.i_val = value;
-    return ss_emit(signal_name, &data);
+    return ss_emit(bus, signal_name, &data);
 }
 
-ss_error_t ss_emit_float(const char* signal_name, float value) {
+ss_error_t ss_emit_float(ss_bus_t* bus, const char* signal_name, float value) {
     ss_data_t data = data_of(SS_TYPE_FLOAT);
     data.value.f_val = value;
-    return ss_emit(signal_name, &data);
+    return ss_emit(bus, signal_name, &data);
 }
 
-ss_error_t ss_emit_double(const char* signal_name, double value) {
+ss_error_t ss_emit_double(ss_bus_t* bus, const char* signal_name, double value) {
     ss_data_t data = data_of(SS_TYPE_DOUBLE);
     data.value.d_val = value;
-    return ss_emit(signal_name, &data);
+    return ss_emit(bus, signal_name, &data);
 }
 
-ss_error_t ss_emit_string(const char* signal_name, const char* value) {
+ss_error_t ss_emit_string(ss_bus_t* bus, const char* signal_name, const char* value) {
     ss_data_t data = data_of(SS_TYPE_STRING);
     data.value.s_val = value;
-    return ss_emit(signal_name, &data);
+    return ss_emit(bus, signal_name, &data);
 }
 
-ss_error_t ss_emit_pointer(const char* signal_name, void* value) {
+ss_error_t ss_emit_pointer(ss_bus_t* bus, const char* signal_name, void* value) {
     ss_data_t data = data_of(SS_TYPE_POINTER);
     data.value.p_val = value;
-    return ss_emit(signal_name, &data);
+    return ss_emit(bus, signal_name, &data);
 }
 
-ss_error_t ss_emit_deferred(const char* signal_name, const ss_data_t* data) {
+ss_error_t ss_emit_deferred(ss_bus_t* bus, const char* signal_name, const ss_data_t* data) {
     char buf[SS_MAX_SIGNAL_NAME_LENGTH];
     ss_error_t err = SS_OK;
     const char* name;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
-    name = resolve_name(ctx, signal_name, buf, &err);
-    if (name) err = queue_push(&ctx->deferred, name, data);
-    return ctx_leave(ctx, locked, err, signal_name);
+    name = resolve_name(bus, signal_name, buf, &err);
+    if (name) err = queue_push(&bus->deferred, name, data);
+    return bus_leave(bus, locked, err, signal_name);
 }
 
-ss_error_t ss_flush_deferred(void) {
+ss_error_t ss_flush_deferred(ss_bus_t* bus) {
     static const int never = 0;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
-    return ctx_leave(ctx, locked, queue_flush(ctx, &ctx->deferred, &never), NULL);
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
+    return bus_leave(bus, locked, queue_flush(bus, &bus->deferred, &never), NULL);
 }
 
-ss_error_t ss_emit_namespaced(const char* ns, const char* signal_name,
+ss_error_t ss_emit_namespaced(ss_bus_t* bus, const char* ns, const char* signal_name,
                               const ss_data_t* data) {
     char buf[SS_MAX_SIGNAL_NAME_LENGTH];
     ss_error_t err = SS_ERR_NULL_PARAM;
     ss_data_t view;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
     if (ns && signal_name) {
-        err = qualify(ns, signal_name, buf) ? emit_locked(ctx, buf, borrowed_view(data, &view))
+        err = qualify(ns, signal_name, buf) ? emit_locked(bus, buf, borrowed_view(data, &view))
                                             : SS_ERR_WOULD_OVERFLOW;
     }
-    return ctx_leave(ctx, locked, err, signal_name);
+    return bus_leave(bus, locked, err, signal_name);
 }
 
 /* ------------------------------------------------------------------ */
 /* Namespace                                                           */
 /* ------------------------------------------------------------------ */
 
-ss_error_t ss_set_namespace(const char* ns) {
+ss_error_t ss_set_namespace(ss_bus_t* bus, const char* ns) {
     char probe[SS_MAX_SIGNAL_NAME_LENGTH];
     ss_error_t err = SS_OK;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
     if (!ns || ns[0] == '\0') {
-        ctx->ns[0] = '\0';
+        bus->ns[0] = '\0';
     } else if (!qualify(ns, "x", probe)) {
         err = SS_ERR_WOULD_OVERFLOW;       /* not even "ns::x" would fit */
-    } else if (ns != ctx->ns) {            /* ss_get_namespace() result: no-op */
-        strcpy(ctx->ns, ns);
+    } else if (ns != bus->ns) {            /* ss_get_namespace() result: no-op */
+        strcpy(bus->ns, ns);
     }
-    return ctx_leave(ctx, locked, err, ns);
+    return bus_leave(bus, locked, err, ns);
 }
 
-const char* ss_get_namespace(void) {
+const char* ss_get_namespace(ss_bus_t* bus) {
     const char* ns;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return NULL;
-    ns = ctx->ns[0] ? ctx->ns : NULL;
-    (void)ctx_leave(ctx, locked, SS_OK, NULL);
+    if (!bus_enter(bus, &locked)) return NULL;
+    ns = bus->ns[0] ? bus->ns : NULL;
+    (void)bus_leave(bus, locked, SS_OK, NULL);
     return ns;
 }
 
@@ -1400,13 +1390,21 @@ const char* ss_get_namespace(void) {
 struct ss_batch {
     ss_entry_t entries[SS_BATCH_MAX_ENTRIES];
     ss_queue_t queue;
+    ss_bus_t* bus;         /* supplies the namespace, emits, reports errors */
     int emitting;
     int destroy_pending;
 };
 
-ss_batch_t* ss_batch_create(void) {
-    ss_batch_t* batch = (ss_batch_t*)SS_CALLOC(1, sizeof(ss_batch_t));
-    if (batch) queue_init(&batch->queue, batch->entries, SS_BATCH_MAX_ENTRIES);
+ss_batch_t* ss_batch_create(ss_bus_t* bus) {
+    ss_batch_t* batch;
+    int locked;
+    if (!bus_enter(bus, &locked)) return NULL;
+    batch = (ss_batch_t*)SS_CALLOC(1, sizeof(ss_batch_t));
+    if (batch) {
+        queue_init(&batch->queue, batch->entries, SS_BATCH_MAX_ENTRIES);
+        batch->bus = bus;
+    }
+    (void)bus_leave(bus, locked, batch ? SS_OK : SS_ERR_MEMORY, NULL);
     return batch;
 }
 
@@ -1415,6 +1413,7 @@ static void batch_free(ss_batch_t* batch) {
     SS_FREE(batch);
 }
 
+/* Never touches the bus, which a slot may have destroyed meanwhile */
 void ss_batch_destroy(ss_batch_t* batch) {
     if (!batch) return;
     if (batch->emitting) {
@@ -1429,31 +1428,30 @@ ss_error_t ss_batch_add(ss_batch_t* batch, const char* signal_name,
     char buf[SS_MAX_SIGNAL_NAME_LENGTH];
     ss_error_t err = SS_ERR_NULL_PARAM;
     const char* name;
+    ss_bus_t* bus = batch ? batch->bus : NULL;
     int locked;
-    /* Works before ss_init() too; the context only supplies the namespace
-     * and the error handler. */
-    ss_context_t* ctx = ctx_enter(&locked);
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
-    if (batch && !batch->destroy_pending) {
-        name = resolve_name(ctx, signal_name, buf, &err);
+    if (!batch->destroy_pending) {
+        name = resolve_name(bus, signal_name, buf, &err);
         if (name) err = queue_push(&batch->queue, name, data);
     }
-    return ctx ? ctx_leave(ctx, locked, err, signal_name) : err;
+    return bus_leave(bus, locked, err, signal_name);
 }
 
 ss_error_t ss_batch_emit(ss_batch_t* batch) {
     ss_error_t err = SS_ERR_NULL_PARAM;
+    ss_bus_t* bus = batch ? batch->bus : NULL;   /* batch may be freed below */
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
 
-    if (batch && !batch->destroy_pending) {
+    if (!batch->destroy_pending) {
         batch->emitting++;
-        err = queue_flush(ctx, &batch->queue, &batch->destroy_pending);
+        err = queue_flush(bus, &batch->queue, &batch->destroy_pending);
         batch->emitting--;
         if (batch->emitting == 0 && batch->destroy_pending) batch_free(batch);
     }
-    return ctx_leave(ctx, locked, err, NULL);
+    return bus_leave(bus, locked, err, NULL);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1624,13 +1622,12 @@ void* ss_data_get_custom(const ss_data_t* data, size_t* size) {
 /* ------------------------------------------------------------------ */
 
 #if SS_ENABLE_INTROSPECTION
-size_t ss_get_signal_count(void) {
+size_t ss_get_signal_count(ss_bus_t* bus) {
     size_t count;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return 0;
-    count = ctx->signal_count;
-    (void)ctx_leave(ctx, locked, SS_OK, NULL);
+    if (!bus_enter(bus, &locked)) return 0;
+    count = bus->signal_count;
+    (void)bus_leave(bus, locked, SS_OK, NULL);
     return count;
 }
 
@@ -1644,24 +1641,23 @@ void ss_free_signal_list(ss_signal_info_t* list, size_t count) {
     SS_FREE(list);
 }
 
-ss_error_t ss_get_signal_list(ss_signal_info_t** list, size_t* count) {
+ss_error_t ss_get_signal_list(ss_bus_t* bus, ss_signal_info_t** list, size_t* count) {
     ss_error_t err = SS_OK;
     ss_signal_info_t* items = NULL;
     ss_signal_t* sig;
     size_t n = 0;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
-    if (!list || !count) return ctx_leave(ctx, locked, SS_ERR_NULL_PARAM, NULL);
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
+    if (!list || !count) return bus_leave(bus, locked, SS_ERR_NULL_PARAM, NULL);
     *list = NULL;
     *count = 0;
 
-    if (ctx->signal_count > 0) {
-        items = (ss_signal_info_t*)SS_CALLOC(ctx->signal_count, sizeof(ss_signal_info_t));
+    if (bus->signal_count > 0) {
+        items = (ss_signal_info_t*)SS_CALLOC(bus->signal_count, sizeof(ss_signal_info_t));
         if (!items) err = SS_ERR_MEMORY;
     }
-    for (sig = live_next(ctx, NULL); sig && items && err == SS_OK;
-         sig = live_next(ctx, sig)) {
+    for (sig = live_next(bus, NULL); sig && items && err == SS_OK;
+         sig = live_next(bus, sig)) {
         const char* desc = signal_description(sig);
         items[n].name = ss_strdup(sig->name);
         items[n].description = desc ? ss_strdup(desc) : NULL;
@@ -1676,7 +1672,7 @@ ss_error_t ss_get_signal_list(ss_signal_info_t** list, size_t* count) {
     } else {
         ss_free_signal_list(items, n);
     }
-    return ctx_leave(ctx, locked, err, NULL);
+    return bus_leave(bus, locked, err, NULL);
 }
 #endif
 
@@ -1685,16 +1681,15 @@ ss_error_t ss_get_signal_list(ss_signal_info_t** list, size_t* count) {
 /* ------------------------------------------------------------------ */
 
 #if SS_ENABLE_MEMORY_STATS
-ss_error_t ss_get_memory_stats(ss_memory_stats_t* stats) {
+ss_error_t ss_get_memory_stats(ss_bus_t* bus, ss_memory_stats_t* stats) {
     ss_signal_t* sig;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
-    if (!stats) return ctx_leave(ctx, locked, SS_ERR_NULL_PARAM, NULL);
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
+    if (!stats) return bus_leave(bus, locked, SS_ERR_NULL_PARAM, NULL);
 
     memset(stats, 0, sizeof(*stats));
-    stats->signals_used = ctx->signal_count;
-    for (sig = signal_next(ctx, NULL); sig; sig = signal_next(ctx, sig)) {
+    stats->signals_used = bus->signal_count;
+    for (sig = signal_next(bus, NULL); sig; sig = signal_next(bus, sig)) {
         stats->slots_used += sig->slot_count;
 #if !SS_USE_STATIC_MEMORY
         {
@@ -1708,54 +1703,51 @@ ss_error_t ss_get_memory_stats(ss_memory_stats_t* stats) {
 #if SS_USE_STATIC_MEMORY
     stats->signals_allocated = SS_MAX_SIGNALS;
     stats->slots_allocated = SS_MAX_SLOTS;
-    stats->total_bytes_allocated = sizeof(ss_context_t);
-    stats->peak_bytes_allocated = sizeof(ss_context_t);
+    stats->total_bytes_allocated = sizeof(ss_bus_t);
+    stats->peak_bytes_allocated = sizeof(ss_bus_t);
 #else
-    stats->total_bytes_allocated = ctx->bytes_in_use;
-    stats->peak_bytes_allocated = ctx->peak_bytes;
+    stats->total_bytes_allocated = bus->bytes_in_use;
+    stats->peak_bytes_allocated = bus->peak_bytes;
 #endif
-    return ctx_leave(ctx, locked, SS_OK, NULL);
+    return bus_leave(bus, locked, SS_OK, NULL);
 }
 
-void ss_reset_memory_stats(void) {
+void ss_reset_memory_stats(ss_bus_t* bus) {
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return;
-    ctx->peak_bytes = ctx->bytes_in_use;
-    (void)ctx_leave(ctx, locked, SS_OK, NULL);
+    if (!bus_enter(bus, &locked)) return;
+    bus->peak_bytes = bus->bytes_in_use;
+    (void)bus_leave(bus, locked, SS_OK, NULL);
 }
 #endif
 
 #if SS_ENABLE_PERFORMANCE_STATS
-ss_error_t ss_get_perf_stats(const char* signal_name, ss_perf_stats_t* stats) {
+ss_error_t ss_get_perf_stats(ss_bus_t* bus, const char* signal_name,
+                             ss_perf_stats_t* stats) {
     ss_error_t err = SS_OK;
     ss_signal_t* sig;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
-    sig = stats ? signal_lookup(ctx, signal_name, &err) : NULL;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
+    sig = stats ? signal_lookup(bus, signal_name, &err) : NULL;
     if (!stats) err = SS_ERR_NULL_PARAM;
     if (sig) *stats = sig->perf_stats;
-    return ctx_leave(ctx, locked, err, signal_name);
+    return bus_leave(bus, locked, err, signal_name);
 }
 
-ss_error_t ss_enable_profiling(int enabled) {
+ss_error_t ss_enable_profiling(ss_bus_t* bus, int enabled) {
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return SS_ERR_NULL_PARAM;
-    ctx->profiling_enabled = enabled;
-    return ctx_leave(ctx, locked, SS_OK, NULL);
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
+    bus->profiling_enabled = enabled;
+    return bus_leave(bus, locked, SS_OK, NULL);
 }
 
-void ss_reset_perf_stats(void) {
+void ss_reset_perf_stats(ss_bus_t* bus) {
     ss_signal_t* sig;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return;
-    for (sig = signal_next(ctx, NULL); sig; sig = signal_next(ctx, sig)) {
+    if (!bus_enter(bus, &locked)) return;
+    for (sig = signal_next(bus, NULL); sig; sig = signal_next(bus, sig)) {
         memset(&sig->perf_stats, 0, sizeof(ss_perf_stats_t));
     }
-    (void)ctx_leave(ctx, locked, SS_OK, NULL);
+    (void)bus_leave(bus, locked, SS_OK, NULL);
 }
 #endif
 
@@ -1781,55 +1773,39 @@ const char* ss_error_string(ss_error_t error) {
     }
 }
 
-void ss_set_error_handler(void (*handler)(ss_error_t error, const char* msg)) {
+void ss_set_error_handler(ss_bus_t* bus, void (*handler)(ss_error_t error, const char* msg)) {
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return;
-    ctx->error_handler = handler;
-    (void)ctx_leave(ctx, locked, SS_OK, NULL);
+    if (!bus_enter(bus, &locked)) return;
+    bus->error_handler = handler;
+    (void)bus_leave(bus, locked, SS_OK, NULL);
 }
 
-void ss_set_max_slots_per_signal(size_t max_slots) {
+void ss_set_max_slots_per_signal(ss_bus_t* bus, size_t max_slots) {
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return;
-    ctx->max_slots_per_signal = max_slots;
-    (void)ctx_leave(ctx, locked, SS_OK, NULL);
+    if (!bus_enter(bus, &locked)) return;
+    bus->max_slots_per_signal = max_slots;
+    (void)bus_leave(bus, locked, SS_OK, NULL);
 }
 
-size_t ss_get_max_slots_per_signal(void) {
+size_t ss_get_max_slots_per_signal(ss_bus_t* bus) {
     size_t max_slots;
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return 0;
-    max_slots = ctx->max_slots_per_signal;
-    (void)ctx_leave(ctx, locked, SS_OK, NULL);
+    if (!bus_enter(bus, &locked)) return 0;
+    max_slots = bus->max_slots_per_signal;
+    (void)bus_leave(bus, locked, SS_OK, NULL);
     return max_slots;
 }
 
-#if SS_ENABLE_THREAD_SAFETY
-void ss_set_thread_safe(int enabled) {
-    /* The mutex lives as long as the context; only the flag changes, and
-     * ctx_enter() records per call whether it locked. */
-    if (g_context) g_context->thread_safe = enabled ? 1 : 0;
-}
-
-int ss_is_thread_safe(void) {
-    return g_context ? g_context->thread_safe : 0;
-}
-#endif
-
 #if SS_ENABLE_DEBUG_TRACE
-void ss_enable_trace(FILE* output) {
+void ss_enable_trace(ss_bus_t* bus, FILE* output) {
     int locked;
-    ss_context_t* ctx = ctx_enter(&locked);
-    if (!ctx) return;
-    ctx->trace_output = output;
-    (void)ctx_leave(ctx, locked, SS_OK, NULL);
+    if (!bus_enter(bus, &locked)) return;
+    bus->trace_output = output;
+    (void)bus_leave(bus, locked, SS_OK, NULL);
 }
 
-void ss_disable_trace(void) {
-    ss_enable_trace(NULL);
+void ss_disable_trace(ss_bus_t* bus) {
+    ss_enable_trace(bus, NULL);
 }
 #endif
 

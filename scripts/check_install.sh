@@ -59,11 +59,12 @@ static void on_tick(const ss_data_t* data, void* user_data) {
     calls += ss_data_get_int(data, 0);
 }
 int main(void) {
-    if (ss_init_abi(SS_ABI_TAG) != SS_OK) return 1;
-    if (ss_signal_register("tick") != SS_OK) return 1;
-    if (ss_connect("tick", on_tick, NULL) != SS_OK) return 1;
-    if (ss_emit_int("tick", 2) != SS_OK) return 1;
-    ss_cleanup();
+    ss_bus_t* bus = NULL;
+    if (ss_bus_create(&bus, 0) != SS_OK) return 1;
+    if (ss_signal_register(bus, "tick") != SS_OK) return 1;
+    if (ss_connect(bus, "tick", on_tick, NULL) != SS_OK) return 1;
+    if (ss_emit_int(bus, "tick", 2) != SS_OK) return 1;
+    ss_bus_destroy(bus);
     printf("installed SS_Lib %s works\n", ss_version());
     if (strcmp(ss_version(), SS_VERSION_STRING) != 0) return 1;
     return calls == 2 ? 0 : 1;

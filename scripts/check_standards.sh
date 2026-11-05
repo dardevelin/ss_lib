@@ -68,17 +68,23 @@ static void on_release(const void* data, size_t size) {
 #endif
 int main(void) {
     ss_data_t data = SS_DATA_INIT;
-    if (ss_init_abi(SS_ABI_TAG) != SS_OK) return 1;
-    if (ss_signal_register("value") != SS_OK) return 1;
-    if (ss_connect("value", on_value, 0) != SS_OK) return 1;
-    if (ss_emit_int("value", 1) != SS_OK) return 1;
+    ss_bus_t* bus = 0;
+    static unsigned char pool[1];
+    ss_bus_t* pooled = 0;
+    if (ss_bus_create(&bus, SS_BUS_THREAD_SAFE) != SS_OK &&
+        ss_bus_create(&bus, 0) != SS_OK) return 1;
+    if (ss_bus_create_in(&pooled, pool, sizeof(pool), 0) != SS_ERR_BUFFER_TOO_SMALL) return 1;
+    if (ss_bus_pool_size() == 0) return 1;
+    if (ss_signal_register(bus, "value") != SS_OK) return 1;
+    if (ss_connect(bus, "value", on_value, 0) != SS_OK) return 1;
+    if (ss_emit_int(bus, "value", 1) != SS_OK) return 1;
     if (ss_data_set_string_ref(&data, "borrowed") != SS_OK) return 1;
-    if (ss_emit("value", &data) != SS_OK) return 1;
+    if (ss_emit(bus, "value", &data) != SS_OK) return 1;
 #if SS_ENABLE_CUSTOM_DATA
     if (ss_data_set_custom(&data, "copied", 7, on_release) != SS_OK) return 1;
 #endif
     ss_data_clear(&data);
-    ss_cleanup();
+    ss_bus_destroy(bus);
     return 0;
 }
 EOF

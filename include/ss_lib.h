@@ -38,12 +38,14 @@ typedef enum {
     SS_ERR_ALREADY_EXISTS,      /**< Signal already registered */
     SS_ERR_INVALID_TYPE,        /**< Custom data queued (deferred or batch) in a
                                      library built without SS_ENABLE_CUSTOM_DATA */
-    SS_ERR_BUFFER_TOO_SMALL,    /**< Reserved, not currently returned */
+    SS_ERR_BUFFER_TOO_SMALL,    /**< Pool too small for ss_bus_create_in() */
     SS_ERR_MAX_SLOTS,           /**< Maximum slots per signal reached */
     SS_ERR_TIMEOUT,             /**< Reserved, not currently returned */
-    SS_ERR_WOULD_OVERFLOW,      /**< Name, payload or queue exceeds a fixed limit */
+    SS_ERR_WOULD_OVERFLOW,      /**< Name, payload, queue or the built-in buses
+                                     exceed a fixed limit */
     SS_ERR_ISR_UNSAFE,          /**< Reserved, not currently returned */
-    SS_ERR_CONFIG_MISMATCH      /**< Caller's SS_ABI_TAG differs from the library's */
+    SS_ERR_CONFIG_MISMATCH      /**< Caller's SS_ABI_TAG differs from the library's,
+                                     or a bus flag the library does not support */
 } ss_error_t;
 
 /**
@@ -146,46 +148,27 @@ typedef void (*ss_slot_func_t)(const ss_data_t* data, void* user_data);
 typedef uintptr_t ss_connection_t;
 
 /**
- * @defgroup core Core Functions
- * @brief Library initialization and cleanup
+ * @defgroup core Buses
+ * @brief Creating and destroying a bus
+ *
+ * A bus holds signals, slots, the deferred queue, the default namespace
+ * and the settings below. Every function that uses library state takes
+ * the bus as its first argument; buses share nothing, so the same signal
+ * name on two buses names two signals. The library has no default bus.
  * @{
  */
 
-/**
- * @brief Initialize the library
- *
- * In dynamic mode the library context is heap-allocated; with
- * SS_USE_STATIC_MEMORY it lives in static storage (unless
- * SS_STATIC_CONTEXT is 0) and no heap is used.
- * Not thread-safe: call before other threads use the library.
- * Prefer ss_init_abi(SS_ABI_TAG), which also detects a caller built
- * against a different ss_data_t layout.
- *
- * @return SS_OK on success (also if already initialized),
- *         SS_ERR_ALREADY_EXISTS if a deferred ss_cleanup() is pending
- */
-ss_error_t ss_init(void);
+/** @brief Opaque bus; created by ss_bus_create() or ss_bus_create_in() */
+typedef struct ss_bus ss_bus_t;
 
 /**
- * @brief Initialize the library with its context in a caller-owned pool
+ * @brief ss_bus_create() flag: guard the bus with its own recursive mutex
  *
- * The pool needs no particular alignment; given at least
- * ss_get_required_pool_size() bytes it holds the library context, must
- * outlive ss_cleanup(), and is never freed. Signals and slots still
- * follow the memory model (heap in dynamic mode, fixed arrays in static
- * mode). For compatibility with 2.1, a NULL or smaller pool is ignored
- * and the call behaves like ss_init().
- *
- * @param memory_pool Caller-owned buffer
- * @param pool_size Size of the buffer in bytes
- * @return as ss_init()
+ * Needs a library built with SS_ENABLE_THREAD_SAFETY; otherwise creation
+ * returns SS_ERR_CONFIG_MISMATCH. Without the flag the bus has no mutex
+ * and must be used from one thread at a time.
  */
-ss_error_t ss_init_static(void* memory_pool, size_t pool_size);
-
-/**
- * @brief Bytes needed by ss_init_static(), including alignment slack
- */
-size_t ss_get_required_pool_size(void);
+#define SS_BUS_THREAD_SAFE 0x1u
 
 /** @brief Revision of the public layouts, bumped when one changes (1 to 15) */
 #define SS_ABI_REVISION 1
@@ -197,31 +180,65 @@ size_t ss_get_required_pool_size(void);
  * No configuration macro changes a public layout, so the tag differs only
  * when the caller and the library come from different versions or were
  * compiled with options that change layouts (such as -fshort-enums or
- * structure packing). It fits a 16-bit size_t.
+ * structure packing). It fits a 16-bit size_t. The ss_bus_create macros
+ * pass it, so every bus creation checks it.
  */
 #define SS_ABI_TAG ((size_t)(sizeof(ss_data_t) * 16u + SS_ABI_REVISION))
 
 /**
- * @brief ss_init() that first checks the caller's SS_ABI_TAG
+ * @brief Create a bus: call as ss_bus_create(&bus, flags)
  *
- * Call as ss_init_abi(SS_ABI_TAG). Returns SS_ERR_CONFIG_MISMATCH when
- * the caller's tag differs from the library's (see SS_ABI_TAG), which
- * would otherwise corrupt memory later.
+ * In dynamic mode the bus is allocated with SS_CALLOC. With
+ * SS_USE_STATIC_MEMORY it is one of SS_STATIC_BUSES built-in buses and no
+ * heap is used; claiming and releasing built-in buses is not locked, so
+ * create and destroy them from one thread (normally at startup).
+ *
+ * @param bus Receives the bus, or NULL on failure
+ * @param flags 0 or SS_BUS_THREAD_SAFE
+ * @param abi_tag SS_ABI_TAG as the caller sees it (the macro passes it)
+ * @return SS_OK, SS_ERR_NULL_PARAM, SS_ERR_MEMORY, SS_ERR_WOULD_OVERFLOW
+ *         (static mode: every built-in bus is in use) or
+ *         SS_ERR_CONFIG_MISMATCH (abi_tag differs from the library's, or a
+ *         flag the library does not support)
  */
-ss_error_t ss_init_abi(size_t abi_tag);
-
-/** @brief ss_init_static() that first checks the caller's SS_ABI_TAG */
-ss_error_t ss_init_static_abi(void* memory_pool, size_t pool_size, size_t abi_tag);
+ss_error_t ss_bus_create_abi(ss_bus_t** bus, unsigned int flags, size_t abi_tag);
 
 /**
- * @brief Clean up all resources and reset the library
+ * @brief Create a bus in caller memory: call as
+ * ss_bus_create_in(&bus, pool, pool_size, flags)
  *
- * Releases signals, slots, pending deferred and ISR events. Called from
- * inside a slot, the cleanup is deferred until the outermost emission
- * returns, and the library behaves as uninitialized meanwhile. Not
- * thread-safe with respect to other threads using the library.
+ * Works in both memory modes. The pool needs no particular alignment;
+ * ss_bus_pool_size() bytes always suffice. It must outlive the bus and is
+ * never freed by the library. Signals and slots still follow the memory
+ * model (heap in dynamic mode, the bus's fixed arrays in static mode).
+ *
+ * @return as ss_bus_create_abi(), plus SS_ERR_NULL_PARAM for a NULL pool
+ *         and SS_ERR_BUFFER_TOO_SMALL for a pool that is too small
  */
-void ss_cleanup(void);
+ss_error_t ss_bus_create_in_abi(ss_bus_t** bus, void* pool, size_t pool_size,
+                                unsigned int flags, size_t abi_tag);
+
+/** @brief Create a bus, checking the caller's SS_ABI_TAG (see ss_bus_create_abi()) */
+#define ss_bus_create(bus, flags) ss_bus_create_abi((bus), (flags), SS_ABI_TAG)
+
+/** @brief Create a bus in a caller pool, checking the caller's SS_ABI_TAG */
+#define ss_bus_create_in(bus, pool, size, flags) \
+    ss_bus_create_in_abi((bus), (pool), (size), (flags), SS_ABI_TAG)
+
+/** @brief Pool size for ss_bus_create_in(), including alignment slack */
+size_t ss_bus_pool_size(void);
+
+/**
+ * @brief Destroy a bus and everything it holds
+ *
+ * Releases signals, slots and pending deferred emissions. NULL is a no-op.
+ * Called from a slot, the destruction is deferred until the bus's
+ * outermost call returns; meanwhile the bus refuses every call
+ * (SS_ERR_NULL_PARAM). Afterwards the bus must not be used, like memory
+ * after free(). Destroy batches created for the bus first. Not
+ * thread-safe with respect to other threads using the same bus.
+ */
+void ss_bus_destroy(ss_bus_t* bus);
 
 /** @brief Runtime version string, equal to SS_VERSION_STRING */
 const char* ss_version(void);
@@ -239,7 +256,7 @@ const char* ss_version(void);
  * @param signal_name Unique name for the signal
  * @return SS_OK on success, SS_ERR_ALREADY_EXISTS if signal exists
  */
-ss_error_t ss_signal_register(const char* signal_name);
+ss_error_t ss_signal_register(ss_bus_t* bus, const char* signal_name);
 
 /**
  * @brief Register a signal with extended options
@@ -248,9 +265,8 @@ ss_error_t ss_signal_register(const char* signal_name);
  * @param priority Default priority for this signal
  * @return SS_OK on success, error code on failure
  */
-ss_error_t ss_signal_register_ex(const char* signal_name, 
-                                const char* description,
-                                ss_priority_t priority);
+ss_error_t ss_signal_register_ex(ss_bus_t* bus, const char* signal_name,
+                                 const char* description, ss_priority_t priority);
 
 /**
  * @brief Unregister a signal and disconnect all slots
@@ -261,14 +277,14 @@ ss_error_t ss_signal_register_ex(const char* signal_name,
  * @param signal_name Name of the signal to remove
  * @return SS_OK on success, SS_ERR_NOT_FOUND if signal doesn't exist
  */
-ss_error_t ss_signal_unregister(const char* signal_name);
+ss_error_t ss_signal_unregister(ss_bus_t* bus, const char* signal_name);
 
 /**
  * @brief Check if a signal exists
  * @param signal_name Name of the signal
  * @return 1 if exists, 0 otherwise
  */
-int ss_signal_exists(const char* signal_name);
+int ss_signal_exists(ss_bus_t* bus, const char* signal_name);
 
 /** @} */
 
@@ -285,7 +301,8 @@ int ss_signal_exists(const char* signal_name);
  * @param user_data User data passed to slot function
  * @return SS_OK on success, error code on failure
  */
-ss_error_t ss_connect(const char* signal_name, ss_slot_func_t slot, void* user_data);
+ss_error_t ss_connect(ss_bus_t* bus, const char* signal_name, ss_slot_func_t slot,
+                      void* user_data);
 
 /**
  * @brief Connect a slot with extended options
@@ -296,9 +313,9 @@ ss_error_t ss_connect(const char* signal_name, ss_slot_func_t slot, void* user_d
  * @param handle Optional output for connection handle
  * @return SS_OK on success, error code on failure
  */
-ss_error_t ss_connect_ex(const char* signal_name, ss_slot_func_t slot, 
-                        void* user_data, ss_priority_t priority,
-                        ss_connection_t* handle);
+ss_error_t ss_connect_ex(ss_bus_t* bus, const char* signal_name, ss_slot_func_t slot,
+                         void* user_data, ss_priority_t priority,
+                         ss_connection_t* handle);
 
 /**
  * @brief Disconnect a specific slot from a signal
@@ -306,21 +323,21 @@ ss_error_t ss_connect_ex(const char* signal_name, ss_slot_func_t slot,
  * @param slot Function to disconnect
  * @return SS_OK on success, SS_ERR_NOT_FOUND if not connected
  */
-ss_error_t ss_disconnect(const char* signal_name, ss_slot_func_t slot);
+ss_error_t ss_disconnect(ss_bus_t* bus, const char* signal_name, ss_slot_func_t slot);
 
 /**
  * @brief Disconnect using a connection handle
  * @param handle Connection handle from ss_connect_ex()
  * @return SS_OK on success, SS_ERR_NOT_FOUND if invalid handle
  */
-ss_error_t ss_disconnect_handle(ss_connection_t handle);
+ss_error_t ss_disconnect_handle(ss_bus_t* bus, ss_connection_t handle);
 
 /**
  * @brief Disconnect all slots from a signal
  * @param signal_name Name of the signal
  * @return SS_OK on success, error code on failure
  */
-ss_error_t ss_disconnect_all(const char* signal_name);
+ss_error_t ss_disconnect_all(ss_bus_t* bus, const char* signal_name);
 
 /** @} */
 
@@ -336,14 +353,14 @@ ss_error_t ss_disconnect_all(const char* signal_name);
  * @param data Data to pass to slots (can be NULL)
  * @return SS_OK on success, error code on failure
  */
-ss_error_t ss_emit(const char* signal_name, const ss_data_t* data);
+ss_error_t ss_emit(ss_bus_t* bus, const char* signal_name, const ss_data_t* data);
 
 /**
  * @brief Emit a signal without data
  * @param signal_name Name of the signal to emit
  * @return SS_OK on success, error code on failure
  */
-ss_error_t ss_emit_void(const char* signal_name);
+ss_error_t ss_emit_void(ss_bus_t* bus, const char* signal_name);
 
 /**
  * @brief Emit a signal with integer data
@@ -351,7 +368,7 @@ ss_error_t ss_emit_void(const char* signal_name);
  * @param value Integer value to pass
  * @return SS_OK on success, error code on failure
  */
-ss_error_t ss_emit_int(const char* signal_name, int value);
+ss_error_t ss_emit_int(ss_bus_t* bus, const char* signal_name, int value);
 
 /**
  * @brief Emit a signal with float data
@@ -359,7 +376,7 @@ ss_error_t ss_emit_int(const char* signal_name, int value);
  * @param value Float value to pass
  * @return SS_OK on success, error code on failure
  */
-ss_error_t ss_emit_float(const char* signal_name, float value);
+ss_error_t ss_emit_float(ss_bus_t* bus, const char* signal_name, float value);
 
 /**
  * @brief Emit a signal with double data
@@ -367,7 +384,7 @@ ss_error_t ss_emit_float(const char* signal_name, float value);
  * @param value Double value to pass
  * @return SS_OK on success, error code on failure
  */
-ss_error_t ss_emit_double(const char* signal_name, double value);
+ss_error_t ss_emit_double(ss_bus_t* bus, const char* signal_name, double value);
 
 /**
  * @brief Emit a signal with string data
@@ -375,7 +392,7 @@ ss_error_t ss_emit_double(const char* signal_name, double value);
  * @param value String value to pass (must be null-terminated)
  * @return SS_OK on success, error code on failure
  */
-ss_error_t ss_emit_string(const char* signal_name, const char* value);
+ss_error_t ss_emit_string(ss_bus_t* bus, const char* signal_name, const char* value);
 
 /**
  * @brief Emit a signal with pointer data
@@ -383,7 +400,7 @@ ss_error_t ss_emit_string(const char* signal_name, const char* value);
  * @param value Pointer value to pass
  * @return SS_OK on success, error code on failure
  */
-ss_error_t ss_emit_pointer(const char* signal_name, void* value);
+ss_error_t ss_emit_pointer(ss_bus_t* bus, const char* signal_name, void* value);
 
 /** @} */
 
@@ -394,7 +411,8 @@ ss_error_t ss_emit_pointer(const char* signal_name, void* value);
  * No locks, no allocation, no slot calls: the event is stored in a
  * fixed queue of SS_ISR_QUEUE_SIZE entries and delivered later by
  * ss_process_isr_queue(). Safe with nested interrupts and from several
- * threads. Usable before ss_init().
+ * threads. The queue is shared by every bus and usable before any bus
+ * exists; an event goes to the bus that next processes the queue.
  *
  * @return SS_OK, SS_ERR_NULL_PARAM, or SS_ERR_WOULD_OVERFLOW if the
  *         queue is full or the name exceeds SS_MAX_SIGNAL_NAME_LENGTH-1
@@ -402,15 +420,16 @@ ss_error_t ss_emit_pointer(const char* signal_name, void* value);
 ss_error_t ss_emit_from_isr(const char* signal_name, int value);
 
 /**
- * @brief Deliver queued ISR events, oldest first, from normal context
+ * @brief Deliver queued ISR events to bus, oldest first, from normal context
  *
- * Call regularly from the main loop. Names are resolved against the
- * default namespace at delivery time.
+ * Call regularly from the main loop. Names are resolved against the bus's
+ * default namespace at delivery time. Events stay queued when a bus is
+ * destroyed.
  *
- * @return SS_OK, SS_ERR_NULL_PARAM if not initialized, or the last
+ * @return SS_OK, SS_ERR_NULL_PARAM for a NULL or closing bus, or the last
  *         emission error (e.g. SS_ERR_NOT_FOUND for unknown signals)
  */
-ss_error_t ss_process_isr_queue(void);
+ss_error_t ss_process_isr_queue(ss_bus_t* bus);
 #endif
 
 /**
@@ -427,7 +446,7 @@ ss_error_t ss_process_isr_queue(void);
  *         payload is too long, or SS_ERR_INVALID_TYPE for custom data in
  *         a library built without SS_ENABLE_CUSTOM_DATA
  */
-ss_error_t ss_emit_deferred(const char* signal_name, const ss_data_t* data);
+ss_error_t ss_emit_deferred(ss_bus_t* bus, const char* signal_name, const ss_data_t* data);
 
 /**
  * @brief Emit every queued deferred emission, oldest first
@@ -436,7 +455,7 @@ ss_error_t ss_emit_deferred(const char* signal_name, const ss_data_t* data);
  *
  * @return SS_OK, or the last emission error
  */
-ss_error_t ss_flush_deferred(void);
+ss_error_t ss_flush_deferred(ss_bus_t* bus);
 
 /**
  * @defgroup data Data Objects
@@ -541,7 +560,7 @@ typedef struct ss_signal_info {
     ss_priority_t priority;
 } ss_signal_info_t;
 
-size_t ss_get_signal_count(void);
+size_t ss_get_signal_count(ss_bus_t* bus);
 
 /**
  * @brief Snapshot of all registered signals
@@ -550,7 +569,7 @@ size_t ss_get_signal_count(void);
  * and stay valid after the signals change; release them with
  * ss_free_signal_list(). Allocates in both memory modes.
  */
-ss_error_t ss_get_signal_list(ss_signal_info_t** list, size_t* count);
+ss_error_t ss_get_signal_list(ss_bus_t* bus, ss_signal_info_t** list, size_t* count);
 void ss_free_signal_list(ss_signal_info_t* list, size_t count);
 #endif
 
@@ -566,8 +585,8 @@ typedef struct ss_memory_stats {
     size_t string_bytes;
 } ss_memory_stats_t;
 
-ss_error_t ss_get_memory_stats(ss_memory_stats_t* stats);
-void ss_reset_memory_stats(void);
+ss_error_t ss_get_memory_stats(ss_bus_t* bus, ss_memory_stats_t* stats);
+void ss_reset_memory_stats(ss_bus_t* bus);
 #endif
 
 #if SS_ENABLE_PERFORMANCE_STATS
@@ -580,31 +599,27 @@ typedef struct ss_perf_stats {
     uint64_t min_time_ns;
 } ss_perf_stats_t;
 
-ss_error_t ss_get_perf_stats(const char* signal_name, ss_perf_stats_t* stats);
-ss_error_t ss_enable_profiling(int enabled);
-void ss_reset_perf_stats(void);
+ss_error_t ss_get_perf_stats(ss_bus_t* bus, const char* signal_name,
+                             ss_perf_stats_t* stats);
+ss_error_t ss_enable_profiling(ss_bus_t* bus, int enabled);
+void ss_reset_perf_stats(ss_bus_t* bus);
 #endif
 
 /* Error handling */
 const char* ss_error_string(ss_error_t error);
-void ss_set_error_handler(void (*handler)(ss_error_t error, const char* msg));
 
-/* Configuration */
-void ss_set_max_slots_per_signal(size_t max_slots);
-size_t ss_get_max_slots_per_signal(void);
-
-#if SS_ENABLE_THREAD_SAFETY
 /**
- * @brief Turn locking on or off (off by default)
+ * @brief Set the bus's error handler (NULL removes it)
  *
- * All library state is guarded by one recursive mutex, so slots may call
- * back into the library. Slots run with the mutex held: a slot must not
- * wait for another thread that is itself calling the library. Change
- * the setting only while no other thread is using the library.
+ * Called, after the bus is unlocked, with every error a call on this bus
+ * returns. Errors of calls given no bus (a NULL bus or batch) reach no
+ * handler.
  */
-void ss_set_thread_safe(int enabled);
-int ss_is_thread_safe(void);
-#endif
+void ss_set_error_handler(ss_bus_t* bus, void (*handler)(ss_error_t error, const char* msg));
+
+/* Configuration: limit of live slots per signal on this bus */
+void ss_set_max_slots_per_signal(ss_bus_t* bus, size_t max_slots);
+size_t ss_get_max_slots_per_signal(ss_bus_t* bus);
 
 /**
  * @brief Set the default namespace (NULL or "" clears it)
@@ -613,43 +628,54 @@ int ss_is_thread_safe(void);
  * all functions that take a signal name. Names containing "::" are used
  * as given.
  *
- * @return SS_OK, SS_ERR_NULL_PARAM if not initialized, or
+ * @return SS_OK, SS_ERR_NULL_PARAM for a NULL bus, or
  *         SS_ERR_WOULD_OVERFLOW if ns cannot prefix any valid name
  */
-ss_error_t ss_set_namespace(const char* ns);
+ss_error_t ss_set_namespace(ss_bus_t* bus, const char* ns);
 
 /**
  * @brief Current default namespace, or NULL; valid until the next change
  *
- * The string is the library's own buffer: with several threads, read it
- * only while no other thread can call ss_set_namespace().
+ * The string is the bus's own buffer: with several threads, read it
+ * only while no other thread can call ss_set_namespace() on the bus.
  */
-const char* ss_get_namespace(void);
+const char* ss_get_namespace(ss_bus_t* bus);
 
 /** @brief Emit "ns::signal_name" regardless of the default namespace */
-ss_error_t ss_emit_namespaced(const char* ns, const char* signal_name,
+ss_error_t ss_emit_namespaced(ss_bus_t* bus, const char* ns, const char* signal_name,
                               const ss_data_t* data);
 
 /*
- * Batch operations. A batch stores copies of its payloads like the
- * deferred queue, and ss_batch_add() returns the same errors as
+ * Batch operations. A batch belongs to the bus it was created for: that
+ * bus supplies the default namespace when entries are added, runs the
+ * emission and reports errors. A batch stores copies of its payloads like
+ * the deferred queue, and ss_batch_add() returns the same errors as
  * ss_emit_deferred(). A batch is owned by the caller and must not be used
  * from several threads at once; slots may add to it or destroy it while
  * it is being emitted.
  */
 typedef struct ss_batch ss_batch_t;
 
-ss_batch_t* ss_batch_create(void);
+/** @brief A batch for bus (heap, in both modes), or NULL */
+ss_batch_t* ss_batch_create(ss_bus_t* bus);
+
+/**
+ * @brief Free a batch and its pending entries; NULL is a no-op
+ *
+ * Destroy batches before their bus. ss_batch_destroy() itself does not use
+ * the bus, so a batch whose bus was destroyed from one of its slots can
+ * still be destroyed; no other batch call may follow.
+ */
 void ss_batch_destroy(ss_batch_t* batch);
 ss_error_t ss_batch_add(ss_batch_t* batch, const char* signal_name,
                        const ss_data_t* data);
 ss_error_t ss_batch_emit(ss_batch_t* batch);
 
-/* Debug support: trace is off until ss_enable_trace() names a stream */
+/* Debug support: a bus's trace is off until ss_enable_trace() names a stream */
 #if SS_ENABLE_DEBUG_TRACE
 #include <stdio.h>
-void ss_enable_trace(FILE* output);
-void ss_disable_trace(void);
+void ss_enable_trace(ss_bus_t* bus, FILE* output);
+void ss_disable_trace(ss_bus_t* bus);
 #endif
 
 #ifdef __cplusplus
