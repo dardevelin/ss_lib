@@ -24,19 +24,24 @@ typedef enum {
     SS_ERR_MEMORY,          /* Memory allocation failed */
     SS_ERR_NOT_FOUND,       /* Signal or slot not found */
     SS_ERR_ALREADY_EXISTS,  /* Signal already registered */
-    SS_ERR_INVALID_TYPE,    /* Reserved, not currently returned */
+    SS_ERR_INVALID_TYPE,    /* Custom data queued without SS_ENABLE_CUSTOM_DATA */
     SS_ERR_BUFFER_TOO_SMALL,/* Reserved, not currently returned */
     SS_ERR_MAX_SLOTS,       /* Maximum slots per signal reached */
     SS_ERR_TIMEOUT,         /* Reserved, not currently returned */
     SS_ERR_WOULD_OVERFLOW,  /* Name, payload or queue exceeds a fixed limit */
     SS_ERR_ISR_UNSAFE,      /* Reserved, not currently returned */
-    SS_ERR_CONFIG_MISMATCH  /* Caller and library built with different flags */
+    SS_ERR_CONFIG_MISMATCH  /* Caller's SS_ABI_TAG differs from the library's */
 } ss_error_t;
 ```
 
 Functions that need an initialized library return `SS_ERR_NULL_PARAM` (or 0 / NULL) when it is not initialized.
 
 ## Data Types
+
+Every public struct has the same size and member offsets, and every enum the
+same values, in every configuration: feature flags only decide which
+functions are declared. `make check-abi` (`scripts/check_abi.sh`) verifies
+this for each configuration the project tests.
 
 ### ss_data_type_t
 
@@ -48,9 +53,11 @@ typedef enum {
     SS_TYPE_DOUBLE,     /* Double */
     SS_TYPE_STRING,     /* Null-terminated string */
     SS_TYPE_POINTER,    /* Generic pointer */
-    SS_TYPE_CUSTOM      /* Custom data with size (requires SS_ENABLE_CUSTOM_DATA) */
+    SS_TYPE_CUSTOM      /* Custom data with size (value.custom) */
 } ss_data_type_t;
 ```
+
+`SS_TYPE_CUSTOM` is declared in every configuration. The custom data functions need `SS_ENABLE_CUSTOM_DATA`, and a library built without it refuses to queue custom data (`SS_ERR_INVALID_TYPE` from `ss_emit_deferred()` and `ss_batch_add()`). `ss_emit()` passes any object on to the slots unchanged.
 
 ### ss_priority_t
 
@@ -75,21 +82,24 @@ typedef struct ss_data {
         double d_val;
         const char* s_val;
         void* p_val;
+        struct {
+            void* ptr;
+            size_t size;
+            ss_cleanup_func_t cleanup;   /* only for an owned copy */
+        } custom;                        /* SS_TYPE_CUSTOM */
     } value;
-    /* If SS_ENABLE_CUSTOM_DATA: */
-    size_t size;
-    void* custom_data;
-    ss_cleanup_func_t custom_cleanup;
-} ss_data_t;
+} ss_data_t;                             /* same layout in every configuration */
 
-#define SS_DATA_INIT { SS_TYPE_VOID, 0, { 0 }, ... }  /* empty object */
+#define SS_DATA_INIT { SS_TYPE_VOID, 0, { 0 } }  /* empty object */
 ```
+
+`sizeof(ss_data_t)` is 32 bytes on 64-bit hosts and 24 on 32-bit Arm (Cortex-M), whatever the configuration. Custom data is in `value.custom`; read it with `ss_data_get_custom()` rather than the fields.
 
 **Ownership:** the `owned` field records whether the object owns its string or custom payload. Callers read it but never write it.
 - Only the copying setters, `ss_data_set_string()` and `ss_data_set_custom()`, set `owned`. The copy belongs to the object and is freed exactly once: by the next `ss_data_set_*` call, by `ss_data_clear()`, or by `ss_data_destroy()`.
 - Everything else borrows and leaves `owned` at 0: direct field writes, `ss_data_set_string_ref()` / `ss_data_set_custom_ref()`, the `ss_emit_*` helpers, and the data slots receive (also when the emitter's object owns its payload, and for deferred and batch copies). The library never frees a borrowed payload, so misusing a borrowed object leaks at worst.
 - Start every object from `SS_DATA_INIT` or `ss_data_init()`; `ss_data_create()` returns an initialized one. Release a stack object that used a copying setter with `ss_data_clear()` before it goes out of scope. Do not write the payload fields of an object by hand while it owns its payload: clear it first.
-- `custom_cleanup` is called once with the library's copy of the custom data (read-only) and its size, just before the library frees it, so it can release resources the copy refers to. It must not free the pointer itself.
+- `value.custom.cleanup` is called once with the library's copy of the custom data (read-only) and its size, just before the library frees it, so it can release resources the copy refers to. It must not free the pointer itself.
 
 ### ss_signal_info_t
 
@@ -191,12 +201,13 @@ Bytes needed by `ss_init_static()` for the current configuration, including alig
 ### ABI check
 
 ```c
-#define SS_ABI_TAG ((size_t)sizeof(ss_data_t))
+#define SS_ABI_REVISION 1   /* bumped when a public layout changes */
+#define SS_ABI_TAG ((size_t)(sizeof(ss_data_t) * 16u + SS_ABI_REVISION))
 ss_error_t ss_init_abi(size_t abi_tag);
 ss_error_t ss_init_static_abi(void* memory_pool, size_t pool_size, size_t abi_tag);
 ```
 
-Opt-in versions of `ss_init()` and `ss_init_static()` that first compare the caller's `SS_ABI_TAG` with the library's. Always pass `SS_ABI_TAG`. `SS_ABI_TAG` describes the configuration-dependent ABI as the caller sees it (currently the size of `ss_data_t`, which `SS_ENABLE_CUSTOM_DATA` changes). A program built with different flags than the library gets `SS_ERR_CONFIG_MISMATCH` instead of memory corruption later; otherwise they behave and return exactly like `ss_init()` / `ss_init_static()`. Recommended for new code. Other flag differences are not detected, so build the library and every caller with the same configuration.
+Opt-in versions of `ss_init()` and `ss_init_static()` that first compare the caller's `SS_ABI_TAG` with the library's. Always pass `SS_ABI_TAG`. The tag combines `SS_ABI_REVISION` with `sizeof(ss_data_t)` as the caller's compilation sees it, and fits a 16-bit `size_t`. Configuration macros no longer change public layouts, so the tag catches what they cannot: a header from another version, and compiler options that change layouts, such as `-fshort-enums` or structure packing. A mismatch returns `SS_ERR_CONFIG_MISMATCH` instead of corrupting memory later; otherwise they behave and return exactly like `ss_init()` / `ss_init_static()`. Recommended for new code. Feature flags must still be the same for the library and every caller, because they decide which functions are declared: a difference shows up as a compile or link error.
 
 ### ss_cleanup
 
@@ -478,7 +489,7 @@ Queue a signal for later emission in a FIFO of `SS_DEFERRED_QUEUE_SIZE` entries.
 
 The queue stores a copy of the payload: string and custom data are copied (the custom cleanup function is not called for the copy, which slots see as borrowed data), so the caller may free or clear its data right away. Pointer data is stored as the pointer value only. In static mode string and custom payloads must fit `SS_DEFERRED_PAYLOAD_SIZE` bytes (strings including the terminator); the copy is aligned like `malloc` memory (for any standard type, and `__int128` with GCC/Clang). Pending entries are released by `ss_cleanup()`.
 
-**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if the name is NULL or empty or the library is not initialized, `SS_ERR_MEMORY` if the payload copy cannot be allocated (dynamic mode), `SS_ERR_WOULD_OVERFLOW` if the queue is full or the name or payload is too long.
+**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if the name is NULL or empty or the library is not initialized, `SS_ERR_MEMORY` if the payload copy cannot be allocated (dynamic mode), `SS_ERR_WOULD_OVERFLOW` if the queue is full or the name or payload is too long, `SS_ERR_INVALID_TYPE` for `SS_TYPE_CUSTOM` data in a library built without `SS_ENABLE_CUSTOM_DATA` (it cannot copy the payload).
 
 ### ss_flush_deferred
 
@@ -515,7 +526,7 @@ ss_error_t ss_batch_add(ss_batch_t* batch, const char* signal_name,
 
 Add a signal emission to the batch. The name is resolved against the default namespace when added; the payload is copied.
 
-**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if batch or name is NULL or the batch is being destroyed, `SS_ERR_MEMORY` if the payload copy cannot be allocated, `SS_ERR_WOULD_OVERFLOW` if the batch is full or the name or payload is too long.
+**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if batch or name is NULL or the batch is being destroyed, `SS_ERR_MEMORY` if the payload copy cannot be allocated, `SS_ERR_WOULD_OVERFLOW` if the batch is full or the name or payload is too long, `SS_ERR_INVALID_TYPE` for `SS_TYPE_CUSTOM` data in a library built without `SS_ENABLE_CUSTOM_DATA`.
 
 ### ss_batch_emit
 
@@ -906,7 +917,7 @@ Disable debug trace output.
 | `SS_STATIC_CONTEXT` | 1 | Static mode: 1 = `ss_init()` uses a context in `.bss`; 0 = no built-in context, `ss_init()` uses `SS_CALLOC` |
 | `SS_ENABLE_THREAD_SAFETY` | 1 | Enable mutex infrastructure |
 | `SS_ENABLE_INTROSPECTION` | 1 | Enable signal listing |
-| `SS_ENABLE_CUSTOM_DATA` | 1 | Enable custom data types |
+| `SS_ENABLE_CUSTOM_DATA` | 1 | Custom data functions and queuing of `SS_TYPE_CUSTOM` |
 | `SS_ENABLE_PERFORMANCE_STATS` | 0 | Enable timing statistics |
 | `SS_ENABLE_MEMORY_STATS` | 0 | Enable memory tracking |
 | `SS_ENABLE_DEBUG_TRACE` | 0 | Enable debug trace output |
@@ -926,7 +937,7 @@ Disable debug trace output.
 | `SS_EMBEDDED_BUILD` | undefined | Static memory, no threading, 10 slots per signal, deferred queue of 16 |
 | `SS_TRACE(...)` | defined | Deprecated, kept for source compatibility; not used by the library |
 
-Configuration must be identical for the library and every caller; pass it on the command line. See the [Configuration Guide](configuration.md).
+No macro changes a public type layout or enum value. Configuration must still be identical for the library and every caller, because it decides which functions are declared and the library's limits; pass it on the command line. See the [Configuration Guide](configuration.md).
 
 ## Thread Safety
 

@@ -91,7 +91,7 @@ In 3.0 an `ss_data_t` records ownership in `owned`, set only by the copying sett
 
 **Look for:**
 - An `ss_data_t` used without `SS_DATA_INIT`, `ss_data_init()` or `ss_data_create()` (for example `ss_data_t d; d.type = ...;` then a setter or `ss_data_clear()`): `owned` holds garbage, so the library may free a pointer it never allocated.
-- Direct assignment of `value.s_val` or `custom_data` on an object that currently owns its payload (after `ss_data_set_string`/`_custom`): the next setter, clear or destroy frees the caller's pointer, and the copy leaks. Clear first, or use the `_ref` setters.
+- Direct assignment of `value.s_val` or `value.custom.ptr` on an object that currently owns its payload (after `ss_data_set_string`/`_custom`): the next setter, clear or destroy frees the caller's pointer, and the copy leaks. Clear first, or use the `_ref` setters.
 - Writing `owned` by hand.
 - A cleanup that frees the pointer it receives, or casts away the `const` to modify or free it.
 - 2.x code that relied on `ss_data_destroy()` freeing a hand-written `s_val` on an `ss_data_create()` object: in 3.0 that string is borrowed and leaks.
@@ -190,7 +190,7 @@ ss_connect_ex("sig", slot, user_data, SS_PRIORITY_HIGH, &handle);
 
 **Look for:** `#define SS_ENABLE_*`, `SS_USE_STATIC_MEMORY`, `SS_MINIMAL_BUILD`/`SS_EMBEDDED_BUILD` or limit macros in a source file before `#include "ss_lib.h"`; build files where the library and the application get different `-D` flags; initialization through plain `ss_init()` / `ss_init_static()` in new code, or an unchecked init result.
 
-**Consequence:** Public types differ between library and caller (e.g. `SS_ENABLE_CUSTOM_DATA` changes `ss_data_t`), which corrupts memory. Plain `ss_init()` does not check; `ss_init_abi(SS_ABI_TAG)` / `ss_init_static_abi(..., SS_ABI_TAG)` detect an `ss_data_t` layout mismatch and return `SS_ERR_CONFIG_MISMATCH`. The tag only covers the `ss_data_t` layout, so other differences (limits, memory mode) go undetected and the caller's assumptions (e.g. name length limits) are wrong.
+**Consequence:** Since 3.0 no flag changes a public type layout or enum value, so a feature-flag mismatch shows up as a compile or link error (a function the library lacks) rather than memory corruption. Limits (`SS_MAX_SIGNAL_NAME_LENGTH`, queue sizes) and the memory mode still differ silently, so the caller's assumptions (e.g. name length limits) are wrong. `ss_init_abi(SS_ABI_TAG)` / `ss_init_static_abi(..., SS_ABI_TAG)` return `SS_ERR_CONFIG_MISMATCH` when the caller's `sizeof(ss_data_t)` or `SS_ABI_REVISION` differs (a header from another version, `-fshort-enums`, packing); plain `ss_init()` does not check. A library built without custom data returns `SS_ERR_INVALID_TYPE` when `SS_TYPE_CUSTOM` data is queued.
 
 **Fix:** Pass every option on the command line, identically for the library and all callers (CMake exports them as PUBLIC compile definitions of `ss_lib::ss_lib`). Initialize with `ss_init_abi(SS_ABI_TAG)` and check the result.
 
@@ -344,13 +344,13 @@ When reviewing code, verify that features used are enabled at compile time:
 |----------|--------------|---------|
 | `ss_set_thread_safe()`, `ss_is_thread_safe()` | `SS_ENABLE_THREAD_SAFETY` | 1 (on) |
 | `ss_get_signal_count()`, `ss_get_signal_list()`, `ss_free_signal_list()` | `SS_ENABLE_INTROSPECTION` | 1 (on) |
-| `SS_TYPE_CUSTOM`, `ss_data_set_custom()`, `ss_data_set_custom_ref()`, `ss_data_get_custom()` | `SS_ENABLE_CUSTOM_DATA` | 1 (on) |
+| `ss_data_set_custom()`, `ss_data_set_custom_ref()`, `ss_data_get_custom()`, queuing `SS_TYPE_CUSTOM` data | `SS_ENABLE_CUSTOM_DATA` | 1 (on) |
 | `ss_get_perf_stats()`, `ss_enable_profiling()`, `ss_reset_perf_stats()` | `SS_ENABLE_PERFORMANCE_STATS` | 0 (off) |
 | `ss_get_memory_stats()`, `ss_reset_memory_stats()` | `SS_ENABLE_MEMORY_STATS` | 0 (off) |
 | `ss_enable_trace()`, `ss_disable_trace()` | `SS_ENABLE_DEBUG_TRACE` | 0 (off) |
 | `ss_emit_from_isr()`, `ss_process_isr_queue()` | `SS_ENABLE_ISR_SAFE` | 0 (off) |
 
-Code using disabled features will fail to compile (linker errors for functions, or compile errors for `SS_TYPE_CUSTOM`). The `SS_MINIMAL_BUILD` preset disables thread safety, introspection, custom data, performance stats, and memory stats. The `SS_EMBEDDED_BUILD` preset enables static memory, disables thread safety, and sets max slots per signal to 10 and the deferred queue to 16. Flags must be identical for the library and the application (see check 15).
+Code using disabled features will fail to compile or link. `SS_TYPE_CUSTOM` and `value.custom` exist in every configuration; without custom data, `ss_emit_deferred()` and `ss_batch_add()` return `SS_ERR_INVALID_TYPE` for it. The `SS_MINIMAL_BUILD` preset disables thread safety, introspection, custom data, performance stats, and memory stats. The `SS_EMBEDDED_BUILD` preset enables static memory, disables thread safety, and sets max slots per signal to 10 and the deferred queue to 16. Flags must be identical for the library and the application (see check 15).
 
 ## Memory Model Verification
 

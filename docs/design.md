@@ -78,7 +78,7 @@ ISR-safe mode provides:
 
 ### Configuration Consistency (ABI Check)
 
-Feature flags change public types (`SS_ENABLE_CUSTOM_DATA` changes `ss_data_t`). A program compiled with different flags than the library would silently corrupt memory. `ss_init_abi(SS_ABI_TAG)` / `ss_init_static_abi(pool, size, SS_ABI_TAG)` pass the caller's `sizeof(ss_data_t)` to the library, which returns `SS_ERR_CONFIG_MISMATCH` on a difference; they are the recommended initialization for new code. The check is opt-in because turning `ss_init()` into a macro could break existing code that re-declares it, which a minor release must not do. Configuration must be identical for the library and every caller.
+In 2.x feature flags changed public types (`SS_ENABLE_CUSTOM_DATA` changed `ss_data_t`), so a program compiled with different flags than the library silently corrupted memory. Since 3.0 no flag changes a public layout or enum value (`make check-abi` enforces it); flags only gate function declarations, so a mismatch is a compile or link error. `ss_init_abi(SS_ABI_TAG)` / `ss_init_static_abi(pool, size, SS_ABI_TAG)` pass the caller's `sizeof(ss_data_t)` and `SS_ABI_REVISION` to the library, which returns `SS_ERR_CONFIG_MISMATCH` on a difference (a header from another version, or layout-changing compiler options); they are the recommended initialization for new code. The check is opt-in because turning `ss_init()` into a macro could break existing code that re-declares it, which a minor release must not do. Configuration must be identical for the library and every caller.
 
 ## Performance Considerations
 
