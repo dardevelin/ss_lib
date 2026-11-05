@@ -50,11 +50,24 @@ static void on_value(const ss_data_t* data, void* user_data) {
     (void)data;
     (void)user_data;
 }
+#if SS_ENABLE_CUSTOM_DATA
+static void on_release(const void* data, size_t size) {
+    (void)data;
+    (void)size;
+}
+#endif
 int main(void) {
+    ss_data_t data = SS_DATA_INIT;
     if (ss_init_abi(SS_ABI_TAG) != SS_OK) return 1;
     if (ss_signal_register("value") != SS_OK) return 1;
     if (ss_connect("value", on_value, 0) != SS_OK) return 1;
     if (ss_emit_int("value", 1) != SS_OK) return 1;
+    if (ss_data_set_string_ref(&data, "borrowed") != SS_OK) return 1;
+    if (ss_emit("value", &data) != SS_OK) return 1;
+#if SS_ENABLE_CUSTOM_DATA
+    if (ss_data_set_custom(&data, "copied", 7, on_release) != SS_OK) return 1;
+#endif
+    ss_data_clear(&data);
     ss_cleanup();
     return 0;
 }
