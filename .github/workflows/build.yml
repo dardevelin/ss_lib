@@ -201,8 +201,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The compiler and newlib's C headers only: the recommended C++
+      # libraries are 500 MB more to download, and a slow mirror made this
+      # step run past the job's timeout
       - name: Install ARM toolchain
-        run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 update && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 install -y gcc-arm-none-eabi
+        run: sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 update && sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=60 install -y --no-install-recommends gcc-arm-none-eabi libnewlib-arm-none-eabi
       - name: Cortex-M4 (atomic compare-and-swap available)
         run: |
           arm-none-eabi-gcc -c -Os -mcpu=cortex-m4 -mthumb -Wall -Wextra -Werror -Iinclude \
