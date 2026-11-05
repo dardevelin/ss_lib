@@ -13,23 +13,29 @@ A lightweight, efficient signal-slot implementation for C, designed for embedded
 #include <stdio.h>
 
 void on_button_click(const ss_data_t* data, void* user_data) {
+    (void)data;
+    (void)user_data;
     printf("Button clicked!\n");
 }
 
 int main(void) {
-    /* ss_init() also works; ss_init_abi() additionally detects a library
-     * built with different configuration flags */
-    if (ss_init_abi(SS_ABI_TAG) != SS_OK) return 1;
+    ss_bus_t* bus = NULL;
 
-    ss_signal_register("button_click");
-    ss_connect("button_click", on_button_click, NULL);
+    /* A bus holds signals and slots. Creating it also checks that this
+     * program and the library agree on the public layouts. */
+    if (ss_bus_create(&bus, 0) != SS_OK) return 1;
 
-    ss_emit_void("button_click");
+    ss_signal_register(bus, "button_click");
+    ss_connect(bus, "button_click", on_button_click, NULL);
 
-    ss_cleanup();
+    ss_emit_void(bus, "button_click");
+
+    ss_bus_destroy(bus);
     return 0;
 }
 ```
+
+Every function that uses library state takes the bus first. Buses are independent, so a program can have one per subsystem, and a test can start from a fresh bus. Coming from 2.x? See [Migrating from 2.x to 3.0](docs/migration-3.0.md).
 
 ## Installation
 
@@ -92,8 +98,9 @@ Configuration macros must be identical in every file that includes the header; p
 ## Features
 
 - **Zero Dependencies** — Pure ANSI C, no external libraries required
-- **Static Memory** — Fixed arrays; register, connect, emit, disconnect and cleanup never touch the heap
-- **Thread-Safe** — Optional recursive mutex with runtime toggle; slots may call back into the library
+- **Independent Buses** — All state lives in a bus (`ss_bus_t`); no global state, no default bus
+- **Static Memory** — Fixed arrays in built-in buses or caller memory; creating a bus, register, connect, emit, disconnect and destroy never touch the heap
+- **Thread-Safe** — A bus created with `SS_BUS_THREAD_SAFE` has its own recursive mutex; slots may call back into the library
 - **ISR-Safe** — Lock-free, allocation-free queueing from interrupt handlers, delivered from the main loop
 - **Namespaces** — `ns::name` prefixes and an optional default namespace
 - **Deferred Emission** — Queue signals (with a copy of their data) for later processing
@@ -108,7 +115,7 @@ Configuration macros must be identical in every file that includes the header; p
 
 ### Compile-Time Flags
 
-Configuration must be identical for the library and every file that includes `ss_lib.h`, so pass it on the command line (`-DSS_USE_STATIC_MEMORY=1`) rather than with `#define` in a source file. No option changes a public type layout, so a program that disagrees with the library on a feature flag fails to compile or link instead of corrupting memory. `ss_init_abi(SS_ABI_TAG)` (recommended for new code instead of `ss_init()`) also returns `SS_ERR_CONFIG_MISMATCH` when a program sees a different `ss_data_t` than the library, for example through a header from another version.
+Configuration must be identical for the library and every file that includes `ss_lib.h`, so pass it on the command line (`-DSS_USE_STATIC_MEMORY=1`) rather than with `#define` in a source file. No option changes a public type layout, so a program that disagrees with the library on a feature flag fails to compile or link instead of corrupting memory. `ss_bus_create()` also returns `SS_ERR_CONFIG_MISMATCH` when a program sees a different `ss_data_t` than the library, for example through a header from another version.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -117,8 +124,8 @@ Configuration must be identical for the library and every file that includes `ss
 | `SS_MAX_SLOTS` | 128 | Maximum slots (static mode) |
 | `SS_MAX_SIGNAL_NAME_LENGTH` | 256 (32 static) | Name buffer size, including the terminator |
 | `SS_MAX_DESCRIPTION_LENGTH` | 32 | Description buffer size (static mode) |
-| `SS_STATIC_CONTEXT` | 1 | Static mode: `ss_init()` keeps the context in `.bss`; 0 drops it (for `ss_init_static()` pools) |
-| `SS_ENABLE_THREAD_SAFETY` | 1 | Mutex protection infrastructure |
+| `SS_STATIC_BUSES` | 1 | Static mode: built-in buses in `.bss` for `ss_bus_create()`; 0 keeps none (buses only from `ss_bus_create_in()` pools) |
+| `SS_ENABLE_THREAD_SAFETY` | 1 | Mutex support, for buses created with `SS_BUS_THREAD_SAFE` |
 | `SS_ENABLE_INTROSPECTION` | 1 | Signal listing and discovery |
 | `SS_ENABLE_CUSTOM_DATA` | 1 | Custom data types with cleanup |
 | `SS_ENABLE_PERFORMANCE_STATS` | 0 | Per-signal timing statistics |
@@ -172,16 +179,19 @@ Strings are copied with `SS_MALLOC`, so these three route every allocation. `SS_
 
 ## API Overview
 
-### Core
+### Buses
+
+Every function that uses library state takes `ss_bus_t* bus` as its first argument; the tables below leave it out where it is the only change. `ss_version()`, `ss_error_string()`, `ss_free_signal_list()`, the data functions, `ss_emit_from_isr()` and the batch functions other than `ss_batch_create()` take no bus.
 
 | Function | Description |
 |----------|-------------|
-| `ss_init()` | Initialize (context on the heap, or in static storage with `SS_USE_STATIC_MEMORY`) |
-| `ss_init_abi(SS_ABI_TAG)` | `ss_init()` plus a check that caller and library agree on the `ss_data_t` layout |
-| `ss_init_static(pool, size)` | Initialize with the context in a caller-owned buffer (`ss_init_static_abi` checks flags) |
-| `ss_get_required_pool_size()` | Bytes `ss_init_static()` needs |
-| `ss_cleanup()` | Clean up all resources |
+| `ss_bus_create(&bus, flags)` | Create a bus (heap in dynamic mode, a built-in bus in static mode); `flags` is 0 or `SS_BUS_THREAD_SAFE` |
+| `ss_bus_create_in(&bus, pool, size, flags)` | Create a bus in caller memory, in either mode |
+| `ss_bus_pool_size()` | Bytes `ss_bus_create_in()` needs, including alignment slack |
+| `ss_bus_destroy(bus)` | Release the bus and everything it holds (deferred when called from a slot) |
 | `ss_version()` | Runtime version string (`SS_VERSION_STRING`) |
+
+Both create macros pass `SS_ABI_TAG` to `ss_bus_create_abi()` / `ss_bus_create_in_abi()`, which FFI callers can call directly.
 
 ### Signals
 
@@ -213,8 +223,8 @@ Strings are copied with `SS_MALLOC`, so these three route every allocation. `SS_
 | `ss_emit_double(signal, value)` | Emit double |
 | `ss_emit_string(signal, str)` | Emit string |
 | `ss_emit_pointer(signal, ptr)` | Emit pointer |
-| `ss_emit_from_isr(signal, value)` | Queue an int event from an ISR |
-| `ss_process_isr_queue()` | Deliver queued ISR events (main loop) |
+| `ss_emit_from_isr(signal, value)` | Queue an int event from an ISR (no bus: one queue shared by every bus) |
+| `ss_process_isr_queue(bus)` | Deliver queued ISR events to the bus (main loop) |
 
 ### Namespaces
 
@@ -235,7 +245,7 @@ Strings are copied with `SS_MALLOC`, so these three route every allocation. `SS_
 
 | Function | Description |
 |----------|-------------|
-| `ss_batch_create()` | Create a batch |
+| `ss_batch_create(bus)` | Create a batch that emits on `bus` |
 | `ss_batch_add(batch, signal, data)` | Add emission to batch |
 | `ss_batch_emit(batch)` | Emit all in batch |
 | `ss_batch_destroy(batch)` | Free batch |
@@ -278,7 +288,7 @@ Strings are copied with `SS_MALLOC`, so these three route every allocation. `SS_
 | Function | Description |
 |----------|-------------|
 | `ss_error_string(error)` | Error code to string |
-| `ss_set_error_handler(handler)` | Set custom error callback |
+| `ss_set_error_handler(handler)` | Set the bus's error callback |
 
 ### Configuration
 
@@ -286,8 +296,6 @@ Strings are copied with `SS_MALLOC`, so these three route every allocation. `SS_
 |----------|-------------|
 | `ss_set_max_slots_per_signal(max)` | Set slot limit |
 | `ss_get_max_slots_per_signal()` | Get slot limit |
-| `ss_set_thread_safe(enabled)` | Enable/disable thread safety |
-| `ss_is_thread_safe()` | Check thread safety state |
 
 ### Debug Trace
 
@@ -298,55 +306,71 @@ Strings are copied with `SS_MALLOC`, so these three route every allocation. `SS_
 
 ## Advanced Usage
 
+### A Slot That Uses Its Bus
+
+The slot signature has no bus parameter. A slot that needs its bus gets it through `user_data`:
+
+```c
+void on_saved(const ss_data_t* data, void* user_data) {
+    ss_bus_t* bus = (ss_bus_t*)user_data;
+    (void)data;
+    ss_emit_string(bus, "status", "saved");
+}
+
+ss_connect(bus, "file_saved", on_saved, bus);
+```
+
 ### Connection Handles
 
 ```c
 ss_connection_t conn;
-ss_connect_ex("data_changed", on_data, NULL, SS_PRIORITY_HIGH, &conn);
+ss_connect_ex(bus, "data_changed", on_data, NULL, SS_PRIORITY_HIGH, &conn);
 
 /* Later... */
-ss_disconnect_handle(conn);
+ss_disconnect_handle(bus, conn);
 ```
 
 ### Signal Priorities
 
 ```c
 /* Critical handlers execute first */
-ss_connect_ex("alarm", on_critical, NULL, SS_PRIORITY_CRITICAL, NULL);
-ss_connect_ex("alarm", on_log, NULL, SS_PRIORITY_LOW, NULL);
+ss_connect_ex(bus, "alarm", on_critical, NULL, SS_PRIORITY_CRITICAL, NULL);
+ss_connect_ex(bus, "alarm", on_log, NULL, SS_PRIORITY_LOW, NULL);
 ```
 
 ### Namespaces
 
 ```c
-ss_signal_register("ui::button");
+ss_signal_register(bus, "ui::button");
 
 /* Emit using namespace helper */
-ss_emit_namespaced("ui", "button", data);
+ss_emit_namespaced(bus, "ui", "button", data);
 
 /* Or set a default namespace: names without "::" resolve as "ui::name" */
-ss_set_namespace("ui");
-ss_signal_register("slider");      /* registers "ui::slider" */
-ss_emit_void("slider");            /* emits "ui::slider" */
-ss_emit_void("net::ping");         /* names with "::" are used as given */
-ss_set_namespace(NULL);            /* clear */
+ss_set_namespace(bus, "ui");
+ss_signal_register(bus, "slider");      /* registers "ui::slider" */
+ss_emit_void(bus, "slider");            /* emits "ui::slider" */
+ss_emit_void(bus, "net::ping");         /* names with "::" are used as given */
+ss_set_namespace(bus, NULL);            /* clear */
 ```
 
 ### Deferred Emission
 
 ```c
 /* Queue signals during processing; the queue keeps a copy of the data */
-ss_emit_deferred("update", data1);
-ss_emit_deferred("render", data2);
+ss_emit_deferred(bus, "update", data1);
+ss_emit_deferred(bus, "render", data2);
 
 /* Flush at end of frame */
-ss_flush_deferred();
+ss_flush_deferred(bus);
 ```
 
 ### Batch Operations
 
+A batch belongs to the bus it was created for; destroy it before the bus.
+
 ```c
-ss_batch_t* batch = ss_batch_create();
+ss_batch_t* batch = ss_batch_create(bus);
 ss_batch_add(batch, "signal_a", data1);
 ss_batch_add(batch, "signal_b", data2);
 ss_batch_emit(batch);
@@ -356,11 +380,11 @@ ss_batch_destroy(batch);
 ### Performance Profiling
 
 ```c
-ss_enable_profiling(1);
+ss_enable_profiling(bus, 1);
 
 /* After running... */
 ss_perf_stats_t stats;
-ss_get_perf_stats("render_frame", &stats);
+ss_get_perf_stats(bus, "render_frame", &stats);
 printf("Avg: %llu ns, Max: %llu ns\n",
        (unsigned long long)stats.avg_time_ns, (unsigned long long)stats.max_time_ns);
 ```
@@ -369,7 +393,7 @@ printf("Avg: %llu ns, Max: %llu ns\n",
 
 ```c
 ss_memory_stats_t mem;
-ss_get_memory_stats(&mem);
+ss_get_memory_stats(bus, &mem);
 printf("Signals: %zu/%zu\n", mem.signals_used, mem.signals_allocated);
 printf("Slots: %zu/%zu\n", mem.slots_used, mem.slots_allocated);
 ```
@@ -388,27 +412,31 @@ void ADC_ISR(void) {
 }
 
 int main(void) {
-    ss_init();
-    ss_signal_register("adc_ready");
-    ss_connect("adc_ready", on_adc_ready, NULL);
+    ss_bus_t* bus = NULL;
+    ss_bus_create(&bus, 0);                 /* the built-in bus: no heap */
+    ss_signal_register(bus, "adc_ready");
+    ss_connect(bus, "adc_ready", on_adc_ready, NULL);
     for (;;) {
-        ss_process_isr_queue();             /* slots run here */
+        ss_process_isr_queue(bus);          /* slots run here */
     }
 }
 ```
 
+In static mode `ss_bus_create()` takes one of `SS_STATIC_BUSES` built-in buses (default 1) from `.bss`, and returns `SS_ERR_WOULD_OVERFLOW` when all are in use. `ss_bus_create_in(&bus, pool, size, 0)` places a bus in memory you provide instead.
+
 ### Thread Safety
 
 ```c
-ss_init();
-ss_set_thread_safe(1);  /* After ss_init, before other threads use the library */
+ss_bus_t* bus = NULL;
+/* Decided at creation; needs a library built with SS_ENABLE_THREAD_SAFETY */
+if (ss_bus_create(&bus, SS_BUS_THREAD_SAFE) != SS_OK) return 1;
 
-/* All operations are now protected by one recursive mutex */
-ss_signal_register("event");
-ss_emit_void("event");
+/* Every call on this bus is now protected by its recursive mutex */
+ss_signal_register(bus, "event");
+ss_emit_void(bus, "event");
 ```
 
-Slots run with the mutex held and may call any library function; a slot must not wait for another thread that is itself calling the library. Change the setting only while no other thread uses the library. `ss_init()` and `ss_cleanup()` are not thread-safe.
+Slots run with the bus's mutex held and may call any library function; a slot must not wait for another thread that is itself calling the bus. A bus created without the flag has no mutex and must be used from one thread at a time. Buses share nothing, so threads with a bus each need no lock. A slot may call another bus, but cross-bus calls from slots must all go in one direction (A to B, never also B to A), or two threads can deadlock. Destroying a bus is not thread-safe with respect to other threads using it, and in static mode built-in buses must be created and destroyed from one thread.
 
 ## Building
 
@@ -529,7 +557,7 @@ Signal emission:
 
 ```
 
-Code size on Cortex-M4 (arm-none-eabi-gcc -Os, `SS_EMBEDDED_BUILD` + `SS_MINIMAL_BUILD`): about 3.8 KB of text. RAM is the static context in `.bss`, or a pool you pass to `ss_init_static()` with `SS_STATIC_CONTEXT=0` (`ss_get_required_pool_size()` reports its size plus alignment slack; see the [Embedded Guide](docs/embedded-guide.md#memory-budget)).
+Code size on Cortex-M4 (arm-none-eabi-gcc -Os, `SS_EMBEDDED_BUILD` + `SS_MINIMAL_BUILD`): about 3.8 KB of text. RAM is one bus per `SS_STATIC_BUSES` in `.bss`, or a pool you pass to `ss_bus_create_in()` (`ss_bus_pool_size()` reports the size of a bus plus alignment slack; see the [Embedded Guide](docs/embedded-guide.md#memory-budget)).
 
 View the [latest benchmark results](https://github.com/dardevelin/ss_lib/actions/workflows/benchmarks.yml) or run locally:
 
@@ -570,7 +598,8 @@ This repository includes [Claude Code skills](https://docs.anthropic.com/en/docs
 ## Security
 
 Versions before 2.2.0 have use-after-free bugs when a slot unregisters its
-signal, calls `ss_cleanup()`, or queues a deferred emission during a flush
+signal, tears the library down (`ss_bus_destroy()` in 3.0), or queues a
+deferred emission during a flush
 ([GHSA-f5pm-2465-f895](https://github.com/dardevelin/ss_lib/security/advisories/GHSA-f5pm-2465-f895)).
 Upgrade to the latest release; if you copied `ss_lib_single.h` into your
 project, replace it with the one from the latest release.

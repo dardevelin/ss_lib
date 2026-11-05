@@ -19,31 +19,181 @@ fails to compile until it is changed, and none silently changes meaning.
 
 ## Creating and destroying a bus
 
-Not landed yet: `ss_init()` and `ss_cleanup()` become `ss_bus_create()` and
-`ss_bus_destroy()`.
+2.x kept all state in one global context. 3.0 keeps it in a bus that you
+create, pass to every call and destroy. The library has no default bus.
+
+| 2.x | 3.0 |
+|---|---|
+| `ss_init()`, `ss_init_abi(SS_ABI_TAG)` | `ss_bus_create(&bus, 0)` |
+| `ss_init_static(pool, size)`, `ss_init_static_abi(pool, size, SS_ABI_TAG)` | `ss_bus_create_in(&bus, pool, size, 0)` |
+| `ss_get_required_pool_size()` | `ss_bus_pool_size()` |
+| `ss_cleanup()` | `ss_bus_destroy(bus)` |
+
+```c
+/* 2.x */
+if (ss_init() != SS_OK) return 1;
+ss_signal_register("ready");
+/* ... */
+ss_cleanup();
+
+/* 3.0 */
+ss_bus_t* bus = NULL;
+if (ss_bus_create(&bus, 0) != SS_OK) return 1;
+ss_signal_register(bus, "ready");
+/* ... */
+ss_bus_destroy(bus);
+```
+
+- `ss_bus_create()` and `ss_bus_create_in()` are macros that pass
+  `SS_ABI_TAG`, so every creation checks that the caller and the library
+  agree on the layout of `ss_data_t`; a mismatch returns
+  `SS_ERR_CONFIG_MISMATCH`. Code that called `ss_init_abi(SS_ABI_TAG)` gets
+  this check without asking. Callers that cannot use C macros (FFI) call
+  `ss_bus_create_abi()` / `ss_bus_create_in_abi()` with the tag.
+- On failure the bus pointer is set to NULL. Check the return value: there is
+  no global to fall back on.
+- **Pools no longer fall back.** `ss_init_static()` with a NULL or too small
+  pool behaved like `ss_init()`. `ss_bus_create_in()` returns
+  `SS_ERR_NULL_PARAM` or `SS_ERR_BUFFER_TOO_SMALL` instead. A pool of
+  `ss_bus_pool_size()` bytes always suffices; it needs no particular
+  alignment, must outlive the bus and is never freed by the library. It
+  works in both memory modes.
+- **Static mode never allocates a bus.** `ss_bus_create()` takes one of the
+  `SS_STATIC_BUSES` built-in buses (default 1) and returns
+  `SS_ERR_WOULD_OVERFLOW` when all are in use. Create and destroy built-in
+  buses from one thread, normally at startup: claiming them is not locked.
+- **After `ss_bus_destroy()` the bus is gone.** In 2.x a call after
+  `ss_cleanup()` returned `SS_ERR_NULL_PARAM`; in 3.0 using a destroyed bus
+  is undefined, like using memory after `free()`. Set your pointer to NULL.
+  `ss_bus_destroy(NULL)` is a no-op.
+- **Destroying from a slot** works as `ss_cleanup()` did: the remaining slots
+  of the emission are skipped, the bus refuses every call
+  (`SS_ERR_NULL_PARAM`) and is freed when its outermost call returns. Other
+  buses are not affected.
+- Calling `ss_init()` twice was harmless in 2.x. Creating twice gives two
+  independent buses: make sure each part of the program uses the bus it
+  means.
 
 ## The bus argument
 
-Not landed yet: every function that uses library state takes the bus as its
-first argument.
+Every function that uses library state takes the bus as its first argument
+and keeps its name. A call that is not changed fails to compile, because the
+number of arguments changes; no call silently changes meaning.
+
+| Takes the bus first | Unchanged (no bus) |
+|---|---|
+| `ss_signal_register`, `ss_signal_register_ex`, `ss_signal_unregister`, `ss_signal_exists` | `ss_version`, `ss_error_string` |
+| `ss_connect`, `ss_connect_ex`, `ss_disconnect`, `ss_disconnect_handle`, `ss_disconnect_all` | `ss_data_*` |
+| `ss_emit`, `ss_emit_void`, `ss_emit_int`, `ss_emit_float`, `ss_emit_double`, `ss_emit_string`, `ss_emit_pointer`, `ss_emit_namespaced` | `ss_free_signal_list` |
+| `ss_emit_deferred`, `ss_flush_deferred` | `ss_batch_add`, `ss_batch_emit`, `ss_batch_destroy` (the batch knows its bus) |
+| `ss_set_namespace`, `ss_get_namespace` | `ss_emit_from_isr` (until the ISR queue moves into the bus) |
+| `ss_get_signal_count`, `ss_get_signal_list` | |
+| `ss_get_memory_stats`, `ss_reset_memory_stats` | |
+| `ss_get_perf_stats`, `ss_enable_profiling`, `ss_reset_perf_stats` | |
+| `ss_set_error_handler`, `ss_set_max_slots_per_signal`, `ss_get_max_slots_per_signal` | |
+| `ss_enable_trace`, `ss_disable_trace` | |
+| `ss_process_isr_queue`, `ss_batch_create` | |
+
+For code that has one bus in a variable named `bus`, this `sed` command adds
+the argument to every call in the table. It needs GNU sed (`gsed` on
+macOS). Review the diff: it does not touch function pointers, or calls split
+across lines before the opening parenthesis.
+
+```sh
+sed -i -E \
+  -e 's/\b(ss_flush_deferred|ss_get_namespace|ss_get_signal_count|ss_reset_memory_stats|ss_reset_perf_stats|ss_get_max_slots_per_signal|ss_disable_trace|ss_process_isr_queue|ss_batch_create)\(\s*\)/\1(bus)/g' \
+  -e 's/\b(ss_signal_register(_ex)?|ss_signal_unregister|ss_signal_exists|ss_connect(_ex)?|ss_disconnect(_handle|_all)?|ss_emit(_void|_int|_float|_double|_string|_pointer|_namespaced|_deferred)?|ss_set_namespace|ss_get_signal_list|ss_get_memory_stats|ss_get_perf_stats|ss_enable_profiling|ss_set_error_handler|ss_set_max_slots_per_signal|ss_enable_trace)\(/\1(bus, /g' \
+  src/*.c
+```
+
+Then replace `ss_init()` and `ss_cleanup()` as shown in the previous section.
+
+**Slots that call the library** need the bus too. The slot signature does
+not change; pass the bus as `user_data`, or in a struct that `user_data`
+points to:
+
+```c
+static void on_saved(const ss_data_t* data, void* user_data) {
+    ss_bus_t* bus = (ss_bus_t*)user_data;
+    ss_emit_string(bus, "status", ss_data_get_string(data));
+}
+
+ss_connect(bus, "saved", on_saved, bus);
+```
+
+**A program that wants one global bus** can keep its 2.x shape with a small
+wrapper of its own. The library provides none, because a global is the
+application's choice:
+
+```c
+/* app_bus.h */
+#include "ss_lib.h"
+extern ss_bus_t* app_bus;
+ss_error_t app_bus_init(void);
+void app_bus_cleanup(void);
+
+/* app_bus.c */
+#include "app_bus.h"
+ss_bus_t* app_bus = NULL;
+ss_error_t app_bus_init(void) { return ss_bus_create(&app_bus, 0); }
+void app_bus_cleanup(void) { ss_bus_destroy(app_bus); app_bus = NULL; }
+```
+
+Calls then read `ss_emit_int(app_bus, "tick", n)`; the `sed` command above
+works with `bus` replaced by `app_bus`.
 
 ## Thread safety
 
-Not landed yet: `ss_set_thread_safe(1)` becomes the `SS_BUS_THREAD_SAFE` flag
-of `ss_bus_create()`.
+`ss_set_thread_safe(1)` becomes the `SS_BUS_THREAD_SAFE` flag at creation,
+and `ss_is_thread_safe()` is gone: a bus is thread-safe for its whole life
+or not at all.
+
+```c
+/* 2.x */
+ss_init();
+ss_set_thread_safe(1);
+
+/* 3.0 */
+ss_bus_create(&bus, SS_BUS_THREAD_SAFE);
+```
+
+- The flag needs a library built with `SS_ENABLE_THREAD_SAFETY` (the
+  default). Without it, creation returns `SS_ERR_CONFIG_MISMATCH` instead of
+  quietly giving an unlocked bus.
+- Each such bus has its own recursive mutex; a bus created without the flag
+  has none. Buses share no state, so threads that each use their own bus
+  need no flag at all.
+- Inside a bus nothing changes from 2.x: slots run with the bus's lock held
+  and may call back into the same bus.
+- **Cross-bus calls from slots go in one direction only.** A slot of bus A
+  that calls bus B holds A's lock while it takes B's. If another thread's
+  slot of B calls A at the same time, the two threads deadlock.
+- `ss_bus_destroy()` is not thread-safe with respect to other threads using
+  the same bus, as `ss_cleanup()` was not.
 
 ## Error handler
 
-Not landed yet: the handler receives the bus and a user pointer.
+Not landed yet: the handler receives the bus and a user pointer. For now
+`ss_set_error_handler(bus, handler)` sets a handler per bus, with the 2.x
+handler signature. Errors of calls given no bus (a NULL bus or batch, or a
+failed `ss_bus_create()`) reach no handler.
 
 ## Batches
 
-Not landed yet: `ss_batch_create(bus)`.
+`ss_batch_create()` takes the bus the batch belongs to:
+`ss_batch_create(bus)`. That bus supplies the default namespace when
+entries are added, runs `ss_batch_emit()` and reports errors.
+`ss_batch_add()`, `ss_batch_emit()` and `ss_batch_destroy()` are unchanged.
+Destroy batches before their bus. A batch whose bus was destroyed from one
+of its own slots can still be destroyed, but not used.
 
 ## ISR queue
 
-Not landed yet: `ss_emit_from_isr()` and `ss_process_isr_queue()` take the bus.
-
+Not landed yet: `ss_emit_from_isr()` takes the bus. For now the ISR queue is
+still shared by every bus: `ss_emit_from_isr(name, value)` is unchanged and
+`ss_process_isr_queue(bus)` delivers the queued events to the given bus.
+Destroying a bus no longer drops queued events; they wait for the next
+`ss_process_isr_queue()`.
 ## Data ownership
 
 `ss_data_t` has a new `owned` field. The library frees a string or custom
@@ -70,7 +220,7 @@ What to change:
   ```c
   ss_data_t d = SS_DATA_INIT;
   ss_data_set_string(&d, buffer);   /* copies buffer */
-  ss_emit("status", &d);
+  ss_emit(bus, "status", &d);
   ss_data_clear(&d);                /* frees the copy */
   ```
 
@@ -146,7 +296,13 @@ What to change:
   `SS_TYPE_CUSTOM` data (2.x had no such type there). `ss_emit()` passes it
   to the slots as given.
 - **`SS_ABI_TAG` changes** to `sizeof(ss_data_t) * 16 + SS_ABI_REVISION`.
-  Keep passing the macro; a program that passed a hand-computed
-  `sizeof(ss_data_t)` to `ss_init_abi()` now gets `SS_ERR_CONFIG_MISMATCH`.
-
-Not landed yet: `SS_STATIC_CONTEXT` becomes `SS_STATIC_BUSES`.
+  The `ss_bus_create()` and `ss_bus_create_in()` macros pass it; a program
+  that passed a hand-computed `sizeof(ss_data_t)` to `ss_init_abi()` and now
+  calls `ss_bus_create_abi()` the same way gets `SS_ERR_CONFIG_MISMATCH`.
+- **`SS_STATIC_CONTEXT` becomes `SS_STATIC_BUSES`**, the number of built-in
+  buses that `ss_bus_create()` uses in static mode (default 1). Each costs
+  `ss_bus_pool_size()` bytes of `.bss`, what the 2.x context cost. 2.x
+  `SS_STATIC_CONTEXT=0` (no static context when a pool is supplied) becomes
+  `SS_STATIC_BUSES=0` with `ss_bus_create_in()`; `ss_bus_create()` then
+  returns `SS_ERR_WOULD_OVERFLOW` instead of allocating, because static mode
+  never allocates a bus.

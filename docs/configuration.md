@@ -2,13 +2,13 @@
 
 SS_Lib uses compile-time macros to control features, memory model, and behavior. All configuration happens through `include/ss_config.h` or via `-D` compiler flags.
 
-No configuration macro changes a public type layout or enum value: `ss_data_t` and every other public struct look the same in every configuration (`make check-abi` verifies it). The configuration must still be identical for the library and every file that includes `ss_lib.h`, because it decides which functions are declared and sets limits such as `SS_MAX_SIGNAL_NAME_LENGTH`. A caller built with a feature the library lacks then fails to compile or link instead of corrupting memory. Pass the configuration on the command line (or edit `ss_config.h`), never with a `#define` in one source file before the include. The snippets below show macro values; `#define X 1` means `-DX=1`. Initializing with `ss_init_abi(SS_ABI_TAG)` instead of `ss_init()` returns `SS_ERR_CONFIG_MISMATCH` when the caller's `ss_data_t` differs from the library's, for example with a header from another version or `-fshort-enums`.
+No configuration macro changes a public type layout or enum value: `ss_data_t` and every other public struct look the same in every configuration (`make check-abi` verifies it). The configuration must still be identical for the library and every file that includes `ss_lib.h`, because it decides which functions are declared and sets limits such as `SS_MAX_SIGNAL_NAME_LENGTH`. A caller built with a feature the library lacks then fails to compile or link instead of corrupting memory. Pass the configuration on the command line (or edit `ss_config.h`), never with a `#define` in one source file before the include. The snippets below show macro values; `#define X 1` means `-DX=1`. Every bus creation (`ss_bus_create()` and `ss_bus_create_in()` pass the caller's `SS_ABI_TAG`) returns `SS_ERR_CONFIG_MISMATCH` when the caller's `ss_data_t` differs from the library's, for example with a header from another version or `-fshort-enums`.
 
 ## Memory Model
 
 ### Dynamic Memory (Default)
 
-The default mode uses standard `malloc`/`free` for allocation. No limits on signal or slot count.
+The default mode uses standard `malloc`/`free` for allocation. No limits on signal or slot count. `ss_bus_create()` allocates the bus with `SS_CALLOC`; `ss_bus_create_in()` places it in a caller pool instead.
 
 ```c
 #define SS_USE_STATIC_MEMORY 0  /* default */
@@ -16,14 +16,14 @@ The default mode uses standard `malloc`/`free` for allocation. No limits on sign
 
 ### Static Memory
 
-Pre-allocated arrays for signals and slots; the library context lives in static storage. `ss_init` (unless `SS_STATIC_CONTEXT` is 0), register, connect, emit, deferred emission, namespace, disconnect, unregister and cleanup never touch the heap. Suitable for embedded systems where heap fragmentation is unacceptable.
+Pre-allocated arrays for signals and slots inside each bus; the bus itself is a built-in bus in static storage or lives in a caller pool. Bus creation, register, connect, emit, deferred emission, ISR delivery, namespace, disconnect, unregister and bus destruction never touch the heap, on every bus. Suitable for embedded systems where heap fragmentation is unacceptable.
 
 Functions whose job is to hand the caller an allocated object still allocate: `ss_data_create`, `ss_data_set_string`, `ss_data_set_custom`, `ss_get_signal_list` and `ss_batch_create`. The borrowing setters `ss_data_set_string_ref` and `ss_data_set_custom_ref` never allocate.
 
 ```c
 #define SS_USE_STATIC_MEMORY 1
-#define SS_MAX_SIGNALS 32       /* maximum registered signals */
-#define SS_MAX_SLOTS 128        /* maximum total slots across all signals */
+#define SS_MAX_SIGNALS 32       /* maximum registered signals, per bus */
+#define SS_MAX_SLOTS 128        /* maximum total slots across all signals, per bus */
 ```
 
 When static memory is enabled, signal names are stored in fixed-size buffers:
@@ -44,10 +44,10 @@ Static mode also has fixed buffers for descriptions and for queued payloads:
 Longer descriptions and payloads are rejected with `SS_ERR_WOULD_OVERFLOW`. Descriptions are only stored when `SS_ENABLE_INTROSPECTION` is on.
 
 ```c
-#define SS_STATIC_CONTEXT 1  /* default: ss_init() keeps the context in .bss */
+#define SS_STATIC_BUSES 1  /* default: built-in buses for ss_bus_create(), in .bss */
 ```
 
-Set it to 0 when the application always passes its own pool to `ss_init_static()`: this drops the built-in context and saves its RAM. `ss_init()` (and `ss_init_static()` with a NULL or too small pool) then allocates the context with `SS_CALLOC`.
+`ss_bus_create()` takes one of these built-in buses and returns `SS_ERR_WOULD_OVERFLOW` when all are in use; it never falls back to the heap. Each built-in bus costs `ss_bus_pool_size()` bytes of RAM whether it is used or not, so raise the number only for buses the application really creates. Set it to 0 when the application always places its buses in its own pools with `ss_bus_create_in()`: this drops the built-in storage, and `ss_bus_create()` then always returns `SS_ERR_WOULD_OVERFLOW`. Claiming and releasing built-in buses is not locked: create and destroy them from one thread, normally at startup.
 
 ## Feature Flags
 
@@ -57,9 +57,9 @@ Set it to 0 when the application always passes its own pool to `ss_init_static()
 #define SS_ENABLE_THREAD_SAFETY 1  /* default: 1 */
 ```
 
-Compiles one recursive mutex (pthread recursive mutex on Unix, Critical Section on Windows), created by `ss_init()`. Thread safety is still **disabled at runtime by default** — call `ss_set_thread_safe(1)` after `ss_init()` to activate it, while no other thread uses the library. This design ensures zero locking overhead in single-threaded programs. Slots run with the mutex held and may call back into the library.
+Compiles the mutex support (pthread recursive mutex on Unix, Critical Section on Windows). Each bus then chooses at creation: `ss_bus_create(&bus, SS_BUS_THREAD_SAFE)` gives the bus its own recursive mutex, and a bus created without the flag has no mutex and no locking overhead. Slots run with their bus's mutex held and may call back into the library. Cross-bus calls from slots must go in one direction only (see the [API Reference](api-reference.md#thread-safety)).
 
-Set to 0 to remove all mutex code from the build (saves code size on embedded targets).
+Set to 0 to remove all mutex code from the build (saves code size on embedded targets). Creating a bus with `SS_BUS_THREAD_SAFE` then returns `SS_ERR_CONFIG_MISMATCH`.
 
 ### Introspection
 
@@ -83,7 +83,7 @@ Enables `ss_data_set_custom()`, `ss_data_set_custom_ref()` and `ss_data_get_cust
 #define SS_ENABLE_PERFORMANCE_STATS 0  /* default: 0 */
 ```
 
-Enables per-signal timing statistics. When enabled and profiling is activated with `ss_enable_profiling(1)`, each emission records its duration.
+Enables per-signal timing statistics. When enabled and profiling is activated on a bus with `ss_enable_profiling(bus, 1)`, each emission on that bus records its duration.
 
 ### Memory Statistics
 
@@ -91,7 +91,7 @@ Enables per-signal timing statistics. When enabled and profiling is activated wi
 #define SS_ENABLE_MEMORY_STATS 0  /* default: 0 */
 ```
 
-Enables `ss_get_memory_stats()` and `ss_reset_memory_stats()`: live and allocated signal/slot counts, heap bytes held by the library and their peak (dynamic mode), or the size of the static context. See the [API Reference](api-reference.md#ss_get_memory_stats) for the exact definitions.
+Enables `ss_get_memory_stats()` and `ss_reset_memory_stats()`, per bus: live and allocated signal/slot counts, heap bytes held by the bus and their peak (dynamic mode), or the size of the bus (static mode). See the [API Reference](api-reference.md#ss_get_memory_stats) for the exact definitions.
 
 ### ISR-Safe Emission
 
@@ -99,7 +99,7 @@ Enables `ss_get_memory_stats()` and `ss_reset_memory_stats()`: live and allocate
 #define SS_ENABLE_ISR_SAFE 0  /* default: 0 */
 ```
 
-Enables `ss_emit_from_isr()`, which queues an integer event from an interrupt service routine without locks or allocation, and `ss_process_isr_queue()`, which delivers the queued events from the main loop. Configure the queue depth:
+Enables `ss_emit_from_isr()`, which queues an integer event from an interrupt service routine without locks or allocation, and `ss_process_isr_queue(bus)`, which delivers the queued events to a bus from the main loop. The queue is shared by every bus. Configure the queue depth:
 
 ```c
 #define SS_ISR_QUEUE_SIZE 16  /* default */
@@ -118,7 +118,7 @@ Queue entries are claimed with C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtin
 #define SS_ENABLE_DEBUG_TRACE 0  /* default: 0 */
 ```
 
-Enables `ss_enable_trace(FILE*)` and `ss_disable_trace()`. Trace is off until `ss_enable_trace()` names a stream; then registration, connection and emission events are logged to it. The `SS_TRACE` macro in `ss_config.h` is deprecated: it is kept for source compatibility, but the library no longer uses it.
+Enables `ss_enable_trace(bus, FILE*)` and `ss_disable_trace(bus)`. A bus's trace is off until `ss_enable_trace()` names a stream; then registration, connection and emission events are logged to it. The `SS_TRACE` macro in `ss_config.h` is deprecated: it is kept for source compatibility, but the library no longer uses it.
 
 ## Limits
 
@@ -129,7 +129,7 @@ Enables `ss_enable_trace(FILE*)` and `ss_disable_trace()`. Trace is off until `s
 #define SS_CACHE_LINE_SIZE 64                /* alignment hint */
 ```
 
-The deferred queue is part of the library context and each entry holds a full name buffer, so `SS_DEFERRED_QUEUE_SIZE * SS_MAX_SIGNAL_NAME_LENGTH` is a large share of its size. Each `ss_batch_create()` allocates `SS_BATCH_MAX_ENTRIES` entries.
+The deferred queue is part of each bus and each entry holds a full name buffer, so `SS_DEFERRED_QUEUE_SIZE * SS_MAX_SIGNAL_NAME_LENGTH` is a large share of a bus's size. Each `ss_batch_create()` allocates `SS_BATCH_MAX_ENTRIES` entries.
 
 ## Custom Allocators
 

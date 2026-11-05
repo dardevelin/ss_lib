@@ -72,15 +72,20 @@ make docs
 - Use meaningful variable names
 - Comment complex logic
 
-Example:
+Example: a public function that uses library state takes the bus first and
+brackets its work with `bus_enter()` / `bus_leave()` (locking, nesting depth,
+deferred destruction, error reporting):
 ```c
-ss_error_t ss_example_function(const char* param) {
+ss_error_t ss_example_function(ss_bus_t* bus, const char* param) {
+    ss_error_t err = SS_OK;
+    int locked;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
+
     if (!param) {
-        return SS_ERR_NULL_PARAM;
+        err = SS_ERR_NULL_PARAM;
     }
-    
     /* Complex logic explanation */
-    return SS_OK;
+    return bus_leave(bus, locked, err, param);
 }
 ```
 

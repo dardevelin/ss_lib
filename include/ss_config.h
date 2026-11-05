@@ -71,11 +71,12 @@
         #define SS_DEFERRED_PAYLOAD_SIZE 32
     #endif
 
-    /* 1: ss_init() keeps the library context in static storage (.bss).
-     * 0: drop that storage when ss_init_static() supplies a pool; ss_init()
-     *    then allocates the context with SS_CALLOC, as in 2.1. */
-    #ifndef SS_STATIC_CONTEXT
-        #define SS_STATIC_CONTEXT 1
+    /* Built-in buses in static storage (.bss) for ss_bus_create(); each
+     * costs ss_bus_pool_size() bytes. 0 keeps none: buses then come only
+     * from ss_bus_create_in() pools, and ss_bus_create() returns
+     * SS_ERR_WOULD_OVERFLOW. Static mode never allocates a bus. */
+    #ifndef SS_STATIC_BUSES
+        #define SS_STATIC_BUSES 1
     #endif
 #endif
 

@@ -23,9 +23,14 @@ void interrupt_hook(void);
 #include SS_TEST_IMPL
 
 #include <stdio.h>
+/* The asserts are the test: keep them in every build type (CMake's Release
+ * configuration defines NDEBUG) */
+#undef NDEBUG
 #include <assert.h>
 
 #if SS_ENABLE_ISR_SAFE
+
+static ss_bus_t* bus = NULL;
 
 /* The hook runs the interrupt when the countdown reaches zero */
 static int g_countdown = -1;
@@ -63,7 +68,7 @@ static void isr_two_events(void) {
 static void drain_all(void) {
     int i;
     for (i = 0; i < 4; i++) {
-        assert(ss_process_isr_queue() == SS_OK);
+        assert(ss_process_isr_queue(bus) == SS_OK);
     }
 }
 
@@ -73,9 +78,9 @@ static void test_interrupted_scan_keeps_order(void) {
     int at;
     printf("\n=== Testing ISR order with an interrupted scan ===\n");
     for (at = 1; at <= 2 * SS_ISR_QUEUE_SIZE; at++) {
-        assert(ss_init() == SS_OK);
-        assert(ss_signal_register("tick") == SS_OK);
-        assert(ss_connect("tick", record, NULL) == SS_OK);
+        assert(ss_bus_create(&bus, 0) == SS_OK);
+        assert(ss_signal_register(bus, "tick") == SS_OK);
+        assert(ss_connect(bus, "tick", record, NULL) == SS_OK);
         g_count = 0;
 
         interrupt_after(at, isr_two_events);
@@ -89,7 +94,7 @@ static void test_interrupted_scan_keeps_order(void) {
                    at, g_values[0], g_values[1]);
         }
         assert(g_values[0] == 1 && g_values[1] == 2);
-        ss_cleanup();
+        ss_bus_destroy(bus);
     }
     printf("✓ Interrupts during the scan keep queue order\n");
 }
@@ -107,9 +112,9 @@ static void slot_interrupted(const ss_data_t* data, void* user_data) {
 
 static void test_interrupt_during_delivery(void) {
     printf("\n=== Testing ISR order with an interrupt during delivery ===\n");
-    assert(ss_init() == SS_OK);
-    assert(ss_signal_register("tick") == SS_OK);
-    assert(ss_connect("tick", slot_interrupted, NULL) == SS_OK);
+    assert(ss_bus_create(&bus, 0) == SS_OK);
+    assert(ss_signal_register(bus, "tick") == SS_OK);
+    assert(ss_connect(bus, "tick", slot_interrupted, NULL) == SS_OK);
     g_count = 0;
     assert(ss_emit_from_isr("tick", 1) == SS_OK);
     assert(ss_emit_from_isr("tick", 2) == SS_OK);
@@ -117,7 +122,7 @@ static void test_interrupt_during_delivery(void) {
     g_countdown = -1;
     assert(g_count == 3);
     assert(g_values[0] == 1 && g_values[1] == 2 && g_values[2] == 3);
-    ss_cleanup();
+    ss_bus_destroy(bus);
     printf("✓ Events queued during delivery come after older ones\n");
 }
 

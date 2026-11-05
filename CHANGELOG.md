@@ -14,6 +14,34 @@ lists what changes for programs written for 2.x.
 - Version 3.0.0: the shared library is `libss_lib.so.3` / `libss_lib.3.dylib`
   and `find_package(ss_lib 3)` finds it. 2.x and 3.x shared libraries can be
   installed side by side.
+- **Breaking:** an opaque `ss_bus_t` replaces the single global context (A9).
+  Every function that uses library state takes `ss_bus_t* bus` as its first
+  argument and keeps its name: signal registration, connections, emission,
+  the deferred queue, namespaces, introspection, memory and performance
+  statistics, the slot limit, the error handler, trace and
+  `ss_process_isr_queue()`. Buses share nothing: the same signal name on two
+  buses names two signals, and connection handles belong to their bus. The
+  library has no default bus. Slots keep their signature and get their bus
+  through `user_data`.
+- **Breaking:** thread safety is chosen when the bus is created, with the
+  `SS_BUS_THREAD_SAFE` flag (S4). Such a bus has its own recursive mutex;
+  other buses create none. Cross-bus calls from slots must go in one
+  direction only, since a slot holds its bus's lock while it calls another.
+- **Breaking:** `ss_batch_create(bus)`: a batch belongs to the bus it was
+  created for, which supplies the namespace, runs the emission and reports
+  errors.
+- **Breaking:** the error handler is per bus (`ss_set_error_handler(bus,
+  handler)`); its signature is unchanged for now. Errors of calls given no
+  bus (a NULL bus or batch, a failed creation) reach no handler.
+- **Breaking:** in static mode `ss_bus_create()` takes one of
+  `SS_STATIC_BUSES` built-in buses (default 1, in `.bss`), which replaces
+  `SS_STATIC_CONTEXT`, and returns `SS_ERR_WOULD_OVERFLOW` when all are in
+  use; static mode never allocates a bus. Claiming and releasing built-in
+  buses is not locked.
+- The ISR queue stays shared by every bus for now: `ss_emit_from_isr()` takes
+  no bus and works before any bus exists, `ss_process_isr_queue(bus)`
+  delivers to the given bus, and destroying a bus leaves queued events in
+  place (`ss_cleanup()` dropped them).
 - **Breaking:** `ss_data_t` records whether it owns its payload (S12). The new
   `owned` field (in the padding after `type`) is set only by the copying
   setters `ss_data_set_string()` and `ss_data_set_custom()`, and the library
@@ -38,13 +66,23 @@ lists what changes for programs written for 2.x.
   configuration (2.x: 40 and 32 with custom data, 16 without). Feature flags
   still gate function declarations.
 - **Breaking:** `SS_ABI_TAG` is `sizeof(ss_data_t) * 16 + SS_ABI_REVISION`
-  (new macro, 1); `ss_init_abi()` and `ss_init_static_abi()` compare it as
-  before. It fits a 16-bit `size_t`.
+  (new macro, 1). It fits a 16-bit `size_t`. The `ss_bus_create()` and
+  `ss_bus_create_in()` macros pass it, so every bus creation checks it
+  without the caller asking (A8); 2.x checked it only in `ss_init_abi()`.
 - `ss_emit_deferred()` and `ss_batch_add()` return `SS_ERR_INVALID_TYPE` for
   custom data in a library built without `SS_ENABLE_CUSTOM_DATA`, which
   cannot copy it. The code was reserved before.
 
 ### Added
+- `ss_bus_create(&bus, flags)` and `ss_bus_create_in(&bus, pool, size,
+  flags)`, macros over `ss_bus_create_abi()` / `ss_bus_create_in_abi()` that
+  pass `SS_ABI_TAG`; `ss_bus_pool_size()`; `ss_bus_destroy(bus)`, which is
+  deferred until the bus's outermost call returns when called from a slot.
+  A wrong tag or a flag the library lacks returns `SS_ERR_CONFIG_MISMATCH`.
+  `ss_bus_create_in()` works in both memory modes and returns
+  `SS_ERR_NULL_PARAM` for a NULL pool and `SS_ERR_BUFFER_TOO_SMALL` (now
+  returned) for a small one, where 2.x silently fell back to a heap or
+  static context.
 - `SS_DATA_INIT` and `ss_data_init()` for an empty object, and
   `ss_data_clear()`, which frees an owned payload and makes the object
   `SS_TYPE_VOID`, so stack objects can use the copying setters.
@@ -55,6 +93,13 @@ lists what changes for programs written for 2.x.
   job) fails when a public struct's size or member offsets, or an enum
   value, differs between the configurations the project tests, or when
   `ss_lib.h` has a preprocessor conditional inside a public type.
+
+### Removed
+- **Breaking:** `ss_init()`, `ss_init_abi()`, `ss_init_static()`,
+  `ss_init_static_abi()`, `ss_get_required_pool_size()` (now
+  `ss_bus_pool_size()`), `ss_cleanup()` (now `ss_bus_destroy()`),
+  `ss_set_thread_safe()` and `ss_is_thread_safe()` (now `SS_BUS_THREAD_SAFE`),
+  and the `SS_STATIC_CONTEXT` configuration macro (now `SS_STATIC_BUSES`).
 
 ### Fixed
 - `docs/api-reference.md` showed `SS_VERSION_PATCH 1` next to version 2.2.4.

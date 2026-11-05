@@ -31,20 +31,22 @@ void on_button_press(const ss_data_t* data, void* user_data) {
     printf("[BUTTON] Button %d pressed - alarm cleared\n", button);
 }
 
-static void print_memory(const char* title) {
+static void print_memory(ss_bus_t* bus, const char* title) {
 #if SS_ENABLE_MEMORY_STATS
     ss_memory_stats_t stats;
-    if (ss_get_memory_stats(&stats) == SS_OK) {
+    if (ss_get_memory_stats(bus, &stats) == SS_OK) {
         printf("%s\n", title);
         printf("- Signals: %zu/%zu used\n", stats.signals_used, stats.signals_allocated);
         printf("- Slots: %zu/%zu used\n\n", stats.slots_used, stats.slots_allocated);
     }
 #else
+    (void)bus;
     (void)title;
 #endif
 }
 
 int main(void) {
+    ss_bus_t* bus = NULL;
     printf("=== Static Memory Signal-Slot Example ===\n");
 #if SS_USE_STATIC_MEMORY
     printf("Configuration:\n");
@@ -55,23 +57,24 @@ int main(void) {
 #endif
     printf("\n");
     
-    /* Initialize */
-    if (ss_init() != SS_OK) {
-        printf("Init failed!\n");
+    /* Create the bus: in static mode one of the SS_STATIC_BUSES built-in
+     * buses, no heap */
+    if (ss_bus_create(&bus, 0) != SS_OK) {
+        printf("Bus creation failed!\n");
         return 1;
     }
     
     /* Register signals */
-    ss_signal_register("temp_reading");
-    ss_signal_register("temp_critical");
-    ss_signal_register("button_press");
+    ss_signal_register(bus, "temp_reading");
+    ss_signal_register(bus, "temp_critical");
+    ss_signal_register(bus, "button_press");
     
     /* Connect handlers */
-    ss_connect("temp_reading", on_temp_reading, NULL);
-    ss_connect("temp_critical", on_temp_critical, NULL);
-    ss_connect("button_press", on_button_press, NULL);
+    ss_connect(bus, "temp_reading", on_temp_reading, NULL);
+    ss_connect(bus, "temp_critical", on_temp_critical, NULL);
+    ss_connect(bus, "button_press", on_button_press, NULL);
     
-    print_memory("Memory usage after setup:");
+    print_memory(bus, "Memory usage after setup:");
     
     /* Simulate operation */
     printf("Starting simulation...\n\n");
@@ -79,25 +82,25 @@ int main(void) {
     for (int i = 0; i < 10; i++) {
         /* Temperature rises */
         temperature += 50;
-        ss_emit_int("temp_reading", temperature);
+        ss_emit_int(bus, "temp_reading", temperature);
         
         /* Check threshold */
         if (temperature > 750) {  /* 75°C */
-            ss_emit_void("temp_critical");
+            ss_emit_void(bus, "temp_critical");
         }
         
         /* Button press at i=5 */
         if (i == 5) {
-            ss_emit_int("button_press", 1);
+            ss_emit_int(bus, "button_press", 1);
             temperature = 250;  /* Reset temp */
         }
     }
     
     printf("\n");
-    print_memory("=== Final Memory Report ===");
+    print_memory(bus, "=== Final Memory Report ===");
     
-    /* Cleanup */
-    ss_cleanup();
+    /* Release everything the bus holds */
+    ss_bus_destroy(bus);
     
     return 0;
 }

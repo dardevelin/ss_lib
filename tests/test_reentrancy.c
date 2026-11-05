@@ -3,10 +3,11 @@
  *
  * The bugs in that advisory were slots that changed the library while it
  * still used the memory involved: unregistering a signal that is being
- * emitted, ss_cleanup() during an emission, queuing a deferred emission
- * during a flush. This test runs many seeded random programs in which
- * slots call those functions, and every other function that changes
- * state, on any signal and up to MAX_DEPTH emissions deep. Every payload
+ * emitted, tearing everything down during an emission (ss_bus_destroy()
+ * from a slot), queuing a deferred emission during a flush. This test
+ * runs many seeded random programs in which slots call those functions,
+ * and every other function that changes state, on any signal and up to
+ * MAX_DEPTH emissions deep. Every payload
  * carries a check value that the slots verify, and the library's answers
  * are checked for consistency after each step. Built with make test-asan
  * or run under make test-valgrind, any use-after-free on these paths
@@ -17,6 +18,9 @@
  * ./test_reentrancy <seed>.
  */
 #include "ss_lib.h"
+/* The asserts are the test: keep them in every build type (CMake's Release
+ * configuration defines NDEBUG) */
+#undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -32,7 +36,8 @@ static const char* const g_names[NAMES] = { "a", "b", "c", "ns::d", "e", "f" };
 
 static unsigned long g_rng;
 static int g_depth = 0;
-static int g_cleaned = 0;            /* ss_cleanup() was called this program */
+static ss_bus_t* bus = NULL;
+static int g_destroyed = 0;          /* a slot called ss_bus_destroy(bus) */
 static long g_slot_calls = 0;
 static long g_payloads_checked = 0;
 static ss_connection_t g_handles[HANDLES];
@@ -122,7 +127,7 @@ static ss_error_t emit_deferred_payload(const char* name) {
         d.type = SS_TYPE_CUSTOM;
         d.value.custom.ptr = &p;
         d.value.custom.size = sizeof(p);
-        err = ss_emit_deferred(name, &d);
+        err = ss_emit_deferred(bus, name, &d);
         memset(&p, 0xEE, sizeof(p));          /* the queue holds a copy */
         return err;
     }
@@ -130,13 +135,13 @@ static ss_error_t emit_deferred_payload(const char* name) {
     make_string(buf, sizeof(buf), (int)rnd(100000));
     d.type = SS_TYPE_STRING;
     d.value.s_val = buf;
-    err = ss_emit_deferred(name, &d);
+    err = ss_emit_deferred(bus, name, &d);
     memset(buf, 'X', sizeof(buf) - 1);        /* the queue holds a copy */
     return err;
 }
 
 static void batch_step(void) {
-    ss_batch_t* batch = ss_batch_create();
+    ss_batch_t* batch = ss_batch_create(bus);
     ss_data_t d;
     char buf[24];
     if (!batch) return;
@@ -157,38 +162,38 @@ static void step(void) {
     char buf[24];
     switch (rnd(g_depth > 0 ? 17 : 16)) {
     case 0:
-        (void)ss_signal_register(name);
+        (void)ss_signal_register(bus, name);
         break;
     case 1:
-        (void)ss_signal_unregister(name);
+        (void)ss_signal_unregister(bus, name);
         break;
     case 2:
     case 3:
-        (void)ss_connect_ex(name, stress_slot, NULL, (ss_priority_t)rnd(16),
+        (void)ss_connect_ex(bus, name, stress_slot, NULL, (ss_priority_t)rnd(16),
                             &g_handles[rnd(HANDLES)]);
         break;
     case 4:
-        (void)ss_disconnect(name, stress_slot);
+        (void)ss_disconnect(bus, name, stress_slot);
         break;
     case 5:
-        (void)ss_disconnect_all(name);
+        (void)ss_disconnect_all(bus, name);
         break;
     case 6:
-        (void)ss_disconnect_handle(g_handles[rnd(HANDLES)]);
+        (void)ss_disconnect_handle(bus, g_handles[rnd(HANDLES)]);
         break;
     case 7:
-        (void)ss_emit_int(name, (int)rnd(1000));
+        (void)ss_emit_int(bus, name, (int)rnd(1000));
         break;
     case 8:
         make_string(buf, sizeof(buf), (int)rnd(100000));
-        (void)ss_emit_string(name, buf);
+        (void)ss_emit_string(bus, name, buf);
         break;
     case 9:
     case 10:
         (void)emit_deferred_payload(name);
         break;
     case 11:
-        (void)ss_flush_deferred();
+        (void)ss_flush_deferred(bus);
         break;
     case 12:
         batch_step();
@@ -197,7 +202,7 @@ static void step(void) {
 #if SS_ENABLE_INTROSPECTION
         ss_signal_info_t* list = NULL;
         size_t count = 0;
-        if (ss_get_signal_list(&list, &count) == SS_OK) {
+        if (ss_get_signal_list(bus, &list, &count) == SS_OK) {
             size_t i;
             for (i = 0; i < count; i++) assert(list[i].name != NULL);
             ss_free_signal_list(list, count);
@@ -208,16 +213,16 @@ static void step(void) {
     case 14:
 #if SS_ENABLE_ISR_SAFE
         (void)ss_emit_from_isr(name, (int)rnd(1000));
-        (void)ss_process_isr_queue();
+        (void)ss_process_isr_queue(bus);
 #endif
         break;
     case 15:
-        (void)ss_emit_void(name);
+        (void)ss_emit_void(bus, name);
         break;
     default:                                   /* slots only, rarely */
         if (rnd(8) == 0) {
-            ss_cleanup();
-            g_cleaned = 1;
+            ss_bus_destroy(bus);
+            g_destroyed = 1;
         }
         break;
     }
@@ -228,39 +233,43 @@ static void check_consistent(void) {
 #if SS_ENABLE_INTROSPECTION
     size_t i, live = 0;
     for (i = 0; i < NAMES; i++) {
-        if (ss_signal_exists(g_names[i])) live++;
+        if (ss_signal_exists(bus, g_names[i])) live++;
     }
-    assert(ss_get_signal_count() == live);
+    assert(ss_get_signal_count(bus) == live);
 #endif
+}
+
+/* After a slot destroyed the bus, which was released when the outermost
+ * call returned and must not be used again, continue on a new bus */
+static void replace_destroyed_bus(void) {
+    if (!g_destroyed) return;
+    assert(ss_bus_create(&bus, 0) == SS_OK);
+    assert(ss_signal_exists(bus, "a") == 0);
+    g_destroyed = 0;
+    memset(g_handles, 0, sizeof(g_handles));
 }
 
 static void run_program(unsigned long seed) {
     int i;
     g_rng = seed * 2654435761UL + 1;
-    g_cleaned = 0;
+    g_destroyed = 0;
     memset(g_handles, 0, sizeof(g_handles));
-    assert(ss_init() == SS_OK);
+    assert(ss_bus_create(&bus, 0) == SS_OK);
     for (i = 0; i < NAMES; i++) {
-        (void)ss_signal_register(g_names[i]);
-        (void)ss_connect_ex(g_names[i], stress_slot, NULL, (ss_priority_t)rnd(16), NULL);
-        (void)ss_connect_ex(g_names[i], stress_slot, NULL, (ss_priority_t)rnd(16),
+        (void)ss_signal_register(bus, g_names[i]);
+        (void)ss_connect_ex(bus, g_names[i], stress_slot, NULL, (ss_priority_t)rnd(16), NULL);
+        (void)ss_connect_ex(bus, g_names[i], stress_slot, NULL, (ss_priority_t)rnd(16),
                             &g_handles[i]);
     }
     for (i = 0; i < STEPS; i++) {
         step();
-        if (g_cleaned) {
-            /* Cleanup from a slot finished when the outermost call returned */
-            assert(ss_signal_exists("a") == 0);
-            assert(ss_emit_void("a") == SS_ERR_NULL_PARAM);
-            assert(ss_init() == SS_OK);
-            g_cleaned = 0;
-            memset(g_handles, 0, sizeof(g_handles));
-        }
+        replace_destroyed_bus();
         check_consistent();
     }
-    (void)ss_flush_deferred();
+    (void)ss_flush_deferred(bus);
+    replace_destroyed_bus();
     check_consistent();
-    ss_cleanup();
+    ss_bus_destroy(bus);
 }
 
 int main(int argc, char** argv) {
