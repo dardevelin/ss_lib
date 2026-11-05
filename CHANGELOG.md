@@ -14,6 +14,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   oldest first. `tests/test_isr.c` interrupts the scan at every point.
 - The docs for `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` say that
   both must also be compiler memory barriers.
+- `make -j test-all` could fail with "Library not loaded" (macOS) or a
+  missing shared library (Linux): tests, examples and the benchmark linked
+  with `-lss_lib`, which picks the shared library once `check-install` has
+  built it. They now link the static archive by path.
 
 ## [2.2.1] - 2026-11-04
 
