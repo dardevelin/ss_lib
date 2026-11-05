@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- CI: the Embedded (ARM Cortex-M) job installs the ARM compiler and newlib
+  without the recommended C++ libraries, 114 MB to download instead of 602 MB,
+  so a slow package mirror no longer runs it past its timeout.
+
 ## [3.0.0] - 2026-11-05
 
 A major release: every stateful call takes an explicit bus.
