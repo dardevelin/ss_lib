@@ -2,10 +2,11 @@
  * Concurrency stress test (POSIX threads). Run under ThreadSanitizer:
  *   make test-tsan
  *
- * Five phases:
+ * Six phases:
  *   1. one bus created with SS_BUS_THREAD_SAFE, shared by every thread:
  *      every public operation that touches its state is hammered, including
- *      slots that call back into the library and producers on the ISR queue;
+ *      slots that call back into the library, producers on the ISR queue
+ *      and error handlers replaced while other threads' calls fail;
  *   2. one bus per thread, created without the flag: buses share no state,
  *      so they need no lock;
  *   3. two thread-safe buses, where slots of the first emit on the second
@@ -16,6 +17,8 @@
  *   5. ISR producers on two buses, each drained by its own consumer
  *      thread: the ISR path takes no lock, so the buses are created
  *      without the flag. Events stay on their bus, in order per producer.
+ *   6. an error handler that waits for another thread using its bus: it
+ *      runs after the failing call released the lock.
  * Any data race, deadlock, lost or duplicated event fails the run.
  */
 #include "ss_lib.h"
@@ -40,6 +43,8 @@ static ss_bus_t* bus;                /* phase 1: shared by every thread */
 static atomic_long g_calls;
 static atomic_long g_isr_sent;
 static atomic_long g_isr_seen;
+static atomic_long g_missing;        /* failing emits in phase 1 */
+static atomic_long g_reported[2];    /* the two handlers' user_data */
 #if SS_ENABLE_DEBUG_TRACE
 static FILE* g_trace_sink;
 #endif
@@ -52,6 +57,18 @@ static void slot_count(const ss_data_t* data, void* user_data) {
 static void slot_isr(const ss_data_t* data, void* user_data) {
     (void)data; (void)user_data;
     atomic_fetch_add(&g_isr_seen, 1);
+}
+
+/* Set by the workers with one of two user_data while others' calls fail:
+ * each report reaches a handler that was set, with its own user_data */
+static void count_report(ss_bus_t* failing, ss_error_t error, const char* msg,
+                         void* user_data) {
+    atomic_long* reported = (atomic_long*)user_data;
+    (void)error;
+    assert(failing == bus);
+    assert(msg != NULL);
+    assert(reported == &g_reported[0] || reported == &g_reported[1]);
+    atomic_fetch_add(reported, 1);
 }
 
 /* Re-enters the library from inside a slot */
@@ -119,6 +136,9 @@ static void* worker(void* arg) {
             ss_memory_stats_t stats;
             (void)ss_get_memory_stats(bus, &stats);
 #endif
+            ss_set_error_handler(bus, count_report, &g_reported[id % 2]);
+            assert(ss_emit_void(bus, "missing") == SS_ERR_NOT_FOUND);
+            atomic_fetch_add(&g_missing, 1);
 #if SS_ENABLE_DEBUG_TRACE
             if (i % 20 == 8) {
                 ss_enable_trace(bus, g_trace_sink);
@@ -295,6 +315,23 @@ static void* isr_bus_worker(void* arg) {
     return NULL;
 }
 
+/* Phase 6: the handler starts a thread that uses the failing bus and waits
+ * for it, which deadlocks if the failing call still holds the lock */
+static void* use_bus(void* arg) {
+    assert(ss_signal_register((ss_bus_t*)arg, "from_other_thread") == SS_OK);
+    return NULL;
+}
+
+static void handler_waits_for_thread(ss_bus_t* failing, ss_error_t error, const char* msg,
+                                     void* user_data) {
+    pthread_t other;
+    (void)error;
+    (void)msg;
+    assert(pthread_create(&other, NULL, use_bus, failing) == 0);
+    assert(pthread_join(other, NULL) == 0);
+    atomic_fetch_add((atomic_long*)user_data, 1);
+}
+
 static void run_threads(void* (*fn)(void*)) {
     pthread_t threads[THREADS];
     long i;
@@ -334,13 +371,17 @@ int main(void) {
     assert(ss_process_isr_queue(bus) == SS_OK);
     assert(atomic_load(&g_isr_seen) == atomic_load(&g_isr_sent));
     assert(ss_flush_deferred(bus) == SS_OK);
+    /* Every failing emit was reported (other failing calls too) */
+    assert(atomic_load(&g_reported[0]) + atomic_load(&g_reported[1]) >=
+           atomic_load(&g_missing));
 
     ss_bus_destroy(bus);
 #if SS_ENABLE_DEBUG_TRACE
     fclose(g_trace_sink);
 #endif
-    printf("Shared bus passed (%ld slot calls, %ld ISR events)\n",
-           (long)atomic_load(&g_calls), (long)atomic_load(&g_isr_seen));
+    printf("Shared bus passed (%ld slot calls, %ld ISR events, %ld errors reported)\n",
+           (long)atomic_load(&g_calls), (long)atomic_load(&g_isr_seen),
+           (long)(atomic_load(&g_reported[0]) + atomic_load(&g_reported[1])));
 
     /* Phase 2: a bus per thread, no locks */
     run_threads(own_bus_worker);
@@ -397,6 +438,19 @@ int main(void) {
     free(pool);
     printf("ISR queues per bus passed (%d events on each of 2 buses)\n",
            ISR_PRODUCERS * ISR_EVENTS);
+
+    /* Phase 6: the error handler runs unlocked */
+    {
+        atomic_long reports;
+        atomic_init(&reports, 0);
+        assert(ss_bus_create(&bus, SS_BUS_THREAD_SAFE) == SS_OK);
+        ss_set_error_handler(bus, handler_waits_for_thread, &reports);
+        assert(ss_emit_void(bus, "missing") == SS_ERR_NOT_FOUND);
+        assert(atomic_load(&reports) == 1);
+        assert(ss_signal_exists(bus, "from_other_thread") == 1);
+        ss_bus_destroy(bus);
+    }
+    printf("Error handler outside the lock passed\n");
 
     printf("Concurrency stress test passed\n");
     return 0;

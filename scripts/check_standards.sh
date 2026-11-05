@@ -60,6 +60,12 @@ static void on_value(const ss_data_t* data, void* user_data) {
     (void)data;
     (void)user_data;
 }
+static void on_error(ss_bus_t* bus, ss_error_t error, const char* msg, void* user_data) {
+    (void)bus;
+    (void)error;
+    (void)msg;
+    (void)user_data;
+}
 #if SS_ENABLE_CUSTOM_DATA
 static void on_release(const void* data, size_t size) {
     (void)data;
@@ -75,6 +81,7 @@ int main(void) {
         ss_bus_create(&bus, 0) != SS_OK) return 1;
     if (ss_bus_create_in(&pooled, pool, sizeof(pool), 0) != SS_ERR_BUFFER_TOO_SMALL) return 1;
     if (ss_bus_pool_size() == 0) return 1;
+    ss_set_error_handler(bus, on_error, &data);
     if (ss_signal_register(bus, "value") != SS_OK) return 1;
     if (ss_connect(bus, "value", on_value, 0) != SS_OK) return 1;
     if (ss_emit_int(bus, "value", 1) != SS_OK) return 1;
