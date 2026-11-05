@@ -1,7 +1,10 @@
 name: Release
 
 # Pushing a tag vMAJOR.MINOR.PATCH publishes a release; vX.Y.Z-rc.N (any
-# tag with a '-') publishes a pre-release. CONTRIBUTING.md has the steps.
+# tag with a '-') publishes a pre-release. A release must be tagged on main,
+# or on release/MAJOR.x for a maintenance release of an older major version,
+# which is published without becoming the latest release. CONTRIBUTING.md
+# has the steps.
 
 on:
   push:
@@ -32,10 +35,17 @@ jobs:
       run: |
         scripts/check_version.sh "$TAG"
         scripts/release_notes.sh "$TAG" > release-notes.md
+        major=${TAG#v}
+        major=${major%%.*}
         case "$TAG" in
-          *-*) ;;  # pre-releases may come from a release branch
-          *) git merge-base --is-ancestor "$GITHUB_SHA" origin/main ||
-               { echo "$TAG does not point at a commit on main" >&2; exit 1; } ;;
+          *-*) ;;  # pre-releases may come from a release or version branch
+          *) if git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+               :
+             elif git merge-base --is-ancestor "$GITHUB_SHA" "origin/release/$major.x" 2>/dev/null; then
+               echo "MAINTENANCE=1" >> "$GITHUB_ENV"   # not the latest release
+             else
+               echo "$TAG is not on main or on release/$major.x" >&2; exit 1
+             fi ;;
         esac
 
     - name: Test every configuration
@@ -60,9 +70,10 @@ jobs:
           echo "Release $TAG exists; replacing its assets"
           gh release upload "$TAG" dist/* --clobber
         else
-          prerelease=""
-          case "$TAG" in *-*) prerelease="--prerelease" ;; esac
+          kind=""
+          case "$TAG" in *-*) kind="--prerelease" ;; esac
+          [ -n "${MAINTENANCE:-}" ] && kind="--latest=false"
           # shellcheck disable=SC2086
-          gh release create "$TAG" dist/* --verify-tag $prerelease \
+          gh release create "$TAG" dist/* --verify-tag $kind \
             --title "SS_Lib ${TAG#v}" --notes-file release-notes.md
         fi
