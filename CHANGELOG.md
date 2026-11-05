@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- The release workflow accepts a final tag on `release/MAJOR.x` for that
+  major version as well as on `main`, so older major versions can get
+  maintenance releases, and publishes those without making them the latest
+  release.
+
 ### Fixed
 - The tests checked nothing in CMake Release builds, which CI's Windows MSVC
   job uses: Release defines `NDEBUG`, which removes every `assert()`. Each
