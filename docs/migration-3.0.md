@@ -1,0 +1,514 @@
+# Migrating from 2.x to 3.0
+
+SS_Lib 3.0 makes three changes that break 2.x code:
+
+- **A bus** (`ss_bus_t*`) replaces the single global context. Every function
+  that uses library state takes it as its first argument.
+- **`ss_data_t` records who owns its payload**, so the library never frees
+  memory it did not allocate.
+- **Public layouts no longer depend on the configuration**, and every bus
+  creation checks that the caller and the library agree on them.
+
+Almost every change is reported by the compiler: a call that must change
+fails to compile until it is changed. The few changes in behavior of code
+that still compiles are listed under [Behavior changes](#behavior-changes).
+[design.md](design.md#version-30) explains the reasons, and
+[3.0-plan.md](3.0-plan.md) is the design record.
+
+## Summary
+
+Removed:
+
+| 2.x | 3.0 |
+|---|---|
+| `ss_init()`, `ss_init_abi(SS_ABI_TAG)` | `ss_bus_create(&bus, 0)` ([bus](#creating-and-destroying-a-bus)) |
+| `ss_init_static(pool, size)`, `ss_init_static_abi(pool, size, SS_ABI_TAG)` | `ss_bus_create_in(&bus, pool, size, 0)` |
+| `ss_get_required_pool_size()` | `ss_bus_pool_size()` |
+| `ss_cleanup()` | `ss_bus_destroy(bus)` |
+| `ss_set_thread_safe(1)` | the `SS_BUS_THREAD_SAFE` creation flag ([thread safety](#thread-safety)) |
+| `ss_is_thread_safe()` | none: the flags given at creation decide it |
+| `SS_STATIC_CONTEXT` | `SS_STATIC_BUSES` ([configuration](#configuration)) |
+| `SS_TRACE(...)` | `ss_enable_trace(bus, stream)`, or your own logging ([removed in passing](#removed-and-changed-in-passing)) |
+| `SS_ERR_TIMEOUT`, `SS_ERR_ISR_UNSAFE` | none: no function returned them |
+| `ss_data_t` members `custom_data`, `size`, `custom_cleanup` | `value.custom.ptr`, `value.custom.size`, `value.custom.cleanup`; read with `ss_data_get_custom()` ([data](#data-ownership)) |
+
+Changed:
+
+| 2.x | 3.0 |
+|---|---|
+| Every function that uses library state, e.g. `ss_emit_int(name, v)` | The bus first: `ss_emit_int(bus, name, v)` ([the bus argument](#the-bus-argument)) |
+| `ss_set_error_handler(handler)`, handler `void (*)(ss_error_t, const char*)` | `ss_set_error_handler(bus, handler, user_data)`, handler `ss_error_handler_t`: `void (*)(ss_bus_t*, ss_error_t, const char*, void*)` ([error handler](#error-handler)) |
+| `const char* ss_get_namespace(void)` | `ss_error_t ss_get_namespace(bus, buf, size)`, a copy ([removed in passing](#removed-and-changed-in-passing)) |
+| `ss_batch_create(void)` | `ss_batch_create(bus)` ([batches](#batches)) |
+| `ss_emit_from_isr(name, v)`, `ss_process_isr_queue(void)` | `ss_emit_from_isr(bus, name, v)`, `ss_process_isr_queue(bus)` ([ISR queue](#isr-queue)) |
+| `ss_cleanup_func_t`: `void (*)(void* data)` | `void (*)(const void* data, size_t size)` ([data](#data-ownership)) |
+| `ss_data_set_custom(data, void* value, ...)` | `const void* value`; callers need no change |
+| `SS_ABI_TAG`: `sizeof(ss_data_t)` | `sizeof(ss_data_t) * 16 + SS_ABI_REVISION`, passed by the create macros |
+
+New: `ss_bus_t`, `ss_bus_create()`, `ss_bus_create_in()` (macros over
+`ss_bus_create_abi()` / `ss_bus_create_in_abi()`), `ss_bus_pool_size()`,
+`ss_bus_destroy()`, `SS_BUS_THREAD_SAFE`, `SS_STATIC_BUSES`,
+`SS_ABI_REVISION`, `ss_error_handler_t`, the `owned` member,
+`SS_DATA_INIT`, `ss_data_init()`, `ss_data_clear()`,
+`ss_data_set_string_ref()` and `ss_data_set_custom_ref()`.
+
+Unchanged: the slot signature, `ss_version()`, `ss_error_string()`,
+`ss_free_signal_list()`, `ss_batch_add()`, `ss_batch_emit()`,
+`ss_batch_destroy()`, the other `ss_data_*` functions, and the numbers of
+the remaining error codes.
+
+## Building and linking
+
+- The shared library is `libss_lib.so.3` (Linux) or `libss_lib.3.dylib`
+  (macOS). Rebuild and relink programs; a program built against 2.x keeps
+  using `libss_lib.so.2`, and both can be installed side by side.
+- With CMake, ask for the new major version: `find_package(ss_lib 3 REQUIRED)`.
+  A request for 2 does not accept 3.0.
+- pkg-config keeps the name `ss_lib`, and headers stay in `include/ss_lib/`.
+
+## Creating and destroying a bus
+
+2.x kept all state in one global context. 3.0 keeps it in a bus that you
+create, pass to every call and destroy. The library has no default bus.
+
+| 2.x | 3.0 |
+|---|---|
+| `ss_init()`, `ss_init_abi(SS_ABI_TAG)` | `ss_bus_create(&bus, 0)` |
+| `ss_init_static(pool, size)`, `ss_init_static_abi(pool, size, SS_ABI_TAG)` | `ss_bus_create_in(&bus, pool, size, 0)` |
+| `ss_get_required_pool_size()` | `ss_bus_pool_size()` |
+| `ss_cleanup()` | `ss_bus_destroy(bus)` |
+
+```c
+/* 2.x */
+if (ss_init() != SS_OK) return 1;
+ss_signal_register("ready");
+/* ... */
+ss_cleanup();
+
+/* 3.0 */
+ss_bus_t* bus = NULL;
+if (ss_bus_create(&bus, 0) != SS_OK) return 1;
+ss_signal_register(bus, "ready");
+/* ... */
+ss_bus_destroy(bus);
+```
+
+- `ss_bus_create()` and `ss_bus_create_in()` are macros that pass
+  `SS_ABI_TAG`, so every creation checks that the caller and the library
+  agree on the layout of `ss_data_t`; a mismatch returns
+  `SS_ERR_CONFIG_MISMATCH`. Code that called `ss_init_abi(SS_ABI_TAG)` gets
+  this check without asking. Callers that cannot use C macros (FFI) call
+  `ss_bus_create_abi()` / `ss_bus_create_in_abi()` with the tag.
+- On failure the bus pointer is set to NULL. Check the return value: there is
+  no global to fall back on.
+- **Pools no longer fall back.** `ss_init_static()` with a NULL or too small
+  pool behaved like `ss_init()`. `ss_bus_create_in()` returns
+  `SS_ERR_NULL_PARAM` or `SS_ERR_BUFFER_TOO_SMALL` instead. A pool of
+  `ss_bus_pool_size()` bytes always suffices; it needs no particular
+  alignment, must outlive the bus and is never freed by the library. It
+  works in both memory modes.
+- **Static mode never allocates a bus.** `ss_bus_create()` takes one of the
+  `SS_STATIC_BUSES` built-in buses (default 1) and returns
+  `SS_ERR_WOULD_OVERFLOW` when all are in use. Create and destroy built-in
+  buses from one thread, normally at startup: claiming them is not locked.
+- **After `ss_bus_destroy()` the bus is gone.** In 2.x a call after
+  `ss_cleanup()` returned `SS_ERR_NULL_PARAM`; in 3.0 using a destroyed bus
+  is undefined, like using memory after `free()`. Set your pointer to NULL.
+  `ss_bus_destroy(NULL)` is a no-op.
+- **Destroying from a slot** works as `ss_cleanup()` did: the remaining slots
+  of the emission are skipped, the bus refuses every call
+  (`SS_ERR_NULL_PARAM`) and is freed when its outermost call returns. Other
+  buses are not affected.
+- Calling `ss_init()` twice was harmless in 2.x. Creating twice gives two
+  independent buses: make sure each part of the program uses the bus it
+  means.
+
+## The bus argument
+
+Every function that uses library state takes the bus as its first argument
+and keeps its name. A call that is not changed fails to compile, because the
+number of arguments changes; no call silently changes meaning.
+
+| Takes the bus first | Unchanged (no bus) |
+|---|---|
+| `ss_signal_register`, `ss_signal_register_ex`, `ss_signal_unregister`, `ss_signal_exists` | `ss_version`, `ss_error_string` |
+| `ss_connect`, `ss_connect_ex`, `ss_disconnect`, `ss_disconnect_handle`, `ss_disconnect_all` | `ss_data_*` |
+| `ss_emit`, `ss_emit_void`, `ss_emit_int`, `ss_emit_float`, `ss_emit_double`, `ss_emit_string`, `ss_emit_pointer`, `ss_emit_namespaced` | `ss_free_signal_list` |
+| `ss_emit_deferred`, `ss_flush_deferred` | `ss_batch_add`, `ss_batch_emit`, `ss_batch_destroy` (the batch knows its bus) |
+| `ss_set_namespace`, `ss_get_namespace` (which also copies into a buffer, see [below](#removed-and-changed-in-passing)) | |
+| `ss_get_signal_count`, `ss_get_signal_list` | |
+| `ss_get_memory_stats`, `ss_reset_memory_stats` | |
+| `ss_get_perf_stats`, `ss_enable_profiling`, `ss_reset_perf_stats` | |
+| `ss_set_error_handler`, `ss_set_max_slots_per_signal`, `ss_get_max_slots_per_signal` | |
+| `ss_enable_trace`, `ss_disable_trace` | |
+| `ss_emit_from_isr`, `ss_process_isr_queue` (see [ISR queue](#isr-queue)) | |
+| `ss_batch_create` | |
+
+For code that uses one bus, kept in one variable (`B` below names it), this
+`sed` command adds the argument to every call in the table, and replaces
+`ss_init()`, `ss_init_abi(SS_ABI_TAG)` and `ss_cleanup()`. It needs GNU sed
+(`gsed` on macOS). Review the diff: it does not touch function pointers, or
+calls split across lines before the opening parenthesis.
+
+```sh
+B=bus   # the variable that holds the bus
+sed -i -E \
+  -e "s/\bss_init(_abi)?\(\s*(SS_ABI_TAG)?\s*\)/ss_bus_create(\&$B, 0)/g" \
+  -e "s/\bss_cleanup\(\s*\)/ss_bus_destroy($B)/g" \
+  -e "s/\b(ss_flush_deferred|ss_get_signal_count|ss_reset_memory_stats|ss_reset_perf_stats|ss_get_max_slots_per_signal|ss_disable_trace|ss_process_isr_queue|ss_batch_create)\(\s*\)/\1($B)/g" \
+  -e "s/\b(ss_signal_register(_ex)?|ss_signal_unregister|ss_signal_exists|ss_connect(_ex)?|ss_disconnect(_handle|_all)?|ss_emit(_void|_int|_float|_double|_string|_pointer|_namespaced|_deferred|_from_isr)?|ss_set_namespace|ss_get_signal_list|ss_get_memory_stats|ss_get_perf_stats|ss_enable_profiling|ss_set_error_handler|ss_set_max_slots_per_signal|ss_enable_trace)\(/\1($B, /g" \
+  src/*.c
+```
+
+Then, by hand:
+
+- Declare the bus where every user can reach it, for example
+  `static ss_bus_t* bus;` in the file that creates it.
+- Replace `ss_init_static()` as shown in the previous section.
+- Give the error handler its new parameters and `ss_set_error_handler()` its
+  third argument ([Error handler](#error-handler)).
+- Replace `ss_get_namespace()` as shown in
+  [Removed and changed in passing](#removed-and-changed-in-passing).
+- Pass the bus to slots that call the library (below).
+
+The compiler reports every place that still needs a change.
+
+**Slots that call the library** need the bus too. The slot signature does
+not change; pass the bus as `user_data`, or in a struct that `user_data`
+points to:
+
+```c
+static void on_saved(const ss_data_t* data, void* user_data) {
+    ss_bus_t* bus = (ss_bus_t*)user_data;
+    ss_emit_string(bus, "status", ss_data_get_string(data));
+}
+
+ss_connect(bus, "saved", on_saved, bus);
+```
+
+**A program that wants one global bus** can keep its 2.x shape with a small
+wrapper of its own. The library provides none, because a global is the
+application's choice:
+
+```c
+/* app_bus.h */
+#include "ss_lib.h"
+extern ss_bus_t* app_bus;
+ss_error_t app_bus_init(void);
+void app_bus_cleanup(void);
+
+/* app_bus.c, after #include "app_bus.h" */
+ss_bus_t* app_bus = NULL;
+ss_error_t app_bus_init(void) { return ss_bus_create(&app_bus, 0); }
+void app_bus_cleanup(void) { ss_bus_destroy(app_bus); app_bus = NULL; }
+```
+
+Files that used the library include `app_bus.h` instead of `ss_lib.h`, and
+calls read `ss_emit_int(app_bus, "tick", n)`. Run the `sed` command above
+with `B=app_bus`; the `ss_bus_create(&app_bus, 0)` it writes for `ss_init()`
+does what `app_bus_init()` does.
+
+## Thread safety
+
+`ss_set_thread_safe(1)` becomes the `SS_BUS_THREAD_SAFE` flag at creation,
+and `ss_is_thread_safe()` is gone: a bus is thread-safe for its whole life
+or not at all.
+
+```c
+/* 2.x */
+ss_init();
+ss_set_thread_safe(1);
+
+/* 3.0 */
+ss_bus_create(&bus, SS_BUS_THREAD_SAFE);
+```
+
+- The flag needs a library built with `SS_ENABLE_THREAD_SAFETY` (the
+  default). Without it, creation returns `SS_ERR_CONFIG_MISMATCH` instead of
+  quietly giving an unlocked bus.
+- Each such bus has its own recursive mutex; a bus created without the flag
+  has none. Buses share no state, so threads that each use their own bus
+  need no flag at all.
+- Inside a bus nothing changes from 2.x: slots run with the bus's lock held
+  and may call back into the same bus.
+- **Cross-bus calls from slots go in one direction only.** A slot of bus A
+  that calls bus B holds A's lock while it takes B's. If another thread's
+  slot of B calls A at the same time, the two threads deadlock.
+- `ss_bus_destroy()` is not thread-safe with respect to other threads using
+  the same bus, as `ss_cleanup()` was not.
+
+## Error handler
+
+Each bus has its own error handler, and the handler receives the failing
+bus and a `user_data` pointer that you pass when setting it:
+
+```c
+/* 2.x */
+static void on_error(ss_error_t error, const char* msg) {
+    fprintf(stderr, "%s: %s\n", ss_error_string(error), msg);
+}
+ss_set_error_handler(on_error);
+
+/* 3.0 */
+static void on_error(ss_bus_t* bus, ss_error_t error, const char* msg, void* user_data) {
+    (void)bus;
+    fprintf(stderr, "%s: %s: %s\n", (const char*)user_data, ss_error_string(error), msg);
+}
+ss_set_error_handler(bus, on_error, "ui bus");
+```
+
+- The type is `ss_error_handler_t`. A 2.x handler passed to
+  `ss_set_error_handler()` is an incompatible pointer type; do not cast it,
+  change its parameters. Compile with `-Werror=incompatible-pointer-types`
+  (clang: `-Werror=incompatible-function-pointer-types`) while migrating,
+  because older compilers only warn.
+- The `sed` command [above](#the-bus-argument) adds the bus argument; add
+  the `user_data` argument by hand (`NULL` if the handler needs none).
+- `ss_set_error_handler(bus, NULL, NULL)` removes the handler, as
+  `ss_set_error_handler(NULL)` did.
+- **State the handler used from globals can move into `user_data`**, and
+  one function can serve several buses: `bus` says which one failed.
+- **Errors stay on their bus.** A handler set on bus A never sees errors of
+  bus B. Errors of calls given no bus (a NULL bus or batch, or a failed
+  `ss_bus_create()`) reach no handler.
+- As in 2.x, the handler runs after the failing call releases the lock, so
+  it may call the library, also on its own bus. It may call
+  `ss_bus_destroy(bus)`; when the failing call was the outermost one the
+  bus is freed at once, so the handler must not use it afterwards.
+- **A bus being destroyed reports nothing.** Once `ss_bus_destroy(bus)` has
+  been called, also from a slot, calls still running on the bus return
+  their errors without calling the handler, so `user_data` may be released
+  right after `ss_bus_destroy()`. In 2.x a call failing after
+  `ss_cleanup()` was requested from a slot could still reach the handler.
+
+## Batches
+
+`ss_batch_create()` takes the bus the batch belongs to:
+`ss_batch_create(bus)`. That bus supplies the default namespace when
+entries are added, runs `ss_batch_emit()` and reports errors.
+`ss_batch_add()`, `ss_batch_emit()` and `ss_batch_destroy()` are unchanged.
+Destroy batches before their bus. A batch whose bus was destroyed from one
+of its own slots can still be destroyed, but not used.
+
+## ISR queue
+
+Each bus has its own ISR queue, so `ss_emit_from_isr()` takes the bus:
+
+```c
+/* 2.x */
+void ADC_IRQHandler(void) {
+    ss_emit_from_isr("adc_ready", ADC->DR);
+}
+/* main loop: */ ss_process_isr_queue();
+
+/* 3.0 */
+static ss_bus_t* bus;   /* set before the interrupt is enabled */
+void ADC_IRQHandler(void) {
+    ss_emit_from_isr(bus, "adc_ready", ADC->DR);
+}
+/* main loop: */ ss_process_isr_queue(bus);
+```
+
+- An ISR needs the bus pointer: keep it in a global that the program sets
+  before enabling the interrupts that emit.
+- **Create the bus before enabling those interrupts.** In 2.x the queue was
+  a global array, usable before `ss_init()`. In 3.0 there is no queue
+  without a bus; a NULL bus returns `SS_ERR_NULL_PARAM` and queues nothing.
+- **Disable those interrupts before `ss_bus_destroy()`.** Destroying a bus
+  drops the events still queued on it, as `ss_cleanup()` did, and frees or
+  recycles its memory, which an interrupt must not write into afterwards.
+- `ss_process_isr_queue(bus)` delivers only the events queued on that bus.
+  A program with several buses queues each event on the bus that should
+  deliver it.
+- RAM: the queue (`SS_ISR_QUEUE_SIZE` entries, 704 bytes with the defaults
+  on 32-bit targets) is now inside each bus. A program with one bus uses
+  the same RAM as in 2.x; each further bus costs the queue again.
+
+## Data ownership
+
+`ss_data_t` has a new `owned` field. The library frees a string or custom
+payload only when `owned` is set, and only `ss_data_set_string()` and
+`ss_data_set_custom()`, which copy, set it. Everything else borrows: direct
+field writes, the new `ss_data_set_string_ref()` / `ss_data_set_custom_ref()`,
+the `ss_emit_*` helpers, and the data slots receive. In 2.x the setters and
+`ss_data_destroy()` freed any string or custom pointer they found, so a
+borrowed pointer was freed by mistake.
+
+What to change:
+
+- **Initialize every `ss_data_t`.** Use `ss_data_t d = SS_DATA_INIT;` or
+  `ss_data_init(&d)` for stack and embedded objects (`ss_data_create()`
+  already returns an initialized one). Code that filled a stack object after
+  `memset(&d, 0, sizeof(d))` or `= {0}` keeps working. An object declared
+  without an initializer has a garbage `owned`; before passing it to a setter
+  or `ss_data_clear()`, initialize it.
+- **Clear stack objects that use the copying setters.** In 2.x a stack object
+  could only borrow. In 3.0 `ss_data_set_string()` and `ss_data_set_custom()`
+  work on stack objects too, and the copy must be released with
+  `ss_data_clear()` before the object goes out of scope:
+
+  ```c
+  ss_data_t d = SS_DATA_INIT;
+  ss_data_set_string(&d, buffer);   /* copies buffer */
+  ss_emit(bus, "status", &d);
+  ss_data_clear(&d);                /* frees the copy */
+  ```
+
+  `ss_data_destroy()` is now `ss_data_clear()` plus freeing an object from
+  `ss_data_create()`.
+- **Setters on borrowed objects are safe.** `ss_data_set_*()` on an object
+  holding a borrowed pointer no longer frees it (2.x documented this as
+  misuse). To store a pointer without copying, use
+  `ss_data_set_string_ref()` / `ss_data_set_custom_ref()` instead of writing
+  the fields by hand; neither allocates.
+- **Cleanup functions take `(const void* data, size_t size)`.** They are
+  called once, on the library's copy, just before the library frees it, and
+  must not free it themselves: the `const` turns a `free(data)` into a
+  compiler diagnostic. Change `void my_cleanup(void* p)` to
+  `void my_cleanup(const void* p, size_t size)`. Compile with
+  `-Werror=incompatible-pointer-types` while migrating (with clang,
+  `-Werror=incompatible-function-pointer-types`), because older compilers
+  only warn when a 2.x cleanup is passed to `ss_data_set_custom()`.
+- **`ss_data_set_custom()` takes `const void* value`**, since it only copies
+  it. Callers need no change.
+- **Custom data moves into the value union.** `data->custom_data`,
+  `data->size` and `data->custom_cleanup` become `data->value.custom.ptr`,
+  `data->value.custom.size` and `data->value.custom.cleanup`. Prefer
+  `ss_data_get_custom(data, &size)` to read it, and `ss_data_set_custom()` /
+  `ss_data_set_custom_ref()` to store it; code that writes the fields by hand
+  changes as follows:
+
+  ```c
+  /* 2.x */
+  ss_data_t d;
+  memset(&d, 0, sizeof(d));
+  d.type = SS_TYPE_CUSTOM;
+  d.custom_data = &point;
+  d.size = sizeof(point);
+
+  /* 3.0 */
+  ss_data_t d = SS_DATA_INIT;
+  ss_data_set_custom_ref(&d, &point, sizeof(point));
+  ```
+
+  The old names no longer exist, so the compiler finds every use.
+- **A hand-written `s_val` (or `value.custom.ptr`) on an `ss_data_create()` object
+  is no longer freed** by `ss_data_destroy()` or the next setter: it is
+  borrowed. 2.x documented this as misuse; if your code relied on it, store
+  the string with `ss_data_set_string()` instead (and free your own buffer),
+  or free it yourself.
+- **Do not write payload fields by hand on an object that owns its payload**
+  (after a copying setter): the next setter, `ss_data_clear()` or
+  `ss_data_destroy()` would free your pointer as if it were the copy, and the
+  copy would leak. Call `ss_data_clear()` first.
+- **Slots always receive borrowed data** (`owned` is 0), also when the
+  emitter's object owns its payload, so a slot that copies its `ss_data_t`
+  and reuses the copy with a setter no longer frees the emitter's payload.
+- **Size:** `ss_data_t` is the same in every configuration: 32 bytes on
+  64-bit hosts and 24 on Cortex-M. In 2.x it was 40 and 32 bytes with custom
+  data and 16 on both without. `owned` sits in the padding after `type`.
+  Builds without custom data, such as `SS_MINIMAL_BUILD`, grow by 16 bytes
+  per object on 64-bit hosts and 8 on Cortex-M, which includes each deferred
+  and batch entry; see the
+  [embedded guide](embedded-guide.md#memory-budget).
+
+## Configuration
+
+- **No configuration macro changes a public type layout or enum value.** In
+  2.x `SS_ENABLE_CUSTOM_DATA` changed `ss_data_t` and `ss_data_type_t`, so a
+  caller built with different flags than the library corrupted memory. Now
+  `SS_TYPE_CUSTOM` and `value.custom` exist in every configuration and
+  `SS_DATA_INIT` is the same everywhere. Code that wrapped uses of
+  `SS_TYPE_CUSTOM` in `#if SS_ENABLE_CUSTOM_DATA` may drop the guard; the
+  custom data functions are still declared only with the flag.
+- **Flags must still match** between the library and every caller, because
+  they decide which functions are declared. A caller that uses a feature the
+  library lacks now fails to compile or link.
+- **A library built without custom data refuses to queue it:**
+  `ss_emit_deferred()` and `ss_batch_add()` return `SS_ERR_INVALID_TYPE` for
+  `SS_TYPE_CUSTOM` data (2.x had no such type there). `ss_emit()` passes it
+  to the slots as given.
+- **`SS_ABI_TAG` changes** to `sizeof(ss_data_t) * 16 + SS_ABI_REVISION`.
+  The `ss_bus_create()` and `ss_bus_create_in()` macros pass it; a program
+  that passed a hand-computed `sizeof(ss_data_t)` to `ss_init_abi()` and now
+  calls `ss_bus_create_abi()` the same way gets `SS_ERR_CONFIG_MISMATCH`.
+- **`SS_STATIC_CONTEXT` becomes `SS_STATIC_BUSES`**, the number of built-in
+  buses that `ss_bus_create()` uses in static mode (default 1). Each costs
+  `ss_bus_pool_size()` bytes of `.bss`, what the 2.x context cost. 2.x
+  `SS_STATIC_CONTEXT=0` (no static context when a pool is supplied) becomes
+  `SS_STATIC_BUSES=0` with `ss_bus_create_in()`; `ss_bus_create()` then
+  returns `SS_ERR_WOULD_OVERFLOW` instead of allocating, because static mode
+  never allocates a bus.
+
+## Removed and changed in passing
+
+Smaller cleanups that 3.0 makes while it breaks the API anyway. Each one is
+a compile error until the code is changed.
+
+- **The `SS_TRACE` macro is removed** from `ss_config.h`. It was deprecated
+  in 2.x and the library no longer used it. Use `ss_enable_trace(bus,
+  stream)` to see the library's trace (with `SS_ENABLE_DEBUG_TRACE=1`), and
+  your own logging for your own messages.
+- **`SS_ERR_TIMEOUT` and `SS_ERR_ISR_UNSAFE` are removed.** No function ever
+  returned them, so a `case` or comparison for them can be deleted. Every
+  other code keeps its number (`SS_ERR_WOULD_OVERFLOW` is still 9,
+  `SS_ERR_CONFIG_MISMATCH` still 11); 8 and 10 stay unused, and
+  `ss_error_string()` returns `"Unknown error"` for them.
+- **`ss_get_namespace()` copies the namespace into a buffer you pass** and
+  returns an error code. In 2.x it returned a pointer into the library's
+  context, which another thread's `ss_set_namespace()` could change while it
+  was read; the copy is made under the bus's lock, so that rule is gone. The
+  copy is `""` when no namespace is set (2.x returned NULL). A buffer of
+  `SS_MAX_SIGNAL_NAME_LENGTH` bytes always fits; a smaller one that cannot
+  hold the namespace gives `SS_ERR_BUFFER_TOO_SMALL` and holds `""`.
+
+  ```c
+  /* 2.x */
+  const char* ns = ss_get_namespace();
+  if (ns) printf("namespace %s\n", ns);
+
+  const char* saved = ss_get_namespace();   /* a pointer, not a copy */
+
+  /* 3.0 */
+  char ns[SS_MAX_SIGNAL_NAME_LENGTH];
+  if (ss_get_namespace(bus, ns, sizeof(ns)) == SS_OK && ns[0] != '\0') {
+      printf("namespace %s\n", ns);
+  }
+
+  char saved[SS_MAX_SIGNAL_NAME_LENGTH];    /* a copy: restore it with */
+  ss_get_namespace(bus, saved, sizeof(saved));
+  /* ... */
+  ss_set_namespace(bus, saved);             /* "" clears */
+  ```
+
+## Behavior changes
+
+These changes affect code that still compiles after the steps above:
+
+- **A hand-written payload is no longer freed.** `ss_data_destroy()`,
+  `ss_data_clear()` and the setters free a string or custom payload only
+  when a copying setter stored it. 2.x freed whatever pointer they found, so
+  code that wrote `s_val` by hand on an `ss_data_create()` object and relied
+  on `ss_data_destroy()` to free it now leaks (see
+  [Data ownership](#data-ownership)).
+- **Using a destroyed bus is undefined.** After `ss_cleanup()`, 2.x calls
+  returned `SS_ERR_NULL_PARAM`. After `ss_bus_destroy(bus)` the pointer is
+  dangling, like memory after `free()`.
+- **A bus being destroyed reports no errors.** Calls still running on a bus
+  whose destruction a slot requested return their errors without calling the
+  handler.
+- **Creating twice gives two buses.** A second `ss_init()` was harmless in
+  2.x; a second `ss_bus_create()` returns an independent bus with no
+  signals.
+- **The ISR queue needs the bus.** In 2.x the queue was usable before
+  `ss_init()`. Create the bus before enabling the interrupts that emit, and
+  disable them before destroying it ([ISR queue](#isr-queue)).
+- **Static mode never allocates a bus.** With `SS_STATIC_BUSES=0`,
+  `ss_bus_create()` returns `SS_ERR_WOULD_OVERFLOW` instead of using the
+  heap ([Configuration](#configuration)).
+- **`ss_data_t` changes size.** It is 32 bytes on 64-bit hosts and 24 on
+  Cortex-M in every configuration, which changes the RAM of deferred and
+  batch entries ([Data ownership](#data-ownership)).
+- **Two error codes start being returned:** `SS_ERR_BUFFER_TOO_SMALL` (from
+  `ss_bus_create_in()` and `ss_get_namespace()`) and `SS_ERR_INVALID_TYPE`
+  (queuing custom data in a library built without custom data).

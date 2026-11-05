@@ -2,14 +2,17 @@
 
 ## Supported versions
 
-Security fixes are released for the latest 2.x version. Upgrade to the
-[latest release](https://github.com/dardevelin/ss_lib/releases/latest) to get
-them; releases within a major version keep the source and binary interface.
+Security fixes are released for the latest 3.x version and, for programs not
+yet migrated to 3.0, for the latest 2.2.x. Upgrade to the
+[latest release](https://github.com/dardevelin/ss_lib/releases/latest) of your
+major version to get them; releases within a major version keep the source and
+binary interface. 2.2.x security fixes are made on the `release/2.x` branch.
 
 | Version | Supported |
 |---------|-----------|
-| Latest 2.2.x | Yes |
-| Older 2.x | No: upgrade to the latest 2.2.x |
+| Latest 3.0.x | Yes |
+| Latest 2.2.x | Security fixes only |
+| Older 2.x | No: upgrade to the latest 2.2.x, or migrate to 3.0 ([docs/migration-3.0.md](docs/migration-3.0.md)) |
 | Before 2.2.0 | No: affected by [GHSA-f5pm-2465-f895](https://github.com/dardevelin/ss_lib/security/advisories/GHSA-f5pm-2465-f895) |
 
 If you copied `ss_lib_single.h` into your project, replace it with the one from
@@ -41,7 +44,7 @@ reporter unless they prefer otherwise.
 ## Published advisories
 
 - [GHSA-f5pm-2465-f895](https://github.com/dardevelin/ss_lib/security/advisories/GHSA-f5pm-2465-f895):
-  use-after-free when a slot unregisters its signal, calls `ss_cleanup()`, or
-  queues a deferred emission during a flush. Affects versions before 2.2.0;
-  fixed in 2.2.0. `tests/test_reentrancy.c` and `make test-single` guard
-  against it.
+  use-after-free when a slot unregisters its signal, calls `ss_cleanup()` (in
+  3.0, `ss_bus_destroy()` on the emitting bus), or queues a deferred emission
+  during a flush. Affects versions before 2.2.0; fixed in 2.2.0.
+  `tests/test_reentrancy.c` and `make test-single` guard against it.

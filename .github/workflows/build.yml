@@ -36,7 +36,8 @@ jobs:
 
       - name: Test every configuration
         # default, static memory, minimal, C89 copy, newest C standard,
-        # C89..newest compile check, single-header drift, version consistency
+        # C89..newest compile check, layouts per configuration, single-header
+        # drift, version consistency
         run: make -j4 test-all
 
       - name: Embedded examples
@@ -114,6 +115,13 @@ jobs:
           if command -v gcc-14 > /dev/null; then compilers="$compilers gcc-14"; fi
           # shellcheck disable=SC2086
           scripts/check_standards.sh $compilers
+      - name: Same public layout in every configuration
+        # struct sizes, member offsets and enum values, per compiler
+        run: |
+          compilers="gcc clang"
+          if command -v gcc-14 > /dev/null; then compilers="$compilers gcc-14"; fi
+          # shellcheck disable=SC2086
+          scripts/check_abi.sh $compilers
 
   macos:
     name: macOS

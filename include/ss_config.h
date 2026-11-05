@@ -71,11 +71,12 @@
         #define SS_DEFERRED_PAYLOAD_SIZE 32
     #endif
 
-    /* 1: ss_init() keeps the library context in static storage (.bss).
-     * 0: drop that storage when ss_init_static() supplies a pool; ss_init()
-     *    then allocates the context with SS_CALLOC, as in 2.1. */
-    #ifndef SS_STATIC_CONTEXT
-        #define SS_STATIC_CONTEXT 1
+    /* Built-in buses in static storage (.bss) for ss_bus_create(); each
+     * costs ss_bus_pool_size() bytes. 0 keeps none: buses then come only
+     * from ss_bus_create_in() pools, and ss_bus_create() returns
+     * SS_ERR_WOULD_OVERFLOW. Static mode never allocates a bus. */
+    #ifndef SS_STATIC_BUSES
+        #define SS_STATIC_BUSES 1
     #endif
 #endif
 
@@ -120,6 +121,8 @@
 /* #define SS_ISR_CRITICAL_ENTER() */
 /* #define SS_ISR_CRITICAL_EXIT() */
 
+/* Entries in each bus's ISR queue (each holds a SS_MAX_SIGNAL_NAME_LENGTH
+ * name and three ints) */
 #ifndef SS_ISR_QUEUE_SIZE
     #define SS_ISR_QUEUE_SIZE 16
 #endif
@@ -158,22 +161,5 @@
 /* SS_STRDUP(str) may be defined to override string duplication. By
  * default the library copies strings with SS_MALLOC, so overriding
  * SS_MALLOC and SS_FREE is enough to route every allocation. */
-
-/* Deprecated: SS_TRACE is kept for source compatibility; the library no
- * longer uses it (see ss_enable_trace()). */
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 199901L
-    #if SS_ENABLE_DEBUG_TRACE
-        #include <stdio.h>
-        #define SS_TRACE(...) do { \
-            fprintf(stderr, "[SS_TRACE] "); \
-            fprintf(stderr, __VA_ARGS__); \
-            fprintf(stderr, "\n"); \
-        } while(0)
-    #else
-        #define SS_TRACE(...) ((void)0)
-    #endif
-#else
-    #define SS_TRACE (void)sizeof
-#endif
 
 #endif /* SS_CONFIG_H */

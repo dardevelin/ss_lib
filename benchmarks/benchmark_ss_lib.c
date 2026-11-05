@@ -10,6 +10,8 @@
 #include <sys/time.h>
 #include "ss_lib.h"
 
+static ss_bus_t* bus = NULL;   /* the bus every benchmark uses */
+
 #define BENCHMARK_ITERATIONS 1000000
 #define NUM_SLOTS 10
 #define NUM_SIGNALS 100
@@ -71,7 +73,7 @@ static void benchmark_signal_registration(benchmark_result_t* result) {
         snprintf(signal_name, sizeof(signal_name), "bench_signal_%d", i);
         
         uint64_t start = get_time_ns();
-        ss_signal_register(signal_name);
+        ss_signal_register(bus, signal_name);
         uint64_t end = get_time_ns();
         
         uint64_t elapsed = end - start;
@@ -88,12 +90,12 @@ static void benchmark_slot_connection(benchmark_result_t* result) {
     result->total_time = 0;
     result->iterations = 10000;
     
-    ss_signal_register("bench_connect");
+    ss_signal_register(bus, "bench_connect");
     
     for (int i = 0; i < result->iterations; i++) {
         uint64_t start = get_time_ns();
         ss_connection_t handle;
-        ss_connect_ex("bench_connect", empty_slot, NULL, SS_PRIORITY_NORMAL, &handle);
+        ss_connect_ex(bus, "bench_connect", empty_slot, NULL, SS_PRIORITY_NORMAL, &handle);
         uint64_t end = get_time_ns();
         
         uint64_t elapsed = end - start;
@@ -101,7 +103,7 @@ static void benchmark_slot_connection(benchmark_result_t* result) {
         if (elapsed < result->min_time) result->min_time = elapsed;
         if (elapsed > result->max_time) result->max_time = elapsed;
         
-        ss_disconnect_handle(handle);
+        ss_disconnect_handle(bus, handle);
     }
 }
 
@@ -112,11 +114,11 @@ static void benchmark_emit_void(benchmark_result_t* result) {
     result->total_time = 0;
     result->iterations = BENCHMARK_ITERATIONS;
     
-    ss_signal_register("bench_void");
+    ss_signal_register(bus, "bench_void");
     
     for (int i = 0; i < result->iterations; i++) {
         uint64_t start = get_time_ns();
-        ss_emit_void("bench_void");
+        ss_emit_void(bus, "bench_void");
         uint64_t end = get_time_ns();
         
         uint64_t elapsed = end - start;
@@ -135,17 +137,17 @@ static void benchmark_emit_with_slots(benchmark_result_t* result, int num_slots)
     result->total_time = 0;
     result->iterations = BENCHMARK_ITERATIONS / (num_slots > 0 ? num_slots : 1);
     
-    ss_signal_register("bench_slots");
+    ss_signal_register(bus, "bench_slots");
     
     // Connect slots
     for (int i = 0; i < num_slots; i++) {
-        ss_connect("bench_slots", empty_slot, NULL);
+        ss_connect(bus, "bench_slots", empty_slot, NULL);
     }
     
     counter = 0;
     for (int i = 0; i < result->iterations; i++) {
         uint64_t start = get_time_ns();
-        ss_emit_void("bench_slots");
+        ss_emit_void(bus, "bench_slots");
         uint64_t end = get_time_ns();
         
         uint64_t elapsed = end - start;
@@ -154,7 +156,7 @@ static void benchmark_emit_with_slots(benchmark_result_t* result, int num_slots)
         if (elapsed > result->max_time) result->max_time = elapsed;
     }
     
-    ss_disconnect_all("bench_slots");
+    ss_disconnect_all(bus, "bench_slots");
 }
 
 static void benchmark_emit_with_data(benchmark_result_t* result) {
@@ -164,17 +166,17 @@ static void benchmark_emit_with_data(benchmark_result_t* result) {
     result->total_time = 0;
     result->iterations = BENCHMARK_ITERATIONS / 5;
     
-    ss_signal_register("bench_data");
+    ss_signal_register(bus, "bench_data");
     
     // Connect slots
     for (int i = 0; i < 5; i++) {
-        ss_connect("bench_data", data_slot, NULL);
+        ss_connect(bus, "bench_data", data_slot, NULL);
     }
     
     counter = 0;
     for (int i = 0; i < result->iterations; i++) {
         uint64_t start = get_time_ns();
-        ss_emit_int("bench_data", i);
+        ss_emit_int(bus, "bench_data", i);
         uint64_t end = get_time_ns();
         
         uint64_t elapsed = end - start;
@@ -183,7 +185,7 @@ static void benchmark_emit_with_data(benchmark_result_t* result) {
         if (elapsed > result->max_time) result->max_time = elapsed;
     }
     
-    ss_disconnect_all("bench_data");
+    ss_disconnect_all(bus, "bench_data");
 }
 
 static void benchmark_priority_emit(benchmark_result_t* result) {
@@ -193,23 +195,23 @@ static void benchmark_priority_emit(benchmark_result_t* result) {
     result->total_time = 0;
     result->iterations = BENCHMARK_ITERATIONS / 10;
     
-    ss_signal_register("bench_priority");
+    ss_signal_register(bus, "bench_priority");
     
     // Connect slots with different priorities
-    ss_connect_ex("bench_priority", empty_slot, NULL, SS_PRIORITY_LOW, NULL);
-    ss_connect_ex("bench_priority", empty_slot, NULL, SS_PRIORITY_CRITICAL, NULL);
-    ss_connect_ex("bench_priority", empty_slot, NULL, SS_PRIORITY_NORMAL, NULL);
-    ss_connect_ex("bench_priority", empty_slot, NULL, SS_PRIORITY_HIGH, NULL);
-    ss_connect_ex("bench_priority", empty_slot, NULL, SS_PRIORITY_NORMAL, NULL);
-    ss_connect_ex("bench_priority", empty_slot, NULL, SS_PRIORITY_LOW, NULL);
-    ss_connect_ex("bench_priority", empty_slot, NULL, SS_PRIORITY_HIGH, NULL);
-    ss_connect_ex("bench_priority", empty_slot, NULL, SS_PRIORITY_CRITICAL, NULL);
-    ss_connect_ex("bench_priority", empty_slot, NULL, SS_PRIORITY_NORMAL, NULL);
-    ss_connect_ex("bench_priority", empty_slot, NULL, SS_PRIORITY_LOW, NULL);
+    ss_connect_ex(bus, "bench_priority", empty_slot, NULL, SS_PRIORITY_LOW, NULL);
+    ss_connect_ex(bus, "bench_priority", empty_slot, NULL, SS_PRIORITY_CRITICAL, NULL);
+    ss_connect_ex(bus, "bench_priority", empty_slot, NULL, SS_PRIORITY_NORMAL, NULL);
+    ss_connect_ex(bus, "bench_priority", empty_slot, NULL, SS_PRIORITY_HIGH, NULL);
+    ss_connect_ex(bus, "bench_priority", empty_slot, NULL, SS_PRIORITY_NORMAL, NULL);
+    ss_connect_ex(bus, "bench_priority", empty_slot, NULL, SS_PRIORITY_LOW, NULL);
+    ss_connect_ex(bus, "bench_priority", empty_slot, NULL, SS_PRIORITY_HIGH, NULL);
+    ss_connect_ex(bus, "bench_priority", empty_slot, NULL, SS_PRIORITY_CRITICAL, NULL);
+    ss_connect_ex(bus, "bench_priority", empty_slot, NULL, SS_PRIORITY_NORMAL, NULL);
+    ss_connect_ex(bus, "bench_priority", empty_slot, NULL, SS_PRIORITY_LOW, NULL);
     
     for (int i = 0; i < result->iterations; i++) {
         uint64_t start = get_time_ns();
-        ss_emit_void("bench_priority");
+        ss_emit_void(bus, "bench_priority");
         uint64_t end = get_time_ns();
         
         uint64_t elapsed = end - start;
@@ -218,7 +220,7 @@ static void benchmark_priority_emit(benchmark_result_t* result) {
         if (elapsed > result->max_time) result->max_time = elapsed;
     }
     
-    ss_disconnect_all("bench_priority");
+    ss_disconnect_all(bus, "bench_priority");
 }
 
 static void benchmark_connection_handle(benchmark_result_t* result) {
@@ -228,14 +230,14 @@ static void benchmark_connection_handle(benchmark_result_t* result) {
     result->total_time = 0;
     result->iterations = 10000;
     
-    ss_signal_register("bench_handle");
+    ss_signal_register(bus, "bench_handle");
     
     for (int i = 0; i < result->iterations; i++) {
         ss_connection_t handle;
-        ss_connect_ex("bench_handle", empty_slot, NULL, SS_PRIORITY_NORMAL, &handle);
+        ss_connect_ex(bus, "bench_handle", empty_slot, NULL, SS_PRIORITY_NORMAL, &handle);
         
         uint64_t start = get_time_ns();
-        ss_disconnect_handle(handle);
+        ss_disconnect_handle(bus, handle);
         uint64_t end = get_time_ns();
         
         uint64_t elapsed = end - start;
@@ -256,7 +258,7 @@ static void benchmark_signal_lookup(benchmark_result_t* result) {
     for (int i = 0; i < NUM_SIGNALS; i++) {
         char name[32];
         snprintf(name, sizeof(name), "lookup_signal_%d", i);
-        ss_signal_register(name);
+        ss_signal_register(bus, name);
     }
     
     for (int i = 0; i < result->iterations; i++) {
@@ -265,7 +267,7 @@ static void benchmark_signal_lookup(benchmark_result_t* result) {
         snprintf(name, sizeof(name), "lookup_signal_%d", idx);
         
         uint64_t start = get_time_ns();
-        ss_signal_exists(name);
+        ss_signal_exists(bus, name);
         uint64_t end = get_time_ns();
         
         uint64_t elapsed = end - start;
@@ -283,17 +285,17 @@ static void benchmark_isr_emit(benchmark_result_t* result) {
     result->total_time = 0;
     result->iterations = BENCHMARK_ITERATIONS / 5;
     
-    ss_signal_register("bench_isr");
+    ss_signal_register(bus, "bench_isr");
     
     // Connect slots
     for (int i = 0; i < 5; i++) {
-        ss_connect("bench_isr", counting_slot, NULL);
+        ss_connect(bus, "bench_isr", counting_slot, NULL);
     }
     
     counter = 0;
     for (int i = 0; i < result->iterations; i++) {
         uint64_t start = get_time_ns();
-        ss_emit_from_isr("bench_isr", i);
+        ss_emit_from_isr(bus, "bench_isr", i);
         uint64_t end = get_time_ns();
         
         uint64_t elapsed = end - start;
@@ -301,10 +303,10 @@ static void benchmark_isr_emit(benchmark_result_t* result) {
         if (elapsed < result->min_time) result->min_time = elapsed;
         if (elapsed > result->max_time) result->max_time = elapsed;
 
-        ss_process_isr_queue();   /* deliver outside the timed region */
+        ss_process_isr_queue(bus);   /* deliver outside the timed region */
     }
     
-    ss_disconnect_all("bench_isr");
+    ss_disconnect_all(bus, "bench_isr");
 }
 #endif
 
@@ -312,9 +314,9 @@ int main(void) {
     printf("SS_Lib Benchmark Suite\n");
     printf("======================\n\n");
     
-    // Initialize library
-    if (ss_init() != SS_OK) {
-        fprintf(stderr, "Failed to initialize SS_Lib\n");
+    // One bus, created without SS_BUS_THREAD_SAFE (no locking), as 2.x ran
+    if (ss_bus_create(&bus, 0) != SS_OK) {
+        fprintf(stderr, "Failed to create the bus\n");
         return 1;
     }
     
@@ -372,7 +374,7 @@ int main(void) {
 #if SS_ENABLE_MEMORY_STATS
     printf("\nMemory Statistics:\n");
     ss_memory_stats_t stats;
-    if (ss_get_memory_stats(&stats) == SS_OK) {
+    if (ss_get_memory_stats(bus, &stats) == SS_OK) {
         printf("  Signals: %zu used, %zu allocated\n", 
                stats.signals_used, stats.signals_allocated);
         printf("  Slots: %zu used, %zu allocated\n",
@@ -381,7 +383,7 @@ int main(void) {
     }
 #endif
     
-    ss_cleanup();
+    ss_bus_destroy(bus);
     
     // Free allocated names (only those created with strdup)
     for (int i = 0; i < num_results; i++) {

@@ -80,8 +80,9 @@ BENCH_BIN = $(BUILD_DIR)/benchmark_ss_lib
 .PHONY: all lib shared tests examples test test_embedded test-static test-minimal \
         test-c89 test-newest test-pauth test-single test-all test-asan test-tsan test-ubsan test-msan \
         test-valgrind coverage benchmark benchmark-all single-header \
-        check-standards check-single-header check-version cppcheck release-notes install \
-        check-install uninstall docs info help clean
+        check-standards check-abi check-docs check-single-header check-version cppcheck \
+        release-notes \
+        install check-install uninstall docs info help clean
 
 all: lib tests examples
 
@@ -179,8 +180,16 @@ test-pauth:
 check-standards:
 	@scripts/check_standards.sh $(CC)
 
+# Public struct layouts and enum values are the same in every configuration
+check-abi:
+	@scripts/check_abi.sh $(CC)
+
+# Every C code block of the README, docs and skills compiles against the headers
+check-docs:
+	@CC="$(CC)" BUILD_DIR="$(BUILD_DIR)" scripts/check_docs.sh
+
 test-all: test test-static test-minimal test-c89 test-newest test-single \
-          check-standards check-single-header check-version check-install
+          check-standards check-abi check-docs check-single-header check-version check-install
 
 # The test suite against include/ss_lib_single.h, the file users copy into
 # their projects, instead of src/ss_lib.c (GHSA-f5pm-2465-f895)
@@ -236,7 +245,7 @@ check-single-header: | $(BUILD_DIR)
 	@./create_single_header.sh $(BUILD_DIR)/ss_lib_single.h > /dev/null
 	@diff -q include/ss_lib_single.h $(BUILD_DIR)/ss_lib_single.h > /dev/null || \
 	    { echo "include/ss_lib_single.h is stale: run 'make single-header'"; exit 1; }
-	@printf '#define SS_IMPLEMENTATION\n#include "ss_lib_single.h"\nint main(void){return ss_init()==SS_OK?0:1;}\n' \
+	@printf '#define SS_IMPLEMENTATION\n#include "ss_lib_single.h"\nint main(void){ss_bus_t* b;if(ss_bus_create(&b,0)!=SS_OK)return 1;ss_bus_destroy(b);return 0;}\n' \
 	    > $(BUILD_DIR)/single_header_check.c
 	@$(CC) $(CSTD) $(WARN) -Werror -Iinclude $(BUILD_DIR)/single_header_check.c $(LDFLAGS) \
 	    -o $(BUILD_DIR)/single_header_check && $(BUILD_DIR)/single_header_check
@@ -335,6 +344,8 @@ help:
 	@echo "  test-c89            ... against src/ss_lib_c89.c built as C89"
 	@echo "  test-newest         ... built as the newest C standard CC supports"
 	@echo "  check-standards     compile as C89 ... newest standard with -Werror"
+	@echo "  check-abi           fail if a public layout depends on the configuration"
+	@echo "  check-docs          compile every C code block of the documentation"
 	@echo "  test-all            all of the above plus consistency checks"
 	@echo "  test-asan/-tsan/-ubsan/-msan/-valgrind   sanitizer runs"
 	@echo "  coverage            lcov report"

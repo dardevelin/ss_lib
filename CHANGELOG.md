@@ -7,24 +7,161 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-11-05
+
+A major release: every stateful call takes an explicit bus.
+[docs/migration-3.0.md](docs/migration-3.0.md) lists what changes for programs
+written for 2.x. 2.2.x keeps receiving security fixes on the `release/2.x`
+branch (see [SECURITY.md](SECURITY.md)).
+
 ### Changed
+- Version 3.0.0: the shared library is `libss_lib.so.3` / `libss_lib.3.dylib`
+  and `find_package(ss_lib 3)` finds it. 2.x and 3.x shared libraries can be
+  installed side by side.
+- **Breaking:** an opaque `ss_bus_t` replaces the single global context (A9).
+  Every function that uses library state takes `ss_bus_t* bus` as its first
+  argument and keeps its name: signal registration, connections, emission,
+  the deferred queue, namespaces, introspection, memory and performance
+  statistics, the slot limit, the error handler, trace and
+  `ss_process_isr_queue()`. Buses share nothing: the same signal name on two
+  buses names two signals, and connection handles belong to their bus. The
+  library has no default bus. Slots keep their signature and get their bus
+  through `user_data`.
+- **Breaking:** thread safety is chosen when the bus is created, with the
+  `SS_BUS_THREAD_SAFE` flag (S4). Such a bus has its own recursive mutex;
+  other buses create none. Cross-bus calls from slots must go in one
+  direction only, since a slot holds its bus's lock while it calls another.
+- **Breaking:** `ss_batch_create(bus)`: a batch belongs to the bus it was
+  created for, which supplies the namespace, runs the emission and reports
+  errors.
+- **Breaking:** the error handler is per bus and receives the failing bus
+  and a user pointer (A9): `ss_error_handler_t` is
+  `void (*)(ss_bus_t* bus, ss_error_t error, const char* msg, void* user_data)`,
+  set with `ss_set_error_handler(bus, handler, user_data)`; a NULL handler
+  removes it. Errors on one bus never reach another bus's handler, and
+  calls given no bus (a NULL bus or batch, a failed creation) reach none.
+  The handler still runs after the failing call releases the lock and may
+  call the library, also on its bus, and destroy that bus. Once
+  `ss_bus_destroy()` has been called, also from a slot, the bus reports no
+  more errors (2.x could still report a call that failed after
+  `ss_cleanup()` was requested from a slot), so `user_data` may be released
+  right after it. A successful call no longer reads the handler.
+- **Breaking:** in static mode `ss_bus_create()` takes one of
+  `SS_STATIC_BUSES` built-in buses (default 1, in `.bss`), which replaces
+  `SS_STATIC_CONTEXT`, and returns `SS_ERR_WOULD_OVERFLOW` when all are in
+  use; static mode never allocates a bus. Claiming and releasing built-in
+  buses is not locked.
+- **Breaking:** each bus has its own ISR queue and sequence counter (A9):
+  `ss_emit_from_isr(bus, signal_name, value)` queues on that bus and
+  `ss_process_isr_queue(bus)` delivers only that bus's events, oldest first
+  also when an interrupt arrives during the scan. The path still takes no
+  lock and never allocates. A NULL bus returns `SS_ERR_NULL_PARAM`.
+  `ss_bus_destroy()` drops the bus's queued events, as `ss_cleanup()` did:
+  create the bus before enabling the interrupts that emit, and disable them
+  before destroying it. The queue (`SS_ISR_QUEUE_SIZE` entries, 704 bytes
+  with the static-mode defaults on 32-bit targets) is now part of each bus,
+  so a one-bus program uses the same RAM as 2.x and each further bus costs
+  the queue again.
+- **Breaking:** `ss_data_t` records whether it owns its payload (S12). The new
+  `owned` field (in the padding after `type`) is set only by the copying
+  setters `ss_data_set_string()` and `ss_data_set_custom()`, and the library
+  frees a string or custom payload only when it is set. Direct field writes,
+  the `ss_emit_*` helpers and the data slots receive borrow, so a setter or
+  `ss_data_destroy()` no longer frees a pointer the library did not allocate
+  (2.x freed it). A hand-written `s_val` on an `ss_data_create()` object is
+  no longer freed.
+- **Breaking:** the custom cleanup is `void (*)(const void* data, size_t size)`.
+  It is called once on the library's copy just before the library frees it;
+  the `const` turns a cleanup that frees the copy into a compiler diagnostic.
+  `ss_data_set_custom()` takes `const void* value`.
+- Every setter releases the previous payload only if the object owns it.
+  Slots receive an owned object as a borrowed view, so a slot that reuses a
+  copy of its data with a setter cannot free the emitter's payload.
+- **Breaking:** no configuration macro changes a public type layout or enum
+  value (A8). Custom data moves into the value union: `custom_data`, `size`
+  and `custom_cleanup` become `value.custom.ptr`, `value.custom.size` and
+  `value.custom.cleanup`. `SS_TYPE_CUSTOM` is declared in every
+  configuration and `SS_DATA_INIT` is `{ SS_TYPE_VOID, 0, { 0 } }` in all of
+  them. `ss_data_t` is 32 bytes on 64-bit hosts and 24 on Cortex-M in every
+  configuration (2.x: 40 and 32 with custom data, 16 without). Feature flags
+  still gate function declarations.
+- **Breaking:** `SS_ABI_TAG` is `sizeof(ss_data_t) * 16 + SS_ABI_REVISION`
+  (new macro, 1). It fits a 16-bit `size_t`. The `ss_bus_create()` and
+  `ss_bus_create_in()` macros pass it, so every bus creation checks it
+  without the caller asking (A8); 2.x checked it only in `ss_init_abi()`.
+- `ss_emit_deferred()` and `ss_batch_add()` return `SS_ERR_INVALID_TYPE` for
+  custom data in a library built without `SS_ENABLE_CUSTOM_DATA`, which
+  cannot copy it. The code was reserved before.
+- **Breaking:** `ss_error_t ss_get_namespace(ss_bus_t* bus, char* buf, size_t
+  size)` copies the namespace into the caller's buffer under the bus's lock
+  (`""` when none is set) instead of returning a pointer into the bus, so it
+  may be read while another thread sets it. It returns `SS_ERR_NULL_PARAM`
+  for a NULL bus or buffer and `SS_ERR_BUFFER_TOO_SMALL` (with `buf` set to
+  `""`) when the namespace does not fit; `SS_MAX_SIGNAL_NAME_LENGTH` bytes
+  always do. `ss_set_namespace()` no longer checks for its own buffer, which
+  is never handed out.
+- The error codes have explicit values; none changes.
 - The release workflow accepts a final tag on `release/MAJOR.x` for that
   major version as well as on `main`, so older major versions can get
   maintenance releases, and publishes those without making them the latest
   release.
+
+### Added
+- `ss_bus_create(&bus, flags)` and `ss_bus_create_in(&bus, pool, size,
+  flags)`, macros over `ss_bus_create_abi()` / `ss_bus_create_in_abi()` that
+  pass `SS_ABI_TAG`; `ss_bus_pool_size()`; `ss_bus_destroy(bus)`, which is
+  deferred until the bus's outermost call returns when called from a slot.
+  A wrong tag or a flag the library lacks returns `SS_ERR_CONFIG_MISMATCH`.
+  `ss_bus_create_in()` works in both memory modes and returns
+  `SS_ERR_NULL_PARAM` for a NULL pool and `SS_ERR_BUFFER_TOO_SMALL` (now
+  returned) for a small one, where 2.x silently fell back to a heap or
+  static context.
+- `SS_DATA_INIT` and `ss_data_init()` for an empty object, and
+  `ss_data_clear()`, which frees an owned payload and makes the object
+  `SS_TYPE_VOID`, so stack objects can use the copying setters.
+  `ss_data_destroy()` is `ss_data_clear()` plus freeing the object.
+- `ss_data_set_string_ref()` and `ss_data_set_custom_ref()` store a borrowed
+  payload without allocating, in either memory mode.
+- `scripts/check_abi.sh` (`make check-abi`, in `test-all` and CI's standards
+  job) fails when a public struct's size or member offsets, or an enum
+  value, differs between the configurations the project tests, or when
+  `ss_lib.h` has a preprocessor conditional inside a public type.
+- `scripts/check_docs.sh` (`make check-docs`, in `test-all`) compiles every
+  C code block of the README, CONTRIBUTING, `docs/` and the skills against
+  the headers with `-Wall -Wextra -pedantic -Werror`, and compares copies of
+  public type definitions with `ss_lib.h`.
+
+### Removed
+- **Breaking:** `ss_init()`, `ss_init_abi()`, `ss_init_static()`,
+  `ss_init_static_abi()`, `ss_get_required_pool_size()` (now
+  `ss_bus_pool_size()`), `ss_cleanup()` (now `ss_bus_destroy()`),
+  `ss_set_thread_safe()` and `ss_is_thread_safe()` (now `SS_BUS_THREAD_SAFE`),
+  and the `SS_STATIC_CONTEXT` configuration macro (now `SS_STATIC_BUSES`).
+- **Breaking:** the deprecated `SS_TRACE` macro in `ss_config.h`, unused by
+  the library; `ss_enable_trace()` remains.
+- **Breaking:** `SS_ERR_TIMEOUT` and `SS_ERR_ISR_UNSAFE`, which no function
+  returned. The other codes keep their values (8 and 10 stay unused).
 
 ### Fixed
 - The tests checked nothing in CMake Release builds, which CI's Windows MSVC
   job uses: Release defines `NDEBUG`, which removes every `assert()`. Each
   test program now undefines `NDEBUG` before `<assert.h>`, and `make test`
   fails if a test program that uses `assert()` does not.
-
-### Fixed
 - `docs/api-reference.md` showed `SS_VERSION_PATCH 1` next to version 2.2.4.
   `make check-version` (in `test-all`, CI and the release workflow) now also
   checks the version copies written by hand in the API reference, the docs
   index, the architecture document, CLAUDE.md and the ss-lib skill, so a
   stale copy fails the build.
+
+### Documentation
+- The documentation describes 3.0 throughout. The migration guide lists
+  every removed and changed name with its replacement and the changes in
+  behavior; its `sed` recipe also replaces `ss_init()` and `ss_cleanup()`.
+  `docs/design.md` has a Version 3.0 section, CONTRIBUTING.md describes the
+  branches, and the embedded guide has the current Cortex-M sizes.
+- Code blocks that did not compile with warnings as errors are fixed: unused
+  slot parameters, a `printf` format for `uint64_t`, macro and enum
+  listings that were not C, and a namespace example split over two blocks.
 
 ## [2.2.4] - 2026-11-05
 
@@ -324,7 +461,8 @@ public struct layouts are unchanged.
 - Signal introspection
 - Basic examples and tests
 
-[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v2.2.4...HEAD
+[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/dardevelin/ss_lib/compare/v2.2.4...v3.0.0
 [2.2.4]: https://github.com/dardevelin/ss_lib/compare/v2.2.3...v2.2.4
 [2.2.3]: https://github.com/dardevelin/ss_lib/compare/v2.2.2...v2.2.3
 [2.2.2]: https://github.com/dardevelin/ss_lib/compare/v2.2.1...v2.2.2

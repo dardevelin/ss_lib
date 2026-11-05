@@ -74,26 +74,10 @@
    fun:_dl_allocate_tls
 }
 
-# SS_Lib specific suppressions for static builds
-{
-   ss_lib_static_init
-   Memcheck:Cond
-   fun:ss_init_static
-   fun:main
-}
-
 # Suppress false positives in hash table implementation
 {
    ss_lib_hash_table
    Memcheck:Value8
    fun:ss_hash_string
    fun:ss_signal_register
-}
-
-# Thread safety mutex initialization
-{
-   ss_lib_mutex_init
-   Memcheck:Cond
-   fun:pthread_mutex_init
-   fun:ss_init
 }

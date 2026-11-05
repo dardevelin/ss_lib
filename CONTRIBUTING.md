@@ -28,6 +28,15 @@ Enhancement suggestions are welcome! Please include:
 - Proposed API/implementation approach
 - Why this enhancement would be useful to most users
 
+### Branches
+
+| Branch | Holds | Pull requests |
+|---|---|---|
+| `main` | 3.x; release tags `vX.Y.Z` | All changes |
+| `release/2.x` | 2.2.x security fixes (see [SECURITY.md](SECURITY.md)); maintenance tags `v2.2.Z` | Security fixes for 2.2.x |
+
+A security fix that also affects 2.2.x is made on `main` first and then applied to `release/2.x` in its own pull request, with the same regression test.
+
 ### Pull Requests
 
 1. Fork the repository
@@ -70,15 +79,22 @@ make docs
 - Use meaningful variable names
 - Comment complex logic
 
-Example:
+Example: a public function that uses library state takes the bus first and
+brackets its work with `bus_enter()` / `bus_leave()` (locking, nesting depth,
+deferred destruction, error reporting):
+
+<!-- check-docs: internal -->
 ```c
-ss_error_t ss_example_function(const char* param) {
+ss_error_t ss_example_function(ss_bus_t* bus, const char* param) {
+    ss_error_t err = SS_OK;
+    int locked;
+    if (!bus_enter(bus, &locked)) return SS_ERR_NULL_PARAM;
+
     if (!param) {
-        return SS_ERR_NULL_PARAM;
+        err = SS_ERR_NULL_PARAM;
     }
-    
     /* Complex logic explanation */
-    return SS_OK;
+    return bus_leave(bus, locked, err, param);
 }
 ```
 
@@ -89,6 +105,7 @@ ss_error_t ss_example_function(const char* param) {
 - `include/ss_lib_single.h` is generated. After changing `include/ss_lib.h`, `include/ss_config.h` or `src/ss_lib.c`, run `make single-header` and commit the result; `make check-single-header` fails CI when it is stale. Never edit it by hand.
 - The version lives only in `include/ss_lib.h`; the Makefile, CMake, Doxygen, pkg-config and the shared library's soname read it from there. See [Releasing](#releasing).
 - Configuration macros must not be `#define`d in examples or tests; pass them on the command line so the library and its callers agree.
+- Configuration macros may gate functions and code, never a public type's layout or an enum value: no `#if` inside a public struct, union or enum body in `include/ss_lib.h`. `make check-abi` fails otherwise. When a public layout changes on purpose (a major version), bump `SS_ABI_REVISION`.
 
 ### Commit Messages
 
@@ -142,7 +159,8 @@ A maintenance release of an older major version (for example 2.2.x after 3.0.0) 
 make test
 
 # Everything CI checks locally: static, minimal, C89 and newest-standard
-# builds, C89..C2y compile check, single-header and version consistency
+# builds, C89..C2y compile check, public layouts, documentation code
+# blocks, single-header and version consistency, install
 make test-all
 
 # Sanitizers and memory checks
@@ -156,7 +174,7 @@ make test-valgrind
 ./build/test_ss_lib
 ```
 
-`make test-single` runs the same test programs against `include/ss_lib_single.h` (through `tests/single_header_impl.c`), the file users copy into their projects; `make test-all` and `make test-asan` include it. Test programs: `tests/test_ss_lib.c` (main suite, including regression tests), `tests/test_simple.c`, `tests/test_memory.c` (tracking allocator: no leaks, allocator routing, zero heap in static mode), `tests/test_isr.c` (interrupts `ss_process_isr_queue()` at every point of its scan with a hooked critical section), `tests/test_reentrancy.c` (seeded random programs whose slots change library state during emissions, flushes and batches; the guard for GHSA-f5pm-2465-f895), and `tests/test_threads.c` (pthread stress test).
+`make test-single` runs the same test programs against `include/ss_lib_single.h` (through `tests/single_header_impl.c`), the file users copy into their projects; `make test-all` and `make test-asan` include it. Test programs: `tests/test_ss_lib.c` (main suite, including regression tests), `tests/test_simple.c`, `tests/test_memory.c` (tracking allocator: no leaks, allocator routing, zero heap in static mode), `tests/test_isr.c` (per-bus ISR queues; interrupts `ss_process_isr_queue()` at every point of its scan with a hooked critical section, on the drained bus and on another one), `tests/test_reentrancy.c` (seeded random programs whose slots change library state during emissions, flushes and batches; the guard for GHSA-f5pm-2465-f895), and `tests/test_threads.c` (pthread stress test).
 
 ### Writing Tests
 
@@ -169,14 +187,16 @@ make test-valgrind
 ## Documentation
 
 - Update README.md for user-facing changes
-- Add inline documentation for new APIs
+- Add inline documentation for new APIs, and document every public function in `docs/api-reference.md` with its signature
 - Update examples if API changes
 - Consider adding to docs/ for complex features
+
+Every C code block (a fence marked `c`) in README.md, CONTRIBUTING.md, `docs/` (except the design record `docs/3.0-plan.md`) and the two skills must compile against the headers: `make check-docs` (`scripts/check_docs.sh`, part of `make test-all`) compiles each one with `-std=c11 -Wall -Wextra -pedantic -Werror`. A block need not be a complete program; the comment at the top of the script says how blocks are wrapped, which placeholder names (`bus`, `data`, `my_handler`, ...) it declares, how `// WRONG` / `// CORRECT` and `/* 2.x */` / `/* 3.0 */` comments split a block, and how `<!-- check-docs: internal -->` and `<!-- check-docs: skip REASON -->` before a block change its check. A copy of a type definition from `ss_lib.h` must match the header.
 
 ## Performance Considerations
 
 For embedded systems focus:
-- Do not add heap use to the static-memory paths (register, connect, emit, deferred, namespace, disconnect, unregister, cleanup); `tests/test_memory.c` checks this
+- Do not add heap use to the static-memory paths (bus creation, register, connect, emit, deferred, ISR, namespace, disconnect, unregister, bus destruction); `tests/test_memory.c` checks this
 - Minimize dynamic allocations
 - Consider static memory options
 - Profile changes on target hardware

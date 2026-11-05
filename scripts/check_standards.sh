@@ -4,6 +4,8 @@
 #
 #   scripts/check_standards.sh [CC...]        default: $CC or cc
 #   scripts/check_standards.sh --newest CC    print the newest -std CC accepts
+#   scripts/check_standards.sh --configs      print the configurations, one
+#                                             per line, the default (empty) first
 #
 # Standards a compiler does not know are reported and skipped, so the same
 # script runs on old toolchains and picks up new standards on new ones.
@@ -26,19 +28,27 @@ newest() {
     return 1
 }
 
+# The default configuration is the empty first line; scripts/check_abi.sh
+# reads this list with --configs
+CONFIGS="
+-DSS_ENABLE_ISR_SAFE=1 -DSS_ENABLE_MEMORY_STATS=1 -DSS_ENABLE_PERFORMANCE_STATS=1 -DSS_ENABLE_DEBUG_TRACE=1
+-DSS_USE_STATIC_MEMORY=1 -DSS_ENABLE_ISR_SAFE=1
+-DSS_MINIMAL_BUILD
+-DSS_EMBEDDED_BUILD -DSS_ENABLE_ISR_SAFE=1"
+
 if [ "${1:-}" = "--newest" ]; then
     newest "${2:-${CC:-cc}}"
+    exit
+fi
+
+if [ "${1:-}" = "--configs" ]; then
+    printf '%s\n' "$CONFIGS"
     exit
 fi
 
 [ $# -gt 0 ] || set -- "${CC:-cc}"
 
 WARN="-Wall -Wextra -pedantic -Werror -Wstrict-prototypes"
-CONFIGS="
--DSS_ENABLE_ISR_SAFE=1 -DSS_ENABLE_MEMORY_STATS=1 -DSS_ENABLE_PERFORMANCE_STATS=1 -DSS_ENABLE_DEBUG_TRACE=1
--DSS_USE_STATIC_MEMORY=1 -DSS_ENABLE_ISR_SAFE=1
--DSS_MINIMAL_BUILD
--DSS_EMBEDDED_BUILD -DSS_ENABLE_ISR_SAFE=1"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -50,12 +60,38 @@ static void on_value(const ss_data_t* data, void* user_data) {
     (void)data;
     (void)user_data;
 }
+static void on_error(ss_bus_t* bus, ss_error_t error, const char* msg, void* user_data) {
+    (void)bus;
+    (void)error;
+    (void)msg;
+    (void)user_data;
+}
+#if SS_ENABLE_CUSTOM_DATA
+static void on_release(const void* data, size_t size) {
+    (void)data;
+    (void)size;
+}
+#endif
 int main(void) {
-    if (ss_init_abi(SS_ABI_TAG) != SS_OK) return 1;
-    if (ss_signal_register("value") != SS_OK) return 1;
-    if (ss_connect("value", on_value, 0) != SS_OK) return 1;
-    if (ss_emit_int("value", 1) != SS_OK) return 1;
-    ss_cleanup();
+    ss_data_t data = SS_DATA_INIT;
+    ss_bus_t* bus = 0;
+    static unsigned char pool[1];
+    ss_bus_t* pooled = 0;
+    if (ss_bus_create(&bus, SS_BUS_THREAD_SAFE) != SS_OK &&
+        ss_bus_create(&bus, 0) != SS_OK) return 1;
+    if (ss_bus_create_in(&pooled, pool, sizeof(pool), 0) != SS_ERR_BUFFER_TOO_SMALL) return 1;
+    if (ss_bus_pool_size() == 0) return 1;
+    ss_set_error_handler(bus, on_error, &data);
+    if (ss_signal_register(bus, "value") != SS_OK) return 1;
+    if (ss_connect(bus, "value", on_value, 0) != SS_OK) return 1;
+    if (ss_emit_int(bus, "value", 1) != SS_OK) return 1;
+    if (ss_data_set_string_ref(&data, "borrowed") != SS_OK) return 1;
+    if (ss_emit(bus, "value", &data) != SS_OK) return 1;
+#if SS_ENABLE_CUSTOM_DATA
+    if (ss_data_set_custom(&data, "copied", 7, on_release) != SS_OK) return 1;
+#endif
+    ss_data_clear(&data);
+    ss_bus_destroy(bus);
     return 0;
 }
 EOF

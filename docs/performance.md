@@ -2,7 +2,7 @@
 
 ## Profiling API
 
-SS_Lib includes built-in per-signal performance profiling. Enable it at compile time and runtime:
+SS_Lib includes built-in per-signal performance profiling. Enable it at compile time, and at runtime per bus:
 
 ### Compile-Time
 
@@ -13,29 +13,29 @@ SS_Lib includes built-in per-signal performance profiling. Enable it at compile 
 ### Runtime
 
 ```c
-ss_enable_profiling(1);
+ss_enable_profiling(bus, 1);
 
 /* Run your application... */
 
 ss_perf_stats_t stats;
-ss_get_perf_stats("my_signal", &stats);
+ss_get_perf_stats(bus, "my_signal", &stats);
 printf("Signal: my_signal\n");
-printf("  Emissions: %llu\n", stats.total_emissions);
-printf("  Total time: %llu ns\n", stats.total_time_ns);
-printf("  Avg time: %llu ns\n", stats.avg_time_ns);
-printf("  Min time: %llu ns\n", stats.min_time_ns);
-printf("  Max time: %llu ns\n", stats.max_time_ns);
+printf("  Emissions: %llu\n", (unsigned long long)stats.total_emissions);
+printf("  Total time: %llu ns\n", (unsigned long long)stats.total_time_ns);
+printf("  Avg time: %llu ns\n", (unsigned long long)stats.avg_time_ns);
+printf("  Min time: %llu ns\n", (unsigned long long)stats.min_time_ns);
+printf("  Max time: %llu ns\n", (unsigned long long)stats.max_time_ns);
 ```
 
 ### Reset Statistics
 
 ```c
-ss_reset_perf_stats();  /* Clears all signal statistics */
+ss_reset_perf_stats(bus);  /* Clears the statistics of every signal on the bus */
 ```
 
 ### Disable Profiling
 
-When `SS_ENABLE_PERFORMANCE_STATS=0`, the profiling functions are not declared and no timing code is compiled into emission. When compiled in but `ss_enable_profiling(0)` (the default), emission only checks a flag.
+When `SS_ENABLE_PERFORMANCE_STATS=0`, the profiling functions are not declared and no timing code is compiled into emission. When compiled in but `ss_enable_profiling(bus, 0)` (the default for a new bus), emission only checks a flag.
 
 ## Timing Implementation
 
@@ -50,7 +50,7 @@ Track allocation usage with memory statistics (`-DSS_ENABLE_MEMORY_STATS=1`, for
 
 ```c
 ss_memory_stats_t mem;
-ss_get_memory_stats(&mem);
+ss_get_memory_stats(bus, &mem);
 
 printf("Signals: %zu used / %zu allocated\n",
        mem.signals_used, mem.signals_allocated);
@@ -60,15 +60,16 @@ printf("String bytes: %zu\n", mem.string_bytes);
 printf("Peak bytes: %zu\n", mem.peak_bytes_allocated);
 ```
 
-- Dynamic mode: `total_bytes_allocated` is the heap the library currently holds (context, signals, slots, strings) and `peak_bytes_allocated` its maximum.
-- Static mode: `signals_allocated` and `slots_allocated` are the pool capacities (`SS_MAX_SIGNALS`, `SS_MAX_SLOTS`), and both byte counts equal `sizeof` the context.
-- `signals_used` / `slots_used` count live signals and slots. `ss_reset_memory_stats()` resets the peak to the current value.
+- The statistics describe one bus.
+- Dynamic mode: `total_bytes_allocated` is the heap the bus currently holds (the bus itself unless it lives in a caller pool, its signals, slots and strings) and `peak_bytes_allocated` its maximum.
+- Static mode: `signals_allocated` and `slots_allocated` are the pool capacities (`SS_MAX_SIGNALS`, `SS_MAX_SLOTS`), and both byte counts equal `sizeof` the bus.
+- `signals_used` / `slots_used` count live signals and slots. `ss_reset_memory_stats(bus)` resets the peak to the current value.
 
 ## Performance Characteristics
 
 ### Signal Lookup
 
-There is no hash table. Every name-taking call (emit, connect, disconnect, exists, ...) scans the signals linearly with `strcmp`: a linked list in dynamic mode (newest signal first), a fixed array in static mode. Lookup is O(n) in the number of registered signals and is the main per-emit cost besides the slots themselves. When a default namespace is set, names without `"::"` are additionally copied into a qualified `"ns::name"` buffer before the scan.
+There is no hash table. Every name-taking call (emit, connect, disconnect, exists, ...) scans the bus's signals linearly with `strcmp`: a linked list in dynamic mode (newest signal first), a fixed array in static mode. Lookup is O(n) in the number of signals registered on the bus and is the main per-emit cost besides the slots themselves. When a default namespace is set, names without `"::"` are additionally copied into a qualified `"ns::name"` buffer before the scan.
 
 ### Slot Execution
 
@@ -80,7 +81,7 @@ Connection is one signal lookup plus a priority-sorted insertion, O(n + k). Equa
 
 ### Disconnection
 
-- `ss_disconnect_handle` — O(total slots) in the worst case (searches the slots of all signals for the handle)
+- `ss_disconnect_handle` — O(total slots on the bus) in the worst case (searches the slots of all its signals for the handle)
 - `ss_disconnect` — O(n + k) (signal lookup, then one signal's slot list)
 - During an emission of that signal, the slot is only flagged; it is unlinked and freed after the emission
 
@@ -88,25 +89,25 @@ Connection is one signal lookup plus a priority-sorted insertion, O(n + k). Equa
 
 ### Reduce Signal Count
 
-Fewer signals means faster lookup, since lookup is linear. Combine related events where possible, and keep frequently emitted signals few.
+Fewer signals means faster lookup, since lookup is linear. Combine related events where possible, and keep frequently emitted signals few. Signals on different buses do not slow each other down: a subsystem with its own bus scans only its own signals.
 
 ### Use Connection Handles
 
-Handles identify a connection without the signal name or function pointer, and distinguish several connections of the same function. `ss_disconnect_handle` compares integers but scans the slots of every signal.
+Handles identify a connection without the signal name or function pointer, and distinguish several connections of the same function. `ss_disconnect_handle` compares integers but scans the slots of every signal on the bus.
 
 ### Disable Unused Features
 
-Each disabled feature removes conditional checks from the code path. Pass the flags on the command line so the library and every caller see the same configuration (initialize with `ss_init_abi(SS_ABI_TAG)` to have a layout mismatch reported as `SS_ERR_CONFIG_MISMATCH`):
+Each disabled feature removes conditional checks from the code path. Pass the flags on the command line so the library and every caller see the same configuration (flags gate function declarations, not layouts, so a mismatch is a compile or link error):
 
 ```bash
--DSS_ENABLE_THREAD_SAFETY=0      # no mutex checks
+-DSS_ENABLE_THREAD_SAFETY=0      # no mutex code at all
 -DSS_ENABLE_PERFORMANCE_STATS=0  # no timing overhead
 -DSS_ENABLE_MEMORY_STATS=0       # no allocation tracking
 ```
 
 ### Minimize Lock Contention
 
-If thread safety is enabled, emission holds the library's single mutex for the duration of all slot invocations (`ss_flush_deferred` and `ss_batch_emit` hold it for the whole flush). Keep slot callbacks short and move heavy work out of slots, e.g. hand it to a worker queue of your own.
+A bus created with `SS_BUS_THREAD_SAFE` has one recursive mutex, held for the duration of all slot invocations of an emission (`ss_flush_deferred` and `ss_batch_emit` hold it for the whole flush). Keep slot callbacks short and move heavy work out of slots, e.g. hand it to a worker queue of your own. A bus created without the flag has no mutex and costs nothing to lock; buses never contend with each other, so giving independent subsystems their own buses removes contention between them.
 
 ### Use Typed Emit Functions
 
@@ -118,12 +119,13 @@ If thread safety is enabled, emission holds the library's single mutex for the d
 
 ### Size the Static Buffers
 
-In static mode the context is a single object in `.bss` (or the caller's pool). With `SS_STATIC_CONTEXT=0` there is no built-in `.bss` context: an application that always calls `ss_init_static()` with its own pool saves that RAM (`ss_init()` then allocates the context with `SS_CALLOC`). Besides `SS_MAX_SIGNALS`, `SS_MAX_SLOTS` and `SS_MAX_SIGNAL_NAME_LENGTH`, its size is driven by:
+In static mode each bus is a single object: one of the `SS_STATIC_BUSES` built-in buses in `.bss` (default 1), or a caller pool given to `ss_bus_create_in()`. Every built-in bus costs its full size whether it is used or not, so keep `SS_STATIC_BUSES` at the number of buses the program creates with `ss_bus_create()`; with `SS_STATIC_BUSES=0` there is no built-in bus and every bus comes from a pool. Besides `SS_MAX_SIGNALS`, `SS_MAX_SLOTS` and `SS_MAX_SIGNAL_NAME_LENGTH`, the size of a bus is driven by:
 
 - `SS_DEFERRED_QUEUE_SIZE` entries, each holding a name buffer plus `SS_DEFERRED_PAYLOAD_SIZE` payload bytes
 - `SS_MAX_DESCRIPTION_LENGTH` bytes per signal (only with `SS_ENABLE_INTROSPECTION`)
+- with `SS_ENABLE_ISR_SAFE`, `SS_ISR_QUEUE_SIZE` ISR queue entries, each holding a name buffer and three ints
 
-The ISR queue (`SS_ISR_QUEUE_SIZE` entries with a name buffer each) is a separate static array. `ss_get_required_pool_size()` reports the context size for `ss_init_static`.
+`ss_bus_pool_size()` reports the size of one bus, including alignment slack, for `ss_bus_create_in()`.
 
 ## Benchmark Methodology
 
@@ -140,14 +142,14 @@ The project includes a benchmark suite in `benchmarks/benchmark_ss_lib.c`. It me
 
 ### Reference Numbers
 
-Measured for 2.2.0; treat them as indicative, not guarantees:
+Treat these as indicative, not guarantees:
 
-| Measurement | 2.2.0 | 2.1.1 |
-|-------------|-------|-------|
-| Emit with 5 slots (Apple Silicon, clang -O2) | 11.8 ns | 11.6 ns |
-| Code size, `.text` (Cortex-M4, arm-none-eabi-gcc -Os, embedded + minimal preset) | ~3.8 KB | ~3.1 KB |
+| Measurement | 3.0.0 | 2.2.0 | 2.1.1 |
+|-------------|-------|-------|-------|
+| Emit with 5 slots (Apple Silicon, clang -O2) | as 2.2.x | 11.8 ns | 11.6 ns |
+| Code size, `.text` (Cortex-M4, arm-none-eabi-gcc -Os, embedded + minimal preset, ISR queue) | 4580 bytes | ~3.8 KB | ~3.1 KB |
 
-Slot connection is much faster than in 2.1.1, which rescanned every signal on each connect to update statistics. In static mode the context is now in `.bss` (default `SS_STATIC_CONTEXT=1`) instead of being allocated at init.
+The 3.0.0 code size is the CI Embedded job's M4 build. Emission time was compared with `make benchmark` when the bus replaced the global context and stayed within measurement noise of 2.2.x. Slot connection is much faster than in 2.1.1, which rescanned every signal on each connect to update statistics. Since 2.2.0, static mode keeps the library state in `.bss` instead of allocating it at init; in 3.0 that storage is the built-in bus.
 
 Run benchmarks:
 
