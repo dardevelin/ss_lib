@@ -38,6 +38,13 @@ lists what changes for programs written for 2.x.
 - `ss_data_set_string_ref()` and `ss_data_set_custom_ref()` store a borrowed
   payload without allocating, in either memory mode.
 
+### Fixed
+- `docs/api-reference.md` showed `SS_VERSION_PATCH 1` next to version 2.2.4.
+  `make check-version` (in `test-all`, CI and the release workflow) now also
+  checks the version copies written by hand in the API reference, the docs
+  index, the architecture document, CLAUDE.md and the ss-lib skill, so a
+  stale copy fails the build.
+
 ## [2.2.4] - 2026-11-05
 
 ### Changed
