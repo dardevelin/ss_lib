@@ -35,7 +35,7 @@ lists what changes for programs written for 2.x.
   `value.custom.cleanup`. `SS_TYPE_CUSTOM` is declared in every
   configuration and `SS_DATA_INIT` is `{ SS_TYPE_VOID, 0, { 0 } }` in all of
   them. `ss_data_t` is 32 bytes on 64-bit hosts and 24 on Cortex-M in every
-  configuration (2.x: 40/32 with custom data, 16/16 without). Feature flags
+  configuration (2.x: 40 and 32 with custom data, 16 without). Feature flags
   still gate function declarations.
 - **Breaking:** `SS_ABI_TAG` is `sizeof(ss_data_t) * 16 + SS_ABI_REVISION`
   (new macro, 1); `ss_init_abi()` and `ss_init_static_abi()` compare it as

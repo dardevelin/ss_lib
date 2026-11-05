@@ -122,10 +122,11 @@ What to change:
   emitter's object owns its payload, so a slot that copies its `ss_data_t`
   and reuses the copy with a setter no longer frees the emitter's payload.
 - **Size:** `ss_data_t` is the same in every configuration: 32 bytes on
-  64-bit hosts and 24 on Cortex-M (2.x: 40 and 32 with custom data, 16 and 16
-  without). `owned` sits in the padding after `type`. Builds without custom
-  data, such as `SS_MINIMAL_BUILD`, grow by 8 bytes per object on Cortex-M,
-  which includes each deferred and batch entry; see the
+  64-bit hosts and 24 on Cortex-M. In 2.x it was 40 and 32 bytes with custom
+  data and 16 on both without. `owned` sits in the padding after `type`.
+  Builds without custom data, such as `SS_MINIMAL_BUILD`, grow by 16 bytes
+  per object on 64-bit hosts and 8 on Cortex-M, which includes each deferred
+  and batch entry; see the
   [embedded guide](embedded-guide.md#memory-budget).
 
 ## Configuration
