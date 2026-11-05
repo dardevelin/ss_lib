@@ -97,6 +97,10 @@ lists what changes for programs written for 2.x.
   always do. `ss_set_namespace()` no longer checks for its own buffer, which
   is never handed out.
 - The error codes have explicit values; none changes.
+- The release workflow accepts a final tag on `release/MAJOR.x` for that
+  major version as well as on `main`, so older major versions can get
+  maintenance releases, and publishes those without making them the latest
+  release.
 
 ### Added
 - `ss_bus_create(&bus, flags)` and `ss_bus_create_in(&bus, pool, size,
@@ -133,12 +137,6 @@ lists what changes for programs written for 2.x.
   the library; `ss_enable_trace()` remains.
 - **Breaking:** `SS_ERR_TIMEOUT` and `SS_ERR_ISR_UNSAFE`, which no function
   returned. The other codes keep their values (8 and 10 stay unused).
-
-### Changed
-- The release workflow accepts a final tag on `release/MAJOR.x` for that
-  major version as well as on `main`, so older major versions can get
-  maintenance releases, and publishes those without making them the latest
-  release.
 
 ### Fixed
 - The tests checked nothing in CMake Release builds, which CI's Windows MSVC
