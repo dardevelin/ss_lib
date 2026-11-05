@@ -54,8 +54,8 @@ Measured sizes:
   | `SS_EMBEDDED_BUILD`, 16 signals, 32 slots, memory stats (as `make test_embedded`, without performance stats) | 3744 bytes |
 
   The ISR queue adds 704 bytes once, whatever the number of buses. The CI
-  job's `.bss` is one built-in bus plus the ISR queue: 3936 bytes for the M4
-  build and 7072 for the M0 build.
+  job's `.bss` is one built-in bus plus the ISR queue and its counter: 3936
+  bytes for the M4 build and 7072 for the M0 build.
 
 `ss_data_t` has the same layout in every configuration: 24 bytes on Cortex-M (and other 32-bit Arm targets) and 32 bytes on 64-bit hosts. Each deferred and batch entry holds one. In 2.x it was 16 bytes on Cortex-M without custom data, so a build with `SS_ENABLE_CUSTOM_DATA=0` (such as `SS_MINIMAL_BUILD`) now uses 8 bytes more RAM per deferred entry: 128 bytes per bus with the embedded preset's 16 entries. With custom data on it uses 8 bytes less per entry than 2.x (32 bytes).
 
