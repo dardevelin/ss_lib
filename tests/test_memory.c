@@ -101,12 +101,15 @@ static void count_slot(const ss_data_t* data, void* user_data) {
 static void run_core_paths_on(ss_bus_t* bus) {
     ss_data_t s;
     ss_connection_t handle = 0;
+    char ns[SS_MAX_SIGNAL_NAME_LENGTH];
 
     memset(&s, 0, sizeof(s));
     s.type = SS_TYPE_STRING;
     s.value.s_val = "payload";
 
     assert(ss_set_namespace(bus, "mem") == SS_OK);
+    assert(ss_get_namespace(bus, ns, sizeof(ns)) == SS_OK);
+    assert(strcmp(ns, "mem") == 0);
     assert(ss_signal_register_ex(bus, "a", "first signal", SS_PRIORITY_HIGH) == SS_OK);
     assert(ss_signal_register(bus, "b") == SS_OK);
     assert(ss_connect(bus, "a", count_slot, NULL) == SS_OK);
