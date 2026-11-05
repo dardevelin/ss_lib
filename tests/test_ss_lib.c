@@ -419,7 +419,11 @@ void test_isr_null_signal(void) {
     printf("\n=== Testing ISR NULL Signal ===\n");
 
     bus = new_bus();
-    assert(ss_emit_from_isr(NULL, 42) == SS_ERR_NULL_PARAM);
+    assert(ss_emit_from_isr(bus, NULL, 42) == SS_ERR_NULL_PARAM);
+    assert(ss_emit_from_isr(bus, "", 42) == SS_ERR_NULL_PARAM);
+    /* A NULL bus is refused without touching any queue */
+    assert(ss_emit_from_isr(NULL, "isr_sig", 42) == SS_ERR_NULL_PARAM);
+    assert(ss_process_isr_queue(bus) == SS_OK);
     ss_bus_destroy(bus);
 
     printf("ISR NULL signal tests passed!\n");
@@ -986,9 +990,9 @@ void test_isr_queue_processing(void) {
     assert(ss_connect(bus, "isr_sig", slot_record_isr, NULL) == SS_OK);
 
     g_isr_count = 0;
-    assert(ss_emit_from_isr("isr_sig", 1) == SS_OK);
-    assert(ss_emit_from_isr("isr_sig", 2) == SS_OK);
-    assert(ss_emit_from_isr("isr_sig", 3) == SS_OK);
+    assert(ss_emit_from_isr(bus, "isr_sig", 1) == SS_OK);
+    assert(ss_emit_from_isr(bus, "isr_sig", 2) == SS_OK);
+    assert(ss_emit_from_isr(bus, "isr_sig", 3) == SS_OK);
     assert(g_isr_count == 0);                 /* nothing runs in the ISR */
 
     assert(ss_process_isr_queue(bus) == SS_OK);
@@ -997,24 +1001,24 @@ void test_isr_queue_processing(void) {
 
     /* A full queue rejects, and draining makes room again */
     for (i = 0; i < SS_ISR_QUEUE_SIZE; i++) {
-        assert(ss_emit_from_isr("isr_sig", 100 + i) == SS_OK);
+        assert(ss_emit_from_isr(bus, "isr_sig", 100 + i) == SS_OK);
     }
-    assert(ss_emit_from_isr("isr_sig", -1) == SS_ERR_WOULD_OVERFLOW);
+    assert(ss_emit_from_isr(bus, "isr_sig", -1) == SS_ERR_WOULD_OVERFLOW);
     assert(ss_process_isr_queue(bus) == SS_OK);
     assert(g_isr_count == 3 + SS_ISR_QUEUE_SIZE);
     for (i = 0; i < SS_ISR_QUEUE_SIZE; i++) {
         assert(g_isr_values[3 + i] == 100 + i);
     }
-    assert(ss_emit_from_isr("isr_sig", 5) == SS_OK);
+    assert(ss_emit_from_isr(bus, "isr_sig", 5) == SS_OK);
     assert(ss_process_isr_queue(bus) == SS_OK);
 
     /* S10: over-long names are rejected, never truncated */
     memset(long_name, 'i', sizeof(long_name) - 1);
     long_name[sizeof(long_name) - 1] = '\0';
-    assert(ss_emit_from_isr(long_name, 1) == SS_ERR_WOULD_OVERFLOW);
+    assert(ss_emit_from_isr(bus, long_name, 1) == SS_ERR_WOULD_OVERFLOW);
 
     /* Events for unknown signals are dropped and reported */
-    assert(ss_emit_from_isr("no_such_signal", 1) == SS_OK);
+    assert(ss_emit_from_isr(bus, "no_such_signal", 1) == SS_OK);
     assert(ss_process_isr_queue(bus) == SS_ERR_NOT_FOUND);
 
     ss_bus_destroy(bus);

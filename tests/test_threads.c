@@ -2,7 +2,7 @@
  * Concurrency stress test (POSIX threads). Run under ThreadSanitizer:
  *   make test-tsan
  *
- * Four phases:
+ * Five phases:
  *   1. one bus created with SS_BUS_THREAD_SAFE, shared by every thread:
  *      every public operation that touches its state is hammered, including
  *      slots that call back into the library and producers on the ISR queue;
@@ -12,11 +12,15 @@
  *      (cross-bus calls in one direction only) while other threads use the
  *      second directly;
  *   4. one thread-safe bus whose namespace some threads set while the
- *      others read it with ss_get_namespace().
+ *      others read it with ss_get_namespace();
+ *   5. ISR producers on two buses, each drained by its own consumer
+ *      thread: the ISR path takes no lock, so the buses are created
+ *      without the flag. Events stay on their bus, in order per producer.
  * Any data race, deadlock, lost or duplicated event fails the run.
  */
 #include "ss_lib.h"
 #include <pthread.h>
+#include <sched.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -93,7 +97,7 @@ static void* worker(void* arg) {
             }
             break;
         case 5:
-            if (ss_emit_from_isr("isr", i) == SS_OK) {
+            if (ss_emit_from_isr(bus, "isr", i) == SS_OK) {
                 atomic_fetch_add(&g_isr_sent, 1);
             }
             break;
@@ -242,6 +246,55 @@ static void* namespace_worker(void* arg) {
     return NULL;
 }
 
+/* Phase 5: threads 0-2 queue ISR events on g_isr_bus[0], 3-5 on
+ * g_isr_bus[1]; thread 6 drains the first bus and 7 the second. Event
+ * values are producer * ISR_EVENTS + n. */
+#define ISR_PRODUCERS 3   /* per bus */
+#define ISR_EVENTS 2000   /* per producer */
+
+static ss_bus_t* g_isr_bus[2];
+static int g_isr_bus_index[2] = { 0, 1 };
+static atomic_int g_isr_delivered[2];
+/* Each producer's next expected value; read and written only by the
+ * consumer of that producer's bus */
+static int g_isr_next[2 * ISR_PRODUCERS];
+
+/* Every event arrives on its own bus, exactly once, and a producer's
+ * events in the order it queued them */
+static void slot_isr_bus(const ss_data_t* data, void* user_data) {
+    int index = *(const int*)user_data;
+    int value = ss_data_get_int(data, -1);
+    int producer = value / ISR_EVENTS;
+    assert(value >= 0 && producer < 2 * ISR_PRODUCERS);
+    assert(producer / ISR_PRODUCERS == index);           /* no cross-delivery */
+    assert(value == g_isr_next[producer]);               /* no loss, duplicate or reorder */
+    g_isr_next[producer]++;
+    atomic_fetch_add(&g_isr_delivered[index], 1);
+}
+
+static void* isr_bus_worker(void* arg) {
+    long id = (long)(size_t)arg;
+    int i;
+    if (id < 2 * ISR_PRODUCERS) {
+        ss_bus_t* target = g_isr_bus[id / ISR_PRODUCERS];
+        for (i = 0; i < ISR_EVENTS; i++) {
+            ss_error_t err;
+            while ((err = ss_emit_from_isr(target, "isr", (int)id * ISR_EVENTS + i))
+                   == SS_ERR_WOULD_OVERFLOW) {
+                (void)sched_yield();             /* queue full: wait for the consumer */
+            }
+            assert(err == SS_OK);
+        }
+    } else if (id < 2 * ISR_PRODUCERS + 2) {
+        int index = (int)id - 2 * ISR_PRODUCERS;
+        while (atomic_load(&g_isr_delivered[index]) < ISR_PRODUCERS * ISR_EVENTS) {
+            assert(ss_process_isr_queue(g_isr_bus[index]) == SS_OK);
+            (void)sched_yield();
+        }
+    }
+    return NULL;
+}
+
 static void run_threads(void* (*fn)(void*)) {
     pthread_t threads[THREADS];
     long i;
@@ -317,6 +370,33 @@ int main(void) {
     run_threads(namespace_worker);
     ss_bus_destroy(bus);
     printf("Namespace reads passed\n");
+
+    /* Phase 5: ISR queues of two buses */
+    assert(ss_bus_create(&g_isr_bus[0], 0) == SS_OK);
+    pool = malloc(ss_bus_pool_size());
+    assert(pool != NULL);
+    assert(ss_bus_create_in(&g_isr_bus[1], pool, ss_bus_pool_size(), 0) == SS_OK);
+    {
+        int b, p;
+        for (p = 0; p < 2 * ISR_PRODUCERS; p++) g_isr_next[p] = p * ISR_EVENTS;
+        for (b = 0; b < 2; b++) {
+            assert(ss_signal_register(g_isr_bus[b], "isr") == SS_OK);
+            assert(ss_connect(g_isr_bus[b], "isr", slot_isr_bus, &g_isr_bus_index[b]) == SS_OK);
+        }
+    }
+    assert(THREADS >= 2 * ISR_PRODUCERS + 2);
+    run_threads(isr_bus_worker);
+    {
+        int p;
+        for (p = 0; p < 2 * ISR_PRODUCERS; p++) {
+            assert(g_isr_next[p] == (p + 1) * ISR_EVENTS);
+        }
+    }
+    ss_bus_destroy(g_isr_bus[0]);
+    ss_bus_destroy(g_isr_bus[1]);
+    free(pool);
+    printf("ISR queues per bus passed (%d events on each of 2 buses)\n",
+           ISR_PRODUCERS * ISR_EVENTS);
 
     printf("Concurrency stress test passed\n");
     return 0;
