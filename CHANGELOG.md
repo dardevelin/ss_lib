@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `docs/api-reference.md` showed `SS_VERSION_PATCH 1` next to version 2.2.4.
+  `make check-version` (in `test-all`, CI and the release workflow) now also
+  checks the version copies written by hand in the API reference, the docs
+  index, the architecture document, CLAUDE.md and the ss-lib skill, so a
+  stale copy fails the build.
+
 ## [2.2.4] - 2026-11-05
 
 ### Changed
