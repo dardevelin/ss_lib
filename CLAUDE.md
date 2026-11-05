@@ -12,7 +12,8 @@ SS_Lib is a signal-slot library for C (v2.2.3) targeting embedded systems, game 
 
 ```bash
 make all              # library, tests (build/test_*), examples
-make test             # test_ss_lib, test_simple, test_memory, test_isr, test_threads
+make test             # test_ss_lib, test_simple, test_memory, test_isr,
+                      #   test_reentrancy, test_threads
 make test-all         # test + test-static + test-minimal + test-c89 + test-newest
                       #   + test-single (the suite against include/ss_lib_single.h)
                       #   + check-standards + check-single-header + check-version
@@ -36,6 +37,7 @@ Every object is compiled with one `FEATURES` variable (default: ISR, memory and 
 - `tests/test_ss_lib.c`: the suite, including regression tests named after the review findings (S1, S2...). Each test does `ss_init()` ... `ss_cleanup()` because state is one global context. To run one test, comment out the other calls in `main()`, then `make tests && ./build/test_ss_lib`.
 - `tests/test_memory.c` (C89): `#include`s the implementation with `SS_MALLOC`/`SS_CALLOC`/`SS_FREE` routed to a tracking allocator; asserts no leaks, that every freed pointer came from those macros, and zero heap use in static mode.
 - `tests/test_isr.c` (C89): `#include`s the implementation with `SS_ISR_CRITICAL_ENTER`/`EXIT` routed to a hook, so a test can "interrupt" `ss_process_isr_queue()` at an exact point.
+- `tests/test_reentrancy.c`: seeded random programs whose slots unregister, clean up, disconnect, emit, queue deferred emissions, flush and run batches up to 4 emissions deep, checking every payload (GHSA-f5pm-2465-f895). It fails on 2.1.1 under ASan; replay one seed with `./build/test_reentrancy <seed>`. New code that lets a slot change library state must keep it passing under `make test-asan` and `make test-valgrind`.
 - `tests/test_threads.c`: pthread stress test with thread safety on; meant for `make test-tsan`.
 
 For bug fixes write the failing test first; use-after-free tests only fail under `make test-asan`.
@@ -46,7 +48,7 @@ For bug fixes write the failing test first; use-after-free tests only fail under
 cmake -B build/cmake -DSS_ENABLE_ISR_SAFE=ON && cmake --build build/cmake && ctest --test-dir build/cmake
 ```
 
-ctest names: `test_basic`, `test_simple`, `test_memory`, `test_isr`, `test_single` (the suite against the single header), `test_threads`. `CMAKE_C_STANDARD` defaults to 11 and can be overridden. Feature options are always passed as 0/1 and exported as PUBLIC compile definitions of `ss_lib::ss_lib`. The version comes from the header.
+ctest names: `test_basic`, `test_simple`, `test_memory`, `test_isr`, `test_reentrancy`, `test_single` and `test_reentrancy_single` (those two against the single header), `test_threads`. `CMAKE_C_STANDARD` defaults to 11 and can be overridden. Feature options are always passed as 0/1 and exported as PUBLIC compile definitions of `ss_lib::ss_lib`. The version comes from the header.
 
 ## Configuration Must Match Across Library and Callers
 

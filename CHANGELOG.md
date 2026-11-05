@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `tests/test_reentrancy.c`, run by `make test` and ctest in every
+  configuration and under every sanitizer and valgrind: 10,000 seeded random
+  programs whose slots unregister signals, call `ss_cleanup()`, disconnect,
+  emit, queue deferred emissions, flush and run batches, up to four emissions
+  deep, and check every payload they receive. It guards against the bugs in
+  advisory GHSA-f5pm-2465-f895: built against 2.1.1 with AddressSanitizer it
+  fails.
 - `make test-single` runs the test suite against `include/ss_lib_single.h`
   (dynamic and static memory) instead of `src/ss_lib.c`; `make test-all` and
   `make test-asan` include it, so CI and the release workflow test the file
@@ -99,8 +106,9 @@ public struct layouts are unchanged.
   queues a deferred emission during the flush: entries are now popped from a
   FIFO ring before they are emitted, and a flush only emits the entries queued
   when it started, also across nested flushes.
-- Regenerated `include/ss_lib_single.h`, which still contained the
-  disconnect-during-emit use-after-free fixed in 2.1.0; CI now fails when it is stale.
+- Regenerated `include/ss_lib_single.h`, an outdated snapshot in which
+  `ss_cleanup()` from a slot was a use-after-free (it did not implement the
+  disconnect, unregister or deferred functions); CI now fails when it is stale.
 - Thread safety: one recursive mutex created at `ss_init()` and used by every
   function that touches shared state (the deferred queue, namespace, error handler,
   profiling flag and slot limit were unlocked). Toggling it no longer creates or
