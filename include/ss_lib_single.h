@@ -1094,9 +1094,10 @@ static void account(ss_bus_t* bus, size_t add, size_t sub) {
 #define SS_ACCOUNT(bus, add, sub) ((void)0)
 #endif
 
-/* SS_TRACE((bus, fmt, args...)): double parentheses keep it valid C89.
- * Writes to bus's trace stream. Internal to this file; no public macro
- * has this name since 3.0. */
+/* SS_LIB_TRACE((bus, fmt, args...)): double parentheses keep it valid C89.
+ * Writes to bus's trace stream. Internal to this file; named apart from
+ * the public SS_TRACE macro of 2.x so a program defining SS_TRACE cannot
+ * collide with it. */
 #if SS_ENABLE_DEBUG_TRACE
 static void ss_trace(const ss_bus_t* bus, const char* fmt, ...) {
     va_list args;
@@ -1108,9 +1109,9 @@ static void ss_trace(const ss_bus_t* bus, const char* fmt, ...) {
     fputc('\n', out);
     va_end(args);
 }
-#define SS_TRACE(args) ss_trace args
+#define SS_LIB_TRACE(args) ss_trace args
 #else
-#define SS_TRACE(args) ((void)0)
+#define SS_LIB_TRACE(args) ((void)0)
 #endif
 
 #if SS_ENABLE_PERFORMANCE_STATS
@@ -1490,7 +1491,7 @@ SS_INLINE ss_error_t emit_locked(ss_bus_t* bus, const char* name, const ss_data_
 #endif
 
     if (!sig) return SS_ERR_NOT_FOUND;
-    SS_TRACE((bus, "Emitting signal: %s to %lu slots", name, (unsigned long)sig->slot_count));
+    SS_LIB_TRACE((bus, "Emitting signal: %s to %lu slots", name, (unsigned long)sig->slot_count));
 
     sig->emitting++;
     for (slot = sig->slots; slot; ) {
@@ -1985,7 +1986,7 @@ ss_error_t ss_signal_register_ex(ss_bus_t* bus, const char* signal_name,
         if (sig) {
             sig->priority = priority;
             bus->signal_count++;
-            SS_TRACE((bus, "Registered signal: %s", name));
+            SS_LIB_TRACE((bus, "Registered signal: %s", name));
         }
     }
     return bus_leave(bus, locked, err, signal_name);
@@ -2067,7 +2068,7 @@ ss_error_t ss_connect_ex(ss_bus_t* bus, const char* signal_name, ss_slot_func_t 
                 s->next = node;
             }
             sig->slot_count++;
-            SS_TRACE((bus, "Connected slot to signal: %s (handle: %lu)", sig->name,
+            SS_LIB_TRACE((bus, "Connected slot to signal: %s (handle: %lu)", sig->name,
                      (unsigned long)node->handle));
         }
     }
