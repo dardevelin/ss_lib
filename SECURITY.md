@@ -41,7 +41,7 @@ reporter unless they prefer otherwise.
 ## Published advisories
 
 - [GHSA-f5pm-2465-f895](https://github.com/dardevelin/ss_lib/security/advisories/GHSA-f5pm-2465-f895):
-  use-after-free when a slot unregisters its signal, tears the library down
-  (`ss_bus_destroy()` in 3.0), or queues a deferred emission during a flush.
-  Affects versions before 2.2.0; fixed in 2.2.0. `tests/test_reentrancy.c` and `make test-single` guard
-  against it.
+  use-after-free when a slot unregisters its signal, calls `ss_cleanup()` (in
+  3.0, `ss_bus_destroy()` on the emitting bus), or queues a deferred emission
+  during a flush. Affects versions before 2.2.0; fixed in 2.2.0.
+  `tests/test_reentrancy.c` and `make test-single` guard against it.
