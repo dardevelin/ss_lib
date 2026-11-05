@@ -79,22 +79,26 @@ ss_set_thread_safe(1);  // Turns locking on
 
 ### 6. Leaked `ss_data_t`
 
-**Look for:** `ss_data_create()` without matching `ss_data_destroy()`.
+**Look for:** `ss_data_create()` without matching `ss_data_destroy()`; a stack `ss_data_t` filled by `ss_data_set_string()` / `ss_data_set_custom()` that goes out of scope without `ss_data_clear()`.
 
 **Consequence:** Memory leak. If the data holds a string (via `ss_data_set_string()`), the copied string also leaks. If custom data with a cleanup function, the cleanup never runs.
 
-**Fix:** Always pair `ss_data_create()` with `ss_data_destroy()`. Consider using stack-local `ss_data_t` with the type-specific emit helpers instead. (Reusing one object with several `ss_data_set_*` calls is fine: each setter releases the previous payload.)
+**Fix:** Always pair `ss_data_create()` with `ss_data_destroy()`, and a stack object that used a copying setter with `ss_data_clear()`. Consider using the type-specific emit helpers, or the borrowing `ss_data_set_string_ref()` / `ss_data_set_custom_ref()`, instead. (Reusing one object with several `ss_data_set_*` calls is fine: each setter releases the payload the object owns.)
 
 ### 6b. `ss_data_t` Ownership Violations
 
+In 3.0 an `ss_data_t` records ownership in `owned`, set only by the copying setters (`ss_data_set_string`, `ss_data_set_custom`); the library frees only owned payloads. Hand-filled objects, `_ref` setters, the `ss_emit_*` helpers and the data slots receive all borrow, so most 2.x invalid frees are gone. What remains:
+
 **Look for:**
-- `ss_data_destroy()` or `ss_data_set_*()` on a stack `ss_data_t` filled in by hand (or any object not from `ss_data_create()`).
-- Direct assignment of `value.s_val` or `custom_data` on an object from `ss_data_create()` (destroy will `SS_FREE` a pointer the library never allocated, or leak the previous copy).
-- A `custom_cleanup` that frees the pointer it receives.
+- An `ss_data_t` used without `SS_DATA_INIT`, `ss_data_init()` or `ss_data_create()` (for example `ss_data_t d; d.type = ...;` then a setter or `ss_data_clear()`): `owned` holds garbage, so the library may free a pointer it never allocated.
+- Direct assignment of `value.s_val` or `custom_data` on an object that currently owns its payload (after `ss_data_set_string`/`_custom`): the next setter, clear or destroy frees the caller's pointer, and the copy leaks. Clear first, or use the `_ref` setters.
+- Writing `owned` by hand.
+- A cleanup that frees the pointer it receives, or casts away the `const` to modify or free it.
+- 2.x code that relied on `ss_data_destroy()` freeing a hand-written `s_val` on an `ss_data_create()` object: in 3.0 that string is borrowed and leaks.
 
-**Consequence:** Invalid free / double free / leak. A hand-filled stack `ss_data_t` borrows its pointers; `custom_cleanup` receives the library's copy, which the library frees itself after the cleanup returns.
+**Consequence:** Invalid free / double free / leak. The cleanup receives the library's copy, which the library frees itself after the cleanup returns.
 
-**Fix:** Use `ss_data_set_string()` / `ss_data_set_custom()` on created objects; pass hand-filled stack data only to `ss_emit*`, `ss_emit_deferred`, `ss_batch_add`; in `custom_cleanup` release only what the copy references.
+**Fix:** Initialize every object; set payloads with the setters (copying or `_ref`) rather than by hand; release owned payloads with `ss_data_clear()` / `ss_data_destroy()`; in the cleanup release only what the copy references.
 
 ### 7. Static Memory Overflow
 
@@ -140,13 +144,14 @@ ss_set_thread_safe(1);  // Turns locking on
 
 **Look for:** `ss_data_set_custom()` with a struct that owns nested heap memory but a NULL cleanup function; or a cleanup that frees its argument; or code expecting the cleanup to run for deferred/batch copies.
 
-**Consequence:** `ss_data_set_custom()` copies the struct (shallow `memcpy`); `ss_data_destroy()` calls the cleanup on that copy and then frees it. Without a cleanup, nested allocations leak. A cleanup that frees its argument causes a double free. `ss_emit_deferred()` / `ss_batch_add()` store another shallow copy and never call the cleanup for it, so nested pointers must stay valid until the flush, and are owned by the caller's object.
+**Consequence:** `ss_data_set_custom()` copies the struct (shallow `memcpy`); the next setter, `ss_data_clear()` or `ss_data_destroy()` calls the cleanup once on that copy and then frees it. Without a cleanup, nested allocations leak. A cleanup that frees its argument causes a double free (it is `const void*`, so `free(data)` draws a compiler diagnostic; look for casts that hide it). `ss_data_set_custom_ref()` has no cleanup at all. `ss_emit_deferred()` / `ss_batch_add()` store another shallow copy and never call the cleanup for it, so nested pointers must stay valid until the flush, and are owned by the caller's object.
 
 **Fix:** Provide a cleanup that releases only what the copy references:
 
 ```c
-void point_list_cleanup(void* data) {
-    PointList* pl = (PointList*)data;
+void point_list_cleanup(const void* data, size_t size) {
+    const PointList* pl = (const PointList*)data;
+    (void)size;
     free(pl->points);  // Free nested allocation, NOT pl
 }
 ss_data_set_custom(d, &pl, sizeof(PointList), point_list_cleanup);
@@ -320,10 +325,14 @@ for (;;) { ss_process_isr_queue(); /* ... */ }
 ### Anti-Pattern 6: Freeing the custom data copy in its cleanup
 
 ```c
-// WRONG — the library frees the copy after calling cleanup: double free
-void cleanup(void* p) { free(((Blob*)p)->bytes); free(p); }
+// WRONG — the library frees the copy after calling cleanup: double free.
+// The const parameter makes free(p) a diagnostic; a cast only hides it.
+void cleanup(const void* p, size_t n) { free(((const Blob*)p)->bytes); free((void*)p); }
 
 // CORRECT
+void cleanup(const void* p, size_t n) { (void)n; free(((const Blob*)p)->bytes); }
+
+// WRONG (2.x signature) — no longer converts to ss_cleanup_func_t
 void cleanup(void* p) { free(((Blob*)p)->bytes); }
 ```
 
@@ -335,7 +344,7 @@ When reviewing code, verify that features used are enabled at compile time:
 |----------|--------------|---------|
 | `ss_set_thread_safe()`, `ss_is_thread_safe()` | `SS_ENABLE_THREAD_SAFETY` | 1 (on) |
 | `ss_get_signal_count()`, `ss_get_signal_list()`, `ss_free_signal_list()` | `SS_ENABLE_INTROSPECTION` | 1 (on) |
-| `SS_TYPE_CUSTOM`, `ss_data_set_custom()`, `ss_data_get_custom()` | `SS_ENABLE_CUSTOM_DATA` | 1 (on) |
+| `SS_TYPE_CUSTOM`, `ss_data_set_custom()`, `ss_data_set_custom_ref()`, `ss_data_get_custom()` | `SS_ENABLE_CUSTOM_DATA` | 1 (on) |
 | `ss_get_perf_stats()`, `ss_enable_profiling()`, `ss_reset_perf_stats()` | `SS_ENABLE_PERFORMANCE_STATS` | 0 (off) |
 | `ss_get_memory_stats()`, `ss_reset_memory_stats()` | `SS_ENABLE_MEMORY_STATS` | 0 (off) |
 | `ss_enable_trace()`, `ss_disable_trace()` | `SS_ENABLE_DEBUG_TRACE` | 0 (off) |
@@ -350,13 +359,13 @@ Code using disabled features will fail to compile (linker errors for functions, 
 - No fixed limits on signal/slot count (bounded by `max_slots_per_signal`, default 100).
 - All allocations via `SS_MALLOC`/`SS_CALLOC` (strings via `SS_MALLOC` unless `SS_STRDUP` is defined).
 - `ss_cleanup()` must be called to free all resources.
-- `ss_data_destroy()` must be called for every `ss_data_create()`.
+- `ss_data_destroy()` must be called for every `ss_data_create()`, and `ss_data_clear()` for every stack object filled by a copying setter.
 
 ### Static Mode (`SS_USE_STATIC_MEMORY`)
 
 - Fixed pools: `SS_MAX_SIGNALS` (32), `SS_MAX_SLOTS` (128); fixed buffers: `SS_MAX_SIGNAL_NAME_LENGTH` (32), `SS_MAX_DESCRIPTION_LENGTH` (32), `SS_DEFERRED_PAYLOAD_SIZE` (32), `SS_DEFERRED_QUEUE_SIZE` entries.
 - `ss_init()` uses static storage (`SS_STATIC_CONTEXT=1`, default; with 0 it `SS_CALLOC`s the context); register/connect/emit/deferred/namespace/disconnect/unregister/cleanup never touch the heap.
-- Still allocate: `ss_data_create`, `ss_data_set_string`, `ss_data_set_custom`, `ss_get_signal_list`, `ss_batch_create`.
+- Still allocate: `ss_data_create`, `ss_data_set_string`, `ss_data_set_custom`, `ss_get_signal_list`, `ss_batch_create`. `ss_data_set_string_ref` / `ss_data_set_custom_ref` never allocate.
 - Returns `SS_ERR_WOULD_OVERFLOW` when pools or buffers are exhausted.
 - `ss_cleanup()` clears the pools — safe to re-init.
 - `ss_init_static(pool, size)`: pool must be at least `ss_get_required_pool_size()` bytes and outlive `ss_cleanup()` (never freed by the library). A NULL or smaller pool is silently ignored (falls back to `ss_init()`, returns `SS_OK`): flag code that relies on an error, or that sets `SS_STATIC_CONTEXT=0` on a no-heap target with a pool that may be too small (the fallback then uses the heap).
