@@ -2,7 +2,7 @@
 
 ## Overview
 
-SS_Lib provides a signal-slot mechanism for C programs. This reference covers all public functions, data types, and configuration options of version 2.2.2.
+SS_Lib provides a signal-slot mechanism for C programs. This reference covers all public functions, data types, and configuration options of version 2.2.3.
 
 ## Version
 
@@ -10,7 +10,7 @@ SS_Lib provides a signal-slot mechanism for C programs. This reference covers al
 #define SS_VERSION_MAJOR 2
 #define SS_VERSION_MINOR 2
 #define SS_VERSION_PATCH 1
-#define SS_VERSION_STRING "2.2.2"
+#define SS_VERSION_STRING "2.2.3"
 
 const char* ss_version(void);   /* returns SS_VERSION_STRING of the compiled library */
 ```

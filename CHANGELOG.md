@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-11-05
+
 ### Fixed
 - arm64 Linux: with GCC before 13.4 and 14.3 (GCC 11, 12, 13.3 and 14.2 on
   Ubuntu 22.04/24.04 and Debian 12/13), a library built with
@@ -267,7 +269,8 @@ public struct layouts are unchanged.
 - Signal introspection
 - Basic examples and tests
 
-[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v2.2.2...HEAD
+[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v2.2.3...HEAD
+[2.2.3]: https://github.com/dardevelin/ss_lib/compare/v2.2.2...v2.2.3
 [2.2.2]: https://github.com/dardevelin/ss_lib/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/dardevelin/ss_lib/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/dardevelin/ss_lib/compare/v2.1.1...v2.2.0

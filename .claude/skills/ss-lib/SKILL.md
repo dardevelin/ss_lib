@@ -6,7 +6,7 @@ Activate when code includes `ss_lib.h`, or user asks about SS_Lib, signal-slot i
 
 ## Overview
 
-SS_Lib is a lightweight signal-slot library for C (v2.2.2). Pure ANSI C, zero external dependencies. Designed for embedded systems, game engines, and resource-constrained environments. Supports dynamic and static memory allocation, optional thread safety, and ISR-safe signal emission.
+SS_Lib is a lightweight signal-slot library for C (v2.2.3). Pure ANSI C, zero external dependencies. Designed for embedded systems, game engines, and resource-constrained environments. Supports dynamic and static memory allocation, optional thread safety, and ISR-safe signal emission.
 
 ## Mandatory Lifecycle
 
