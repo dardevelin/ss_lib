@@ -130,6 +130,7 @@ Slots and signals are never freed while their signal is emitting. They are marke
 
 The emit loop (`emit_locked`):
 
+<!-- check-docs: skip (excerpt of src/ss_lib.c) -->
 ```c
 sig->emitting++;
 for (slot = sig->slots; slot; ) {
@@ -165,10 +166,12 @@ Slots always receive borrowed data. `ss_emit` and `ss_emit_namespaced` pass an o
 
 The deferred queue and batches share one implementation: `ss_queue_t`, a ring buffer (`entries`, `capacity`, `head`, `count`) of `ss_entry_t`.
 
+<!-- check-docs: skip (simplified excerpt of src/ss_lib.c) -->
 ```c
 typedef struct {
     char signal_name[SS_MAX_SIGNAL_NAME_LENGTH];
     ss_data_t data;              /* type and scalar value; pointers and owned cleared */
+    unsigned long seq;           /* push order, bounds a flush */
     int has_payload;
     /* static: inline bytes[SS_DEFERRED_PAYLOAD_SIZE]; dynamic: heap copy */
 } ss_entry_t;

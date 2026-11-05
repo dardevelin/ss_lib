@@ -67,7 +67,7 @@ ss_emit_string(bus, "log", buf);  // OK only if all slots read synchronously and
 // SAFE for later delivery — the deferred queue copies the string
 ss_emit_deferred(bus, "log", &(ss_data_t){ .type = SS_TYPE_STRING, .value.s_val = buf });  /* C99+ */
 // SAFE in the slot — copy what you keep
-void logger(const ss_data_t* d, void* ud) { log_append(strdup(ss_data_get_string(d))); }
+void logger(const ss_data_t* d, void* ud) { (void)ud; log_append(strdup(ss_data_get_string(d))); }
 ```
 
 ### 4. Unchecked Error Codes
@@ -80,7 +80,7 @@ void logger(const ss_data_t* d, void* ud) { log_append(strdup(ss_data_get_string
 
 ### 4b. Error Handler Misuse
 
-**Look for:** An error handler with the 2.x signature `(ss_error_t, const char*)`, often cast to `ss_error_handler_t` to compile; a handler that keeps the `msg` pointer; `user_data` freed or out of scope while the handler is still set (e.g. a stack struct in a function that returns without `ss_set_error_handler(bus, NULL, NULL)`); a handler that destroys its bus and then uses `bus`; a handler that waits for another thread to use the same bus.
+**Look for:** An error handler with the 2.x parameters (only the error and the message, no bus and no `user_data`), often cast to `ss_error_handler_t` to compile; a handler that keeps the `msg` pointer; `user_data` freed or out of scope while the handler is still set (e.g. a stack struct in a function that returns without `ss_set_error_handler(bus, NULL, NULL)`); a handler that destroys its bus and then uses `bus`; a handler that waits for another thread to use the same bus.
 
 **Consequence:** Calling the cast handler through `ss_error_handler_t` is undefined behavior; in practice it reads the wrong arguments. `msg` may be the caller's signal name, valid only during the handler call. A dangling `user_data` is used on the next error. After the outermost failing call, `ss_bus_destroy(bus)` in the handler frees the bus at once. A failing call made from a slot reports while the slot's emission still holds the bus's lock, so a handler that waits for another thread using the bus deadlocks there.
 
@@ -265,7 +265,7 @@ ss_connect_ex(bus, "sig", slot, user_data, SS_PRIORITY_HIGH, &handle);
 
 ### 19. Migrating 2.x Code
 
-**Look for:** 2.x calls that 3.0 no longer has (the global init and cleanup functions, the pool-size query, the runtime thread-safety toggle, the static-context macro, the trace macro and the two error codes 2.x never returned; `docs/migration-3.0.md` lists them by name), stateful calls without a bus argument, `ss_get_namespace` used as returning a pointer (it now copies into a caller buffer and returns `ss_error_t`), and error handlers with the 2.x signature `(ss_error_t, const char*)`.
+**Look for:** 2.x calls that 3.0 no longer has (the global init and cleanup functions, the pool-size query, the runtime thread-safety toggle, the static-context macro, the trace macro and the two error codes 2.x never returned; `docs/migration-3.0.md` lists them by name), stateful calls without a bus argument, `ss_get_namespace` used as returning a pointer (it now copies into a caller buffer and returns `ss_error_t`), and error handlers with the 2.x parameters (no bus and no `user_data`).
 
 **Consequence:** They fail to compile or link; none silently changes meaning.
 
@@ -318,6 +318,7 @@ pthread_create(&t2, NULL, consumer, bus);
 ```c
 // WRONG — slot stores data->value.s_val, but it points to stack memory
 void logger(const ss_data_t* data, void* ud) {
+    (void)ud;
     log_list_append(ss_data_get_string(data));  // Stores dangling pointer!
 }
 void emit_status(ss_bus_t* bus) {
@@ -331,6 +332,7 @@ void emit_status(ss_bus_t* bus) {
 // right after ss_emit returns.)
 void logger(const ss_data_t* data, void* ud) {
     const char* s = ss_data_get_string(data);
+    (void)ud;
     log_list_append(s ? strdup(s) : NULL);   // owned copy
 }
 ```
@@ -351,7 +353,7 @@ void send_update(ss_bus_t* bus, int value) {
     ss_emit_int(bus, "update", value);  // No allocation needed
 }
 
-// Or if you need ss_data_create:
+// CORRECT, if you need ss_data_create:
 void send_update(ss_bus_t* bus, int value) {
     ss_data_t* d = ss_data_create(SS_TYPE_INT);
     ss_data_set_int(d, value);
@@ -381,7 +383,7 @@ for (;;) { ss_process_isr_queue(bus); /* ... */ }
 ```c
 // WRONG — the library frees the copy after calling cleanup: double free.
 // The const parameter makes free(p) a diagnostic; a cast only hides it.
-void cleanup(const void* p, size_t n) { free(((const Blob*)p)->bytes); free((void*)p); }
+void cleanup(const void* p, size_t n) { (void)n; free(((const Blob*)p)->bytes); free((void*)p); }
 
 // CORRECT
 void cleanup(const void* p, size_t n) { (void)n; free(((const Blob*)p)->bytes); }
@@ -395,6 +397,8 @@ void cleanup(void* p) { free(((Blob*)p)->bytes); }
 ```c
 // WRONG — relies on a bus the slot cannot see (or on a "default" bus)
 void on_saved(const ss_data_t* d, void* ud) {
+    (void)d;
+    (void)ud;
     ss_emit_void(NULL, "status");     // NULL is never a default bus: SS_ERR_NULL_PARAM
 }
 
@@ -472,17 +476,18 @@ If custom allocators are defined (`SS_MALLOC`, `SS_FREE`, `SS_CALLOC`, `SS_STRDU
 
 ```c
 void my_slot(const ss_data_t* data, void* user_data) {
+    (void)user_data;
     if (!data) return;  // ss_emit(bus, name, NULL) passes NULL
 
     // Getters return default on type mismatch — safe
     int val = ss_data_get_int(data, -1);
     if (val == -1 && data->type != SS_TYPE_INT) {
-        // Actually a type mismatch, not the value -1
+        return;         // Actually a type mismatch, not the value -1
     }
 
     // Better: check type explicitly
     if (data->type == SS_TYPE_INT) {
-        int val = data->value.i_val;
+        printf("%d\n", data->value.i_val);
     }
 }
 ```

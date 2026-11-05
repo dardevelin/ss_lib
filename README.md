@@ -498,7 +498,8 @@ make test-c89       # ... against src/ss_lib_c89.c built as C89
 make test-newest    # ... built as the newest C standard the compiler supports
 make test-single    # ... against the generated single header (dynamic and static)
 make check-standards  # Compile as C89, C99, C11, C17, C23 and C2y with -Werror
-make check-abi     # Public struct sizes, offsets and enum values identical in every configuration
+make check-abi      # Public struct sizes, offsets and enum values identical in every configuration
+make check-docs     # Every C code block of the README, docs and skills compiles
 make test-all       # All of the above plus check-single-header, check-version, check-install
 make test_embedded  # Embedded examples against an SS_EMBEDDED_BUILD library
 make test-pauth     # arm64: library built with pointer authentication below Armv8.3
@@ -515,7 +516,7 @@ make coverage       # Generate coverage report
 
 `make test` includes regression tests named after the review findings (S1,
 S2, ...) and `tests/test_reentrancy.c`, which runs 10,000 seeded random
-programs whose slots unregister signals, clean up, disconnect, emit and flush
+programs whose slots unregister signals, destroy the bus, disconnect, emit and flush
 while an emission is running. CI runs `test-all` on Linux (x86-64 and arm64)
 and macOS, the sanitizers, valgrind and cppcheck on Linux, `test-pauth` on
 Linux arm64, and the tests on Windows with MinGW and with MSVC (CMake).
@@ -570,7 +571,7 @@ Signal emission:
 
 ```
 
-Code size on Cortex-M4 (arm-none-eabi-gcc -Os, `SS_EMBEDDED_BUILD` + `SS_MINIMAL_BUILD`): about 3.8 KB of text. RAM is one bus per `SS_STATIC_BUSES` in `.bss`, or a pool you pass to `ss_bus_create_in()` (`ss_bus_pool_size()` reports the size of a bus plus alignment slack; see the [Embedded Guide](docs/embedded-guide.md#memory-budget)).
+Code size on Cortex-M4 (arm-none-eabi-gcc -Os, `SS_EMBEDDED_BUILD` + `SS_MINIMAL_BUILD`, 16 signals, 32 slots, ISR queue): about 4.5 KB of text, and 3.9 KB of RAM for its one bus. RAM is one bus per `SS_STATIC_BUSES` in `.bss`, or a pool you pass to `ss_bus_create_in()` (`ss_bus_pool_size()` reports the size of a bus plus alignment slack; see the [Embedded Guide](docs/embedded-guide.md#memory-budget)).
 
 View the [latest benchmark results](https://github.com/dardevelin/ss_lib/actions/workflows/benchmarks.yml) or run locally:
 
@@ -598,7 +599,7 @@ This repository includes [Claude Code skills](https://docs.anthropic.com/en/docs
 | Skill | Trigger | What it does |
 |-------|---------|--------------|
 | `ss-lib` | Code includes `ss_lib.h` or asks about SS_Lib | Complete API reference, lifecycle rules, string handling pitfalls, configuration, and canonical examples |
-| `ss-lib-review` | Asks to review/debug SS_Lib code | 14-item checklist, 5 anti-pattern corrections, feature-flag validation, memory model verification |
+| `ss-lib-review` | Asks to review/debug SS_Lib code | 19-item checklist, 8 anti-patterns with corrections, feature-flag validation, memory model verification |
 
 ### Using the skills
 

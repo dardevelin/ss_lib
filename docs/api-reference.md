@@ -633,8 +633,8 @@ void ss_data_destroy(ss_data_t* data);
 ### ss_data_init
 
 ```c
+#define SS_DATA_INIT { SS_TYPE_VOID, 0, { 0 } }
 void ss_data_init(ss_data_t* data);
-#define SS_DATA_INIT /* ... */
 ```
 
 Make `*data` an empty `SS_TYPE_VOID` object that owns nothing, whatever the memory held before; the same as `ss_data_t d = SS_DATA_INIT;`. It does not release a payload, so use it on memory that holds no object yet and `ss_data_clear()` on an object in use. A NULL `data` is ignored.

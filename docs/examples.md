@@ -22,6 +22,7 @@ Covers:
 - `ss_emit_void()` / `ss_emit_int()` / `ss_emit_string()` / `ss_emit_pointer()`
 - Custom data with `ss_data_create()` / `ss_data_set_custom()` / `ss_data_destroy()`
 - Introspection with `ss_get_signal_list()` / `ss_free_signal_list()`
+- An error handler with `user_data`, set with `ss_set_error_handler()` and removed before its `user_data` goes out of scope
 
 ### example_embedded.c
 
@@ -57,11 +58,13 @@ A typical embedded pattern where sensors emit signals on threshold events:
 
 static void on_temp_warning(const ss_data_t* data, void* user_data) {
     int temp = ss_data_get_int(data, 0);
+    (void)user_data;
     printf("WARNING: Temperature is %d degrees\n", temp);
 }
 
 static void on_temp_critical(const ss_data_t* data, void* user_data) {
     int temp = ss_data_get_int(data, 0);
+    (void)user_data;
     printf("CRITICAL: Temperature is %d degrees! Shutting down.\n", temp);
 }
 
@@ -173,6 +176,7 @@ typedef struct {
 
 static void check_death(const ss_data_t* data, void* user_data) {
     entity_t* e = (entity_t*)ss_data_get_pointer(data);
+    (void)user_data;
     if (e && e->health <= 0) {
         printf("[HIGH] %s has died!\n", e->name);
     }
@@ -190,6 +194,7 @@ static void apply_damage(const ss_data_t* data, void* user_data) {
 
 static void play_hurt_sound(const ss_data_t* data, void* user_data) {
     entity_t* e = (entity_t*)ss_data_get_pointer(data);
+    (void)user_data;
     if (e) {
         printf("[NORMAL] Playing hurt sound for %s\n", e->name);
     }
@@ -234,10 +239,14 @@ Organize signals by subsystem using namespaces:
 #include <stdio.h>
 
 static void on_button(const ss_data_t* data, void* user_data) {
+    (void)data;
+    (void)user_data;
     printf("Button event received\n");
 }
 
 static void on_network_data(const ss_data_t* data, void* user_data) {
+    (void)data;
+    (void)user_data;
     printf("Network data received\n");
 }
 
@@ -278,10 +287,13 @@ Queue signals during a frame and process them all at once:
 #include <stdio.h>
 
 static void on_physics_update(const ss_data_t* data, void* user_data) {
+    (void)user_data;
     printf("Physics update: %d\n", ss_data_get_int(data, 0));
 }
 
 static void on_render(const ss_data_t* data, void* user_data) {
+    (void)data;
+    (void)user_data;
     printf("Render frame\n");
 }
 

@@ -28,9 +28,17 @@ Enhancement suggestions are welcome! Please include:
 - Proposed API/implementation approach
 - Why this enhancement would be useful to most users
 
-### Pull Requests
+### Branches
 
-SS_Lib 3.0 is developed on the `v3` branch: changes for 3.0 target `v3`, fixes for 2.x target `main`. A change that breaks 2.x code also adds its section to [docs/migration-3.0.md](docs/migration-3.0.md).
+| Branch | Holds | Pull requests |
+|---|---|---|
+| `v3` | SS_Lib 3.0 until 3.0.0 is released; pre-release tags `v3.0.0-rc.N` | Changes for 3.0 |
+| `main` | 2.2.x until 3.0.0 is merged into it, then 3.x | Fixes for 2.2.x now, all changes after 3.0.0 |
+| `release/2.x` | Created at the 3.0.0 release: 2.2.x security fixes (see [SECURITY.md](SECURITY.md)) | Security fixes for 2.2.x |
+
+Changes merged into `main` before 3.0.0 are merged into `v3` too. Until 3.0.0, a change for 3.0 that breaks 2.x code also updates [docs/migration-3.0.md](docs/migration-3.0.md).
+
+### Pull Requests
 
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
@@ -75,6 +83,8 @@ make docs
 Example: a public function that uses library state takes the bus first and
 brackets its work with `bus_enter()` / `bus_leave()` (locking, nesting depth,
 deferred destruction, error reporting):
+
+<!-- check-docs: internal -->
 ```c
 ss_error_t ss_example_function(ss_bus_t* bus, const char* param) {
     ss_error_t err = SS_OK;
@@ -148,7 +158,8 @@ In a minor or patch release, deprecate instead of removing, and append new enum 
 make test
 
 # Everything CI checks locally: static, minimal, C89 and newest-standard
-# builds, C89..C2y compile check, single-header and version consistency
+# builds, C89..C2y compile check, public layouts, documentation code
+# blocks, single-header and version consistency, install
 make test-all
 
 # Sanitizers and memory checks
@@ -175,14 +186,16 @@ make test-valgrind
 ## Documentation
 
 - Update README.md for user-facing changes
-- Add inline documentation for new APIs
+- Add inline documentation for new APIs, and document every public function in `docs/api-reference.md` with its signature
 - Update examples if API changes
 - Consider adding to docs/ for complex features
+
+Every C code block (a fence marked `c`) in README.md, CONTRIBUTING.md, `docs/` (except the design record `docs/3.0-plan.md`) and the two skills must compile against the headers: `make check-docs` (`scripts/check_docs.sh`, part of `make test-all`) compiles each one with `-std=c11 -Wall -Wextra -pedantic -Werror`. A block need not be a complete program; the comment at the top of the script says how blocks are wrapped, which placeholder names (`bus`, `data`, `my_handler`, ...) it declares, how `// WRONG` / `// CORRECT` and `/* 2.x */` / `/* 3.0 */` comments split a block, and how `<!-- check-docs: internal -->` and `<!-- check-docs: skip REASON -->` before a block change its check. A copy of a type definition from `ss_lib.h` must match the header.
 
 ## Performance Considerations
 
 For embedded systems focus:
-- Do not add heap use to the static-memory paths (register, connect, emit, deferred, namespace, disconnect, unregister, cleanup); `tests/test_memory.c` checks this
+- Do not add heap use to the static-memory paths (bus creation, register, connect, emit, deferred, ISR, namespace, disconnect, unregister, bus destruction); `tests/test_memory.c` checks this
 - Minimize dynamic allocations
 - Consider static memory options
 - Profile changes on target hardware
