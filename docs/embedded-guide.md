@@ -92,9 +92,9 @@ Never call `ss_emit()` or other library functions from an ISR; only `ss_emit_fro
 
 ### How It Works
 
-`ss_emit_from_isr` claims a free queue entry with an atomic compare-and-swap, copies the name and value into it and marks it ready. No mutex is acquired, no memory is allocated and no slot is called, so it is safe with nested interrupts and from several threads, and usable before `ss_init()`. `ss_process_isr_queue()` takes a snapshot of the ready entries, frees each one and emits it in queue order. Names are resolved against the default namespace at delivery. Events queued during delivery wait for the next call; `ss_cleanup()` discards queued events.
+`ss_emit_from_isr` claims a free queue entry with an atomic compare-and-swap, copies the name and value into it and marks it ready. No mutex is acquired, no memory is allocated and no slot is called, so it is safe with nested interrupts and from several threads, and usable before `ss_init()`. `ss_process_isr_queue()` takes a snapshot of the ready entries, frees each one and emits it in queue order, also when an interrupt queues events while it takes the snapshot. Names are resolved against the default namespace at delivery. Events queued during delivery wait for the next call; `ss_cleanup()` discards queued events.
 
-The atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins or MSVC Interlocked functions. On cores without compare-and-swap (Cortex-M0/M0+, AVR), define `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` to disable and restore interrupts, e.g. in `ss_config.h`:
+The atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins or MSVC Interlocked functions. On cores without compare-and-swap (Cortex-M0/M0+, AVR), define `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` to disable and restore interrupts, e.g. in `ss_config.h`. Both must also be compiler memory barriers, so the compiler cannot move the queue's reads and writes out of the critical section; the CMSIS functions below are:
 
 ```c
 #define SS_ISR_CRITICAL_ENTER() uint32_t ss_irq_ = __get_PRIMASK(); __disable_irq()

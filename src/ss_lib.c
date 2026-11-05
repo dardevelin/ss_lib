@@ -122,11 +122,17 @@ typedef struct {
     unsigned long seq;     /* push order, bounds a flush */
     int has_payload;
 #if SS_USE_STATIC_MEMORY
-    union {
+    union {   /* aligned for any standard type, like malloc memory */
         unsigned char bytes[SS_DEFERRED_PAYLOAD_SIZE];
-        double align_d;
+        long double align_ld;
         void* align_p;
         long align_l;
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(_MSC_VER)
+        max_align_t align_max;   /* MSVC's C headers have no max_align_t */
+#endif
+#ifdef __SIZEOF_INT128__   /* GCC/Clang malloc memory suits __int128 too */
+        __extension__ __int128 align_i128;
+#endif
     } payload;
 #else
     void* payload;         /* heap copy of the string or custom data */
@@ -904,26 +910,34 @@ ss_error_t ss_process_isr_queue(void) {
     char buf[SS_MAX_SIGNAL_NAME_LENGTH];
     size_t order[SS_ISR_QUEUE_SIZE];
     unsigned int seqs[SS_ISR_QUEUE_SIZE];
-    size_t n = 0, i, j;
+    size_t n = 0, previous, scans = 0, i, j;
     ss_error_t result = SS_OK;
     int locked;
     ss_context_t* ctx = ctx_enter(&locked);
     if (!ctx) return SS_ERR_NULL_PARAM;
 
     /* Snapshot the ready entries in queue order (insertion sort, N small).
-     * Events queued after the snapshot wait for the next call. */
-    for (i = 0; i < SS_ISR_QUEUE_SIZE; i++) {
-        unsigned int seq;
-        if (ss_atomic_load(&g_isr_queue[i].state) != ISR_READY) continue;
-        seq = (unsigned int)ss_atomic_load(&g_isr_queue[i].seq);
-        for (j = n; j > 0 && (int)(seq - seqs[j - 1]) < 0; j--) {
-            order[j] = order[j - 1];
-            seqs[j] = seqs[j - 1];
+     * An interrupt during a scan can queue an event in an entry already
+     * scanned and a newer one in an entry not yet scanned, so scan until a
+     * scan finds no new entry: ready entries stay ready until taken, so
+     * every event queued before the snapshot's newest is then in it. Events
+     * queued after the snapshot wait for the next call. */
+    do {
+        previous = n;
+        n = 0;
+        for (i = 0; i < SS_ISR_QUEUE_SIZE; i++) {
+            unsigned int seq;
+            if (ss_atomic_load(&g_isr_queue[i].state) != ISR_READY) continue;
+            seq = (unsigned int)ss_atomic_load(&g_isr_queue[i].seq);
+            for (j = n; j > 0 && (int)(seq - seqs[j - 1]) < 0; j--) {
+                order[j] = order[j - 1];
+                seqs[j] = seqs[j - 1];
+            }
+            order[j] = i;
+            seqs[j] = seq;
+            n++;
         }
-        order[j] = i;
-        seqs[j] = seq;
-        n++;
-    }
+    } while (n != previous && ++scans <= SS_ISR_QUEUE_SIZE);
 
     for (i = 0; i < n && !ctx->closing; i++) {
         ss_isr_entry_t* e = &g_isr_queue[order[i]];

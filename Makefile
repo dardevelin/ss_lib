@@ -67,7 +67,8 @@ LIB_OBJ = $(BUILD_DIR)/ss_lib.o
 LIB_NAME = $(BUILD_DIR)/libss_lib.a
 LIB_SO = $(BUILD_DIR)/libss_lib.$(SHARED_EXT)
 
-TEST_BINS = $(BUILD_DIR)/test_ss_lib $(BUILD_DIR)/test_simple $(BUILD_DIR)/test_memory
+TEST_BINS = $(BUILD_DIR)/test_ss_lib $(BUILD_DIR)/test_simple $(BUILD_DIR)/test_memory \
+    $(BUILD_DIR)/test_isr
 ifneq ($(OS),Windows_NT)
     TEST_BINS += $(BUILD_DIR)/test_threads
 endif
@@ -107,17 +108,21 @@ $(LIB_SO): $(BUILD_DIR)/$(SHARED_REAL)
 endif
 
 $(BUILD_DIR)/test_%: tests/test_%.c $(LIB_NAME)
-	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
+	$(CC) $(CFLAGS) $< $(LIB_NAME) $(LDFLAGS) -o $@
 
 # Compiles the implementation into the test with a tracking allocator
 $(BUILD_DIR)/test_memory: tests/test_memory.c $(IMPL) include/ss_lib.h include/ss_config.h | $(BUILD_DIR)
 	$(CC) $(LIB_CFLAGS) -DSS_TEST_IMPL='"../$(IMPL)"' $< $(LDFLAGS) -o $@
 
+# Compiles the implementation into the test with a hookable ISR critical section
+$(BUILD_DIR)/test_isr: tests/test_isr.c $(IMPL) include/ss_lib.h include/ss_config.h | $(BUILD_DIR)
+	$(CC) $(LIB_CFLAGS) -DSS_TEST_IMPL='"../$(IMPL)"' $< $(LDFLAGS) -o $@
+
 $(BUILD_DIR)/example_%: examples/example_%.c $(LIB_NAME)
-	$(CC) $(CFLAGS) $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -o $@
+	$(CC) $(CFLAGS) $< $(LIB_NAME) $(LDFLAGS) -o $@
 
 $(BENCH_BIN): benchmarks/benchmark_ss_lib.c $(LIB_NAME)
-	$(CC) $(CFLAGS) -O3 $< -L$(BUILD_DIR) -lss_lib $(LDFLAGS) -lm -o $@
+	$(CC) $(CFLAGS) -O3 $< $(LIB_NAME) $(LDFLAGS) -lm -o $@
 
 # ---------------------------------------------------------------- tests
 

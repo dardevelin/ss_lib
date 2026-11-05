@@ -151,7 +151,7 @@ make test-valgrind
 ./build/test_ss_lib
 ```
 
-Test programs: `tests/test_ss_lib.c` (main suite, including regression tests), `tests/test_simple.c`, `tests/test_memory.c` (tracking allocator: no leaks, allocator routing, zero heap in static mode), and `tests/test_threads.c` (pthread stress test).
+Test programs: `tests/test_ss_lib.c` (main suite, including regression tests), `tests/test_simple.c`, `tests/test_memory.c` (tracking allocator: no leaks, allocator routing, zero heap in static mode), `tests/test_isr.c` (interrupts `ss_process_isr_queue()` at every point of its scan with a hooked critical section), and `tests/test_threads.c` (pthread stress test).
 
 ### Writing Tests
 

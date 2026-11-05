@@ -472,7 +472,7 @@ ss_error_t ss_emit_deferred(const char* signal_name, const ss_data_t* data);
 
 Queue a signal for later emission in a FIFO of `SS_DEFERRED_QUEUE_SIZE` entries. The signal is not emitted until `ss_flush_deferred()` is called, and its existence is only checked then.
 
-The queue stores a copy of the payload: string and custom data are copied (the custom cleanup function is not called for the copy), so the caller may free its data right away. Pointer data is stored as the pointer value only. In static mode string and custom payloads must fit `SS_DEFERRED_PAYLOAD_SIZE` bytes (strings including the terminator). Pending entries are released by `ss_cleanup()`.
+The queue stores a copy of the payload: string and custom data are copied (the custom cleanup function is not called for the copy), so the caller may free its data right away. Pointer data is stored as the pointer value only. In static mode string and custom payloads must fit `SS_DEFERRED_PAYLOAD_SIZE` bytes (strings including the terminator); the copy is aligned like `malloc` memory (for any standard type, and `__int128` with GCC/Clang). Pending entries are released by `ss_cleanup()`.
 
 **Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if the name is NULL or empty or the library is not initialized, `SS_ERR_MEMORY` if the payload copy cannot be allocated (dynamic mode), `SS_ERR_WOULD_OVERFLOW` if the queue is full or the name or payload is too long.
 

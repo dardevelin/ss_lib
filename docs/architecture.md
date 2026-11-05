@@ -157,7 +157,7 @@ typedef struct {
 } ss_entry_t;
 ```
 
-- `queue_push` copies the resolved name and the data. String and custom payloads are copied (static mode: into the inline buffer, `SS_ERR_WOULD_OVERFLOW` if larger than `SS_DEFERRED_PAYLOAD_SIZE`; dynamic mode: `SS_MALLOC`). `custom_cleanup` is cleared in the entry: it belongs to the caller's object and is never called for the copy.
+- `queue_push` copies the resolved name and the data. String and custom payloads are copied (static mode: into the inline buffer, aligned like `long double`, from C11 `max_align_t` (not with MSVC, whose C headers lack it), and with GCC/Clang `__int128`, `SS_ERR_WOULD_OVERFLOW` if larger than `SS_DEFERRED_PAYLOAD_SIZE`; dynamic mode: `SS_MALLOC`). `custom_cleanup` is cleared in the entry: it belongs to the caller's object and is never called for the copy.
 - Every entry gets a push sequence number from the queue's `pushed` counter. `queue_flush` records `pushed` when it starts and stops at the first entry pushed after that (wrap-safe comparison), so it emits only the entries queued before it started, oldest first, even when a slot runs a nested flush of the same queue. Each entry is **popped before it is emitted**, so slots may push to, or flush, the same queue; entries pushed meanwhile wait for the next flush. The slot sees an `ss_data_t` rebuilt by `entry_view` that points into the entry's payload copy, released right after the emission.
 - Flushing stops early if the context is closing (or, for batches, if the batch was destroyed by a slot).
 
@@ -178,12 +178,12 @@ Entry states: `FREE -> WRITING -> READY -> READING -> FREE`.
 No locks, no allocation, no slot calls. Because claiming is a CAS, nested interrupts and several threads may enqueue concurrently.
 
 `ss_process_isr_queue` (normal context, through `ctx_enter`):
-1. Snapshots the READY entries and sorts them by sequence number (wrap-around safe)
+1. Snapshots the READY entries and sorts them by sequence number (wrap-around safe). An interrupt during the scan can queue one event in an entry already scanned and a newer one in an entry not yet scanned, so it scans again until a scan finds no new entry (at most `SS_ISR_QUEUE_SIZE` extra scans); READY entries stay READY until taken, so the snapshot then holds every event older than its newest
 2. For each, claims it `READY -> READING`, copies name and value, frees it (`-> FREE`), resolves the name against the default namespace and emits it
 
 Events queued after the snapshot wait for the next call. `ss_cleanup` discards READY entries.
 
-Atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins, or MSVC `Interlocked*`. If `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` are defined, they take precedence and wrap plain accesses, for cores without compare-and-swap (Cortex-M0, AVR).
+Atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins, or MSVC `Interlocked*`. If `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` are defined, they take precedence and wrap plain accesses, for cores without compare-and-swap (Cortex-M0, AVR); they must also be compiler memory barriers. `tests/test_isr.c` compiles the implementation with hooked macros to interrupt `ss_process_isr_queue` at every point of its scan.
 
 ## Namespace Implementation
 
