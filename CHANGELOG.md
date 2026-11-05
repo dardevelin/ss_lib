@@ -118,6 +118,10 @@ lists what changes for programs written for 2.x.
   job) fails when a public struct's size or member offsets, or an enum
   value, differs between the configurations the project tests, or when
   `ss_lib.h` has a preprocessor conditional inside a public type.
+- `scripts/check_docs.sh` (`make check-docs`, in `test-all`) compiles every
+  C code block of the README, CONTRIBUTING, `docs/` and the skills against
+  the headers with `-Wall -Wextra -pedantic -Werror`, and compares copies of
+  public type definitions with `ss_lib.h`.
 
 ### Removed
 - **Breaking:** `ss_init()`, `ss_init_abi()`, `ss_init_static()`,
@@ -140,6 +144,16 @@ lists what changes for programs written for 2.x.
   checks the version copies written by hand in the API reference, the docs
   index, the architecture document, CLAUDE.md and the ss-lib skill, so a
   stale copy fails the build.
+
+### Documentation
+- The documentation describes 3.0 throughout. The migration guide lists
+  every removed and changed name with its replacement and the changes in
+  behavior; its `sed` recipe also replaces `ss_init()` and `ss_cleanup()`.
+  `docs/design.md` has a Version 3.0 section, CONTRIBUTING.md describes the
+  branches, and the embedded guide has the current Cortex-M sizes.
+- Code blocks that did not compile with warnings as errors are fixed: unused
+  slot parameters, a `printf` format for `uint64_t`, macro and enum
+  listings that were not C, and a namespace example split over two blocks.
 
 ## [2.2.4] - 2026-11-05
 

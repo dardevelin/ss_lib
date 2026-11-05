@@ -45,21 +45,22 @@ Every bus costs the same RAM, so `SS_STATIC_BUSES` (the number of built-in buses
 
 Measured sizes:
 
-- 64-bit host (macOS arm64), the configuration of `make test_embedded` (`SS_EMBEDDED_BUILD`, 16 signals, 32 slots, memory and performance stats, ISR queue): `ss_bus_pool_size()` is 6383 bytes, including alignment slack.
-- Cortex-M (`arm-none-eabi-gcc -Os`, the same on M0 and M4), `sizeof` the bus, measured as the `.bss` growth from one built-in bus to two:
+- 64-bit hosts (macOS and Linux, arm64), the configuration of `make test_embedded` (`SS_EMBEDDED_BUILD`, 16 signals, 32 slots, memory and performance stats, ISR queue): `ss_bus_pool_size()` is 6383 bytes, including alignment slack.
+- Cortex-M (`arm-none-eabi-gcc` 14.2 `-Os`, the same on M0 and M4), `sizeof` the bus, measured as the `.bss` growth from one built-in bus to two:
 
   | Configuration | RAM per bus | Without the ISR queue |
   |---|---|---|
-  | `SS_EMBEDDED_BUILD SS_MINIMAL_BUILD`, 16 signals, 32 slots, ISR queue (the CI Embedded job's M4 build) | 3928 bytes | 3224 bytes |
-  | `SS_EMBEDDED_BUILD SS_MINIMAL_BUILD`, default 32 signals, 128 slots, ISR queue (the CI M0 build) | 7064 bytes | 6360 bytes |
-  | `SS_EMBEDDED_BUILD`, 16 signals, 32 slots, memory stats, ISR queue (as `make test_embedded`, without performance stats) | 4448 bytes | 3744 bytes |
+  | `SS_EMBEDDED_BUILD SS_MINIMAL_BUILD`, 16 signals, 32 slots, ISR queue (the CI Embedded job's M4 build) | 3936 bytes | 3224 bytes |
+  | `SS_EMBEDDED_BUILD SS_MINIMAL_BUILD`, default 32 signals, 128 slots, ISR queue (the CI M0 build) | 7072 bytes | 6360 bytes |
+  | `SS_EMBEDDED_BUILD`, 16 signals, 32 slots, memory stats, ISR queue (as `make test_embedded`, without performance stats) | 4456 bytes | 3744 bytes |
 
-  The ISR queue is part of each bus: 704 bytes with the defaults (16 entries
-  of a 32-byte name and three ints; its counter fills padding). A program
-  with one bus uses no more RAM than with the shared queue of 2.x and
-  earlier 3.0 builds; each further bus costs the queue again. The CI job's
-  `.bss` is the one built-in bus: 3928 bytes for the M4 build and 7064 for
-  the M0 build.
+  The ISR queue is part of each bus: 712 bytes in these builds, of which
+  704 are the 16 entries of a 32-byte name and three ints, and the rest its
+  counter and alignment. A program with one bus uses about the same RAM as
+  with the shared queue of 2.x; each further bus costs the queue again. In
+  the CI Embedded job the `.bss` of the library is its one built-in bus:
+  3936 bytes for the M4 build and 7072 for the M0 build, with 4580 and 4808
+  bytes of `.text`.
 
 `ss_data_t` has the same layout in every configuration: 24 bytes on Cortex-M (and other 32-bit Arm targets) and 32 bytes on 64-bit hosts. Each deferred and batch entry holds one. In 2.x it was 16 bytes on Cortex-M without custom data, so a build with `SS_ENABLE_CUSTOM_DATA=0` (such as `SS_MINIMAL_BUILD`) now uses 8 bytes more RAM per deferred entry: 128 bytes per bus with the embedded preset's 16 entries. With custom data on it uses 8 bytes less per entry than 2.x (32 bytes).
 
@@ -78,6 +79,7 @@ In static mode `ss_bus_create()` takes one of the `SS_STATIC_BUSES` built-in bus
 `ss_bus_create_in(&bus, pool, size, 0)` places a bus in a buffer you provide instead, in either memory mode: to put it in a specific memory region, to have more buses than `SS_STATIC_BUSES`, or to avoid the heap for the bus in dynamic mode. The buffer needs no particular alignment and at least `ss_bus_pool_size()` bytes; it must outlive the bus, and `ss_bus_destroy()` never frees it. A NULL buffer returns `SS_ERR_NULL_PARAM` and a buffer that is too small `SS_ERR_BUFFER_TOO_SMALL`. Build with `-DSS_STATIC_BUSES=0` to drop the built-in buses when you always use pools.
 
 ```c
+#define BUS_POOL_SIZE 4096                  /* measured on the target */
 static unsigned char pool[BUS_POOL_SIZE];   /* >= ss_bus_pool_size() */
 
 if (ss_bus_create_in(&bus, pool, sizeof(pool), 0) == SS_ERR_BUFFER_TOO_SMALL) {
@@ -172,6 +174,7 @@ Minimal build retains: signal register/unregister, connect/disconnect, all emit 
 
 ### STM32 with HAL
 
+<!-- check-docs: skip (needs the STM32 HAL) -->
 ```c
 /* Library and application compiled with:
  *   -DSS_USE_STATIC_MEMORY=1 -DSS_MAX_SIGNALS=16 -DSS_MAX_SLOTS=32
@@ -182,11 +185,14 @@ Minimal build retains: signal register/unregister, connect/disconnect, all emit 
 
 static void on_adc_complete(const ss_data_t* data, void* user_data) {
     int value = ss_data_get_int(data, 0);
+    (void)user_data;
     /* Process ADC reading */
     DAC->DHR12R1 = (uint16_t)value;
 }
 
 static void on_button_press(const ss_data_t* data, void* user_data) {
+    (void)data;
+    (void)user_data;
     HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 }
 
@@ -227,6 +233,7 @@ int main(void) {
 
 Add to `ss_config.h` (the library source must see these, so defining them in your application file has no effect):
 
+<!-- check-docs: skip (needs FreeRTOS) -->
 ```c
 #include "FreeRTOS.h"
 

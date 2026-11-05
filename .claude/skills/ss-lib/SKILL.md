@@ -43,11 +43,12 @@ void app_quit(void) { ss_bus_destroy(bus); bus = NULL; }
 typedef struct ss_bus ss_bus_t;                    /* opaque */
 #define SS_BUS_THREAD_SAFE 0x1u                    /* needs SS_ENABLE_THREAD_SAFETY */
 
-#define ss_bus_create(bus, flags)                  /* ss_bus_create_abi(bus, flags, SS_ABI_TAG) */
-#define ss_bus_create_in(bus, pool, size, flags)   /* ss_bus_create_in_abi(..., SS_ABI_TAG) */
 ss_error_t  ss_bus_create_abi(ss_bus_t** bus, unsigned int flags, size_t abi_tag);
 ss_error_t  ss_bus_create_in_abi(ss_bus_t** bus, void* pool, size_t pool_size,
                                  unsigned int flags, size_t abi_tag);
+#define ss_bus_create(bus, flags) ss_bus_create_abi((bus), (flags), SS_ABI_TAG)
+#define ss_bus_create_in(bus, pool, size, flags) \
+    ss_bus_create_in_abi((bus), (pool), (size), (flags), SS_ABI_TAG)
 size_t      ss_bus_pool_size(void);
 void        ss_bus_destroy(ss_bus_t* bus);
 const char* ss_version(void);                      // == SS_VERSION_STRING
@@ -128,7 +129,7 @@ ss_error_t ss_flush_deferred(ss_bus_t* bus);
 
 ```c
 // Initialization, release, creation/destruction
-#define    SS_DATA_INIT  /* empty SS_TYPE_VOID object: ss_data_t d = SS_DATA_INIT; */
+#define    SS_DATA_INIT { SS_TYPE_VOID, 0, { 0 } }   // ss_data_t d = SS_DATA_INIT;
 void       ss_data_init(ss_data_t* data);    // = SS_DATA_INIT, for memory of any content
 void       ss_data_clear(ss_data_t* data);   // free an owned payload, become SS_TYPE_VOID
 ss_data_t* ss_data_create(ss_data_type_t type);
@@ -302,10 +303,12 @@ Every enumerator and `ss_data_t` member exists in every configuration (`ss_data_
 ## Priority System
 
 ```c
-SS_PRIORITY_LOW      = 0
-SS_PRIORITY_NORMAL   = 5   // Default for ss_connect()
-SS_PRIORITY_HIGH     = 10
-SS_PRIORITY_CRITICAL = 15
+typedef enum {
+    SS_PRIORITY_LOW = 0,
+    SS_PRIORITY_NORMAL = 5,     // Default for ss_connect()
+    SS_PRIORITY_HIGH = 10,
+    SS_PRIORITY_CRITICAL = 15
+} ss_priority_t;
 ```
 
 - Higher priority = executed first. Equal priorities run in connection order.
@@ -315,16 +318,18 @@ SS_PRIORITY_CRITICAL = 15
 ## Error Codes
 
 ```c
-SS_OK = 0                // Success
-SS_ERR_NULL_PARAM        // NULL parameter passed (also a NULL bus, or one being destroyed)
-SS_ERR_MEMORY            // Memory allocation failed
-SS_ERR_NOT_FOUND         // Signal or slot not found
-SS_ERR_ALREADY_EXISTS    // Signal already registered
-SS_ERR_INVALID_TYPE      // Custom data queued in a library built without SS_ENABLE_CUSTOM_DATA
-SS_ERR_BUFFER_TOO_SMALL  // Pool too small for ss_bus_create_in(), or buf for ss_get_namespace()
-SS_ERR_MAX_SLOTS         // Signal already has max_slots_per_signal live slots
-SS_ERR_WOULD_OVERFLOW    // Name, payload, description, queue/pool or the built-in buses exceed a fixed limit
-SS_ERR_CONFIG_MISMATCH   // Caller's SS_ABI_TAG differs, or a bus flag the library lacks
+typedef enum {
+    SS_OK = 0,                    // Success
+    SS_ERR_NULL_PARAM = 1,        // NULL parameter (also a NULL bus, or one being destroyed)
+    SS_ERR_MEMORY = 2,            // Memory allocation failed
+    SS_ERR_NOT_FOUND = 3,         // Signal or slot not found
+    SS_ERR_ALREADY_EXISTS = 4,    // Signal already registered
+    SS_ERR_INVALID_TYPE = 5,      // Custom data queued in a library without SS_ENABLE_CUSTOM_DATA
+    SS_ERR_BUFFER_TOO_SMALL = 6,  // Pool too small for ss_bus_create_in(), or ss_get_namespace() buf
+    SS_ERR_MAX_SLOTS = 7,         // Signal already has max_slots_per_signal live slots
+    SS_ERR_WOULD_OVERFLOW = 9,    // Name, payload, description, queue/pool or built-in buses full
+    SS_ERR_CONFIG_MISMATCH = 11   // Caller's SS_ABI_TAG differs, or a bus flag the library lacks
+} ss_error_t;
 ```
 
 The values are fixed (0 to 7, then 9 and 11; 8 and 10 are unused), so they may be stored or compared as numbers.

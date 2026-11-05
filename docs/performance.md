@@ -20,11 +20,11 @@ ss_enable_profiling(bus, 1);
 ss_perf_stats_t stats;
 ss_get_perf_stats(bus, "my_signal", &stats);
 printf("Signal: my_signal\n");
-printf("  Emissions: %llu\n", stats.total_emissions);
-printf("  Total time: %llu ns\n", stats.total_time_ns);
-printf("  Avg time: %llu ns\n", stats.avg_time_ns);
-printf("  Min time: %llu ns\n", stats.min_time_ns);
-printf("  Max time: %llu ns\n", stats.max_time_ns);
+printf("  Emissions: %llu\n", (unsigned long long)stats.total_emissions);
+printf("  Total time: %llu ns\n", (unsigned long long)stats.total_time_ns);
+printf("  Avg time: %llu ns\n", (unsigned long long)stats.avg_time_ns);
+printf("  Min time: %llu ns\n", (unsigned long long)stats.min_time_ns);
+printf("  Max time: %llu ns\n", (unsigned long long)stats.max_time_ns);
 ```
 
 ### Reset Statistics
@@ -142,14 +142,14 @@ The project includes a benchmark suite in `benchmarks/benchmark_ss_lib.c`. It me
 
 ### Reference Numbers
 
-Measured for 2.2.0; treat them as indicative, not guarantees:
+Treat these as indicative, not guarantees:
 
-| Measurement | 2.2.0 | 2.1.1 |
-|-------------|-------|-------|
-| Emit with 5 slots (Apple Silicon, clang -O2) | 11.8 ns | 11.6 ns |
-| Code size, `.text` (Cortex-M4, arm-none-eabi-gcc -Os, embedded + minimal preset) | ~3.8 KB | ~3.1 KB |
+| Measurement | 3.0.0 | 2.2.0 | 2.1.1 |
+|-------------|-------|-------|-------|
+| Emit with 5 slots (Apple Silicon, clang -O2) | as 2.2.x | 11.8 ns | 11.6 ns |
+| Code size, `.text` (Cortex-M4, arm-none-eabi-gcc -Os, embedded + minimal preset, ISR queue) | 4580 bytes | ~3.8 KB | ~3.1 KB |
 
-Slot connection is much faster than in 2.1.1, which rescanned every signal on each connect to update statistics. Since 2.2.0, static mode keeps the library state in `.bss` instead of allocating it at init; in 3.0 that storage is the built-in bus.
+The 3.0.0 code size is the CI Embedded job's M4 build. Emission time was compared with `make benchmark` when the bus replaced the global context and stayed within measurement noise of 2.2.x. Slot connection is much faster than in 2.1.1, which rescanned every signal on each connect to update statistics. Since 2.2.0, static mode keeps the library state in `.bss` instead of allocating it at init; in 3.0 that storage is the built-in bus.
 
 Run benchmarks:
 

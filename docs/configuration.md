@@ -149,6 +149,7 @@ These macros are used by the library source (`ss_lib.c` / `ss_lib_c89.c`), so th
 
 Example with a pool allocator, added near the top of `ss_config.h` (before the defaults):
 
+<!-- check-docs: skip (needs the allocator's own header) -->
 ```c
 #include "memory_pool.h"
 
