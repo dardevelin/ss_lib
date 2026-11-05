@@ -14,6 +14,29 @@ lists what changes for programs written for 2.x.
 - Version 3.0.0: the shared library is `libss_lib.so.3` / `libss_lib.3.dylib`
   and `find_package(ss_lib 3)` finds it. 2.x and 3.x shared libraries can be
   installed side by side.
+- **Breaking:** `ss_data_t` records whether it owns its payload (S12). The new
+  `owned` field (in the padding after `type`) is set only by the copying
+  setters `ss_data_set_string()` and `ss_data_set_custom()`, and the library
+  frees a string or custom payload only when it is set. Direct field writes,
+  the `ss_emit_*` helpers and the data slots receive borrow, so a setter or
+  `ss_data_destroy()` no longer frees a pointer the library did not allocate
+  (2.x freed it). A hand-written `s_val` on an `ss_data_create()` object is
+  no longer freed.
+- **Breaking:** the custom cleanup is `void (*)(const void* data, size_t size)`.
+  It is called once on the library's copy just before the library frees it;
+  the `const` turns a cleanup that frees the copy into a compiler diagnostic.
+  `ss_data_set_custom()` takes `const void* value`.
+- Every setter releases the previous payload only if the object owns it.
+  Slots receive an owned object as a borrowed view, so a slot that reuses a
+  copy of its data with a setter cannot free the emitter's payload.
+
+### Added
+- `SS_DATA_INIT` and `ss_data_init()` for an empty object, and
+  `ss_data_clear()`, which frees an owned payload and makes the object
+  `SS_TYPE_VOID`, so stack objects can use the copying setters.
+  `ss_data_destroy()` is `ss_data_clear()` plus freeing the object.
+- `ss_data_set_string_ref()` and `ss_data_set_custom_ref()` store a borrowed
+  payload without allocating, in either memory mode.
 
 ## [2.2.4] - 2026-11-05
 

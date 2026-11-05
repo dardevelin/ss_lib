@@ -138,6 +138,12 @@ Consequences:
 - Unregistering the signal or calling `ss_cleanup()` from a slot marks every slot removed, so the rest of that emission is skipped.
 - A slot connected during an emission of the same signal is inserted into the live list. Whether that emission reaches it depends on where its priority places it relative to the iterator, so callers must not rely on either outcome.
 
+## Data Ownership
+
+An `ss_data_t` frees its string or custom payload only when its `owned` field is set, and only `ss_data_set_string` and `ss_data_set_custom` (which copy) set it. `ss_data_clear` frees an owned payload (calling the custom cleanup on the copy first) and resets the object to `SS_DATA_INIT`; every setter starts with it, and `ss_data_destroy` is `ss_data_clear` plus `SS_FREE` of the object. Everything else borrows: direct field writes, the `_ref` setters, the `ss_emit_*` helpers (`data_of`), deferred and batch entries (above), and ISR events.
+
+Slots always receive borrowed data. `ss_emit` and `ss_emit_namespaced` pass an object that owns its payload through `borrowed_view`, a stack copy with `owned` cleared that points to the same payload; borrowed data is passed as is. A slot that copies its data and reuses the copy with a setter therefore never frees the emitter's payload.
+
 ## Deferred Cleanup
 
 `ss_cleanup()` sets `closing = 1` and marks all slots removed. If no call is in progress, `ctx_leave()` destroys the context immediately. Called from inside a slot, `call_depth` is still above zero, so destruction waits until the outermost library call returns. Meanwhile `ctx_enter()` refuses every call (the library behaves as uninitialized), queue flushes and ISR drains stop early, and `ss_init()` returns `SS_ERR_ALREADY_EXISTS`.
@@ -151,13 +157,13 @@ The deferred queue and batches share one implementation: `ss_queue_t`, a ring bu
 ```c
 typedef struct {
     char signal_name[SS_MAX_SIGNAL_NAME_LENGTH];
-    ss_data_t data;              /* type and scalar value; pointers cleared */
+    ss_data_t data;              /* type and scalar value; pointers and owned cleared */
     int has_payload;
     /* static: inline bytes[SS_DEFERRED_PAYLOAD_SIZE]; dynamic: heap copy */
 } ss_entry_t;
 ```
 
-- `queue_push` copies the resolved name and the data. String and custom payloads are copied (static mode: into the inline buffer, aligned like `long double`, from C11 `max_align_t` (not with MSVC, whose C headers lack it), and with GCC/Clang `__int128`, `SS_ERR_WOULD_OVERFLOW` if larger than `SS_DEFERRED_PAYLOAD_SIZE`; dynamic mode: `SS_MALLOC`). `custom_cleanup` is cleared in the entry: it belongs to the caller's object and is never called for the copy.
+- `queue_push` copies the resolved name and the data. String and custom payloads are copied (static mode: into the inline buffer, aligned like `long double`, from C11 `max_align_t` (not with MSVC, whose C headers lack it), and with GCC/Clang `__int128`, `SS_ERR_WOULD_OVERFLOW` if larger than `SS_DEFERRED_PAYLOAD_SIZE`; dynamic mode: `SS_MALLOC`). The entry, not its `ss_data_t`, owns the copy (`has_payload`, freed by `entry_release`): `owned` and `custom_cleanup` are cleared in the entry, so the cleanup belongs to the caller's object and is never called for the copy.
 - Every entry gets a push sequence number from the queue's `pushed` counter. `queue_flush` records `pushed` when it starts and stops at the first entry pushed after that (wrap-safe comparison), so it emits only the entries queued before it started, oldest first, even when a slot runs a nested flush of the same queue. Each entry is **popped before it is emitted**, so slots may push to, or flush, the same queue; entries pushed meanwhile wait for the next flush. The slot sees an `ss_data_t` rebuilt by `entry_view` that points into the entry's payload copy, released right after the emission.
 - Flushing stops early if the context is closing (or, for batches, if the batch was destroyed by a slot).
 
@@ -210,6 +216,7 @@ The single-mutex design was chosen over fine-grained locking for simplicity, sma
 | Namespace | Context buffer | Context buffer |
 | Deferred entries and payloads | Context array, heap payload copies | Context array, inline payloads |
 | `ss_data_create` / `ss_data_set_string` / `ss_data_set_custom` | Heap | Heap |
+| `ss_data_set_string_ref` / `ss_data_set_custom_ref` | None | None |
 | `ss_get_signal_list` result, `ss_batch_create` | Heap | Heap |
 
 In static mode (with the default `SS_STATIC_CONTEXT=1` or a caller pool), register, connect, emit, deferred, namespace, disconnect, unregister and cleanup never touch the heap. Only functions whose purpose is to hand the caller an allocated object allocate.

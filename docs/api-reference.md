@@ -68,6 +68,7 @@ typedef enum {
 ```c
 typedef struct ss_data {
     ss_data_type_t type;
+    unsigned char owned;    /* nonzero: the payload is the library's copy */
     union {
         int i_val;
         float f_val;
@@ -80,12 +81,15 @@ typedef struct ss_data {
     void* custom_data;
     ss_cleanup_func_t custom_cleanup;
 } ss_data_t;
+
+#define SS_DATA_INIT { SS_TYPE_VOID, 0, { 0 }, ... }  /* empty object */
 ```
 
-**Ownership:**
-- An object from `ss_data_create()` owns the string or custom data stored by `ss_data_set_string()` / `ss_data_set_custom()`. Every `ss_data_set_*` call releases the payload the object owned before, and `ss_data_destroy()` frees it. Do not assign `value.s_val` or `custom_data` directly on such an object.
-- A stack `ss_data_t` filled in by hand (as the `ss_emit_*` helpers do) borrows its pointers. Do not pass it to `ss_data_destroy()` or `ss_data_set_*`.
-- `custom_cleanup` receives the library's copy of the custom data so it can release resources the copy refers to. It must not free the pointer itself; the library frees it afterwards.
+**Ownership:** the `owned` field records whether the object owns its string or custom payload. Callers read it but never write it.
+- Only the copying setters, `ss_data_set_string()` and `ss_data_set_custom()`, set `owned`. The copy belongs to the object and is freed exactly once: by the next `ss_data_set_*` call, by `ss_data_clear()`, or by `ss_data_destroy()`.
+- Everything else borrows and leaves `owned` at 0: direct field writes, `ss_data_set_string_ref()` / `ss_data_set_custom_ref()`, the `ss_emit_*` helpers, and the data slots receive (also when the emitter's object owns its payload, and for deferred and batch copies). The library never frees a borrowed payload, so misusing a borrowed object leaks at worst.
+- Start every object from `SS_DATA_INIT` or `ss_data_init()`; `ss_data_create()` returns an initialized one. Release a stack object that used a copying setter with `ss_data_clear()` before it goes out of scope. Do not write the payload fields of an object by hand while it owns its payload: clear it first.
+- `custom_cleanup` is called once with the library's copy of the custom data (read-only) and its size, just before the library frees it, so it can release resources the copy refers to. It must not free the pointer itself.
 
 ### ss_signal_info_t
 
@@ -134,7 +138,7 @@ typedef struct ss_perf_stats {
 
 ```c
 typedef void (*ss_slot_func_t)(const ss_data_t* data, void* user_data);
-typedef void (*ss_cleanup_func_t)(void* data);
+typedef void (*ss_cleanup_func_t)(const void* data, size_t size);
 typedef uintptr_t ss_connection_t;
 ```
 
@@ -351,7 +355,7 @@ Emit a signal, invoking all connected slots in priority order. Slots may call an
 
 **Parameters:**
 - `signal_name` — Name of the signal to emit
-- `data` — Data to pass to slots (can be NULL)
+- `data` — Data to pass to slots (can be NULL). Slots see it as borrowed: if the object owns its payload, they receive a copy with `owned` cleared, pointing to the same payload.
 
 **Returns:** `SS_OK` on success, `SS_ERR_NOT_FOUND` if signal doesn't exist.
 
@@ -472,7 +476,7 @@ ss_error_t ss_emit_deferred(const char* signal_name, const ss_data_t* data);
 
 Queue a signal for later emission in a FIFO of `SS_DEFERRED_QUEUE_SIZE` entries. The signal is not emitted until `ss_flush_deferred()` is called, and its existence is only checked then.
 
-The queue stores a copy of the payload: string and custom data are copied (the custom cleanup function is not called for the copy), so the caller may free its data right away. Pointer data is stored as the pointer value only. In static mode string and custom payloads must fit `SS_DEFERRED_PAYLOAD_SIZE` bytes (strings including the terminator); the copy is aligned like `malloc` memory (for any standard type, and `__int128` with GCC/Clang). Pending entries are released by `ss_cleanup()`.
+The queue stores a copy of the payload: string and custom data are copied (the custom cleanup function is not called for the copy, which slots see as borrowed data), so the caller may free or clear its data right away. Pointer data is stored as the pointer value only. In static mode string and custom payloads must fit `SS_DEFERRED_PAYLOAD_SIZE` bytes (strings including the terminator); the copy is aligned like `malloc` memory (for any standard type, and `__int128` with GCC/Clang). Pending entries are released by `ss_cleanup()`.
 
 **Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if the name is NULL or empty or the library is not initialized, `SS_ERR_MEMORY` if the payload copy cannot be allocated (dynamic mode), `SS_ERR_WOULD_OVERFLOW` if the queue is full or the name or payload is too long.
 
@@ -541,7 +545,7 @@ Free a batch and any pending payload copies.
 ss_data_t* ss_data_create(ss_data_type_t type);
 ```
 
-Allocate and initialize a data object (heap, in both memory modes). The caller must free it with `ss_data_destroy`.
+Allocate an empty data object of the given type (heap, in both memory modes). The caller must free it with `ss_data_destroy`.
 
 **Returns:** Pointer to data, or NULL if allocation fails.
 
@@ -551,7 +555,31 @@ Allocate and initialize a data object (heap, in both memory modes). The caller m
 void ss_data_destroy(ss_data_t* data);
 ```
 
-Free a data object created by `ss_data_create()` and the payload it owns: the string for `SS_TYPE_STRING`; for `SS_TYPE_CUSTOM`, calls the cleanup function (if any) on the copy, then frees the copy.
+`ss_data_clear()`, then free a data object created by `ss_data_create()`. A NULL `data` is ignored.
+
+### ss_data_init
+
+```c
+void ss_data_init(ss_data_t* data);
+#define SS_DATA_INIT /* ... */
+```
+
+Make `*data` an empty `SS_TYPE_VOID` object that owns nothing, whatever the memory held before; the same as `ss_data_t d = SS_DATA_INIT;`. It does not release a payload, so use it on memory that holds no object yet and `ss_data_clear()` on an object in use. A NULL `data` is ignored.
+
+### ss_data_clear
+
+```c
+void ss_data_clear(ss_data_t* data);
+```
+
+Release the payload the object owns and make it an empty `SS_TYPE_VOID` object. For an owned custom payload, the cleanup function (if any) is called on the copy before it is freed. A borrowed payload is left alone, and a NULL `data` is ignored. Use it for stack objects filled by `ss_data_set_string()` or `ss_data_set_custom()`:
+
+```c
+ss_data_t d = SS_DATA_INIT;
+ss_data_set_string(&d, buffer);   /* copies; the caller may reuse buffer */
+ss_emit("status", &d);
+ss_data_clear(&d);                /* frees the copy */
+```
 
 ### ss_data_set_int
 
@@ -559,7 +587,7 @@ Free a data object created by `ss_data_create()` and the payload it owns: the st
 ss_error_t ss_data_set_int(ss_data_t* data, int value);
 ```
 
-Set the data to integer type with the given value, releasing any string or custom payload the object owned. The same applies to every `ss_data_set_*` function.
+Set the data to integer type with the given value, first releasing the string or custom payload the object owned, if any (a borrowed payload is not freed). The same applies to every `ss_data_set_*` function.
 
 ### ss_data_set_float
 
@@ -583,9 +611,19 @@ Set the data to double type with the given value.
 ss_error_t ss_data_set_string(ss_data_t* data, const char* value);
 ```
 
-Set the data to string type. The string is copied with `SS_MALLOC` (or `SS_STRDUP` if defined); the previous payload is released. Pass NULL for value to set a NULL string. Allocates in both memory modes.
+Set the data to string type. The string is copied with `SS_MALLOC` (or `SS_STRDUP` if defined) and the object owns the copy; the previous owned payload is released. Pass NULL for value to set a NULL string. Allocates in both memory modes.
 
 **Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if data is NULL, `SS_ERR_MEMORY` if the copy fails (the old value is kept).
+
+### ss_data_set_string_ref
+
+```c
+ss_error_t ss_data_set_string_ref(ss_data_t* data, const char* value);
+```
+
+Set the data to string type, borrowing `value` (which may be NULL): the string must stay valid while the object is used, and the library never frees it. Never allocates, so it works without a heap. Passing the object's own payload leaves it unchanged, still owned.
+
+**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if data is NULL.
 
 ### ss_data_set_pointer
 
@@ -598,19 +636,29 @@ Set the data to pointer type with the given value. The library does not manage t
 ### ss_data_set_custom
 
 ```c
-ss_error_t ss_data_set_custom(ss_data_t* data, void* value, size_t size,
-                               ss_cleanup_func_t cleanup);
+ss_error_t ss_data_set_custom(ss_data_t* data, const void* value, size_t size,
+                              ss_cleanup_func_t cleanup);
 ```
 
-Set custom data. Requires `SS_ENABLE_CUSTOM_DATA=1`. Copies `size` bytes from `value` into a newly allocated buffer (heap, in both memory modes). The previous payload is released; for previous custom data, its cleanup function is called on the old copy, which is then freed.
+Set custom data. Requires `SS_ENABLE_CUSTOM_DATA=1`. Copies `size` bytes from `value` into a newly allocated buffer (heap, in both memory modes), which the object owns. The previous owned payload is released; for previous owned custom data, its cleanup function is called on the old copy, which is then freed.
 
 **Parameters:**
 - `data` — Data object
 - `value` — Source data to copy (must not be NULL)
 - `size` — Size in bytes to copy (must be > 0)
-- `cleanup` — Optional function called with the library's copy when it is released, to free resources the copy refers to; it must not free the pointer itself (can be NULL)
+- `cleanup` — Optional function (can be NULL) called once with the library's copy and its size just before the copy is freed, to release resources the copy refers to. The copy is passed as `const void*`: the library frees it, the cleanup must not.
 
 **Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if data or value is NULL or size is 0, `SS_ERR_MEMORY` if allocation fails (the old value is kept).
+
+### ss_data_set_custom_ref
+
+```c
+ss_error_t ss_data_set_custom_ref(ss_data_t* data, void* value, size_t size);
+```
+
+Set custom data, borrowing `size` bytes at `value`. Requires `SS_ENABLE_CUSTOM_DATA=1`. The data must stay valid while the object is used; the library never frees it and calls no cleanup. Never allocates, so it works without a heap. Passing the object's own payload (same pointer and size) leaves it unchanged, still owned. Deferred and batched emissions still copy it (see `ss_emit_deferred`).
+
+**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if data or value is NULL or size is 0.
 
 ### ss_data_get_int
 

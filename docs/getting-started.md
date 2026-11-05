@@ -133,7 +133,14 @@ int main() {
 }
 ```
 
-`ss_emit_string()` and the other `ss_emit_*` helpers pass borrowed data: the slot must not free it, and the string only has to stay valid during the call. Deferred and batched emissions store their own copy. An `ss_data_t` from `ss_data_create()` owns the string or custom data set on it and is freed with `ss_data_destroy()`.
+`ss_emit_string()` and the other `ss_emit_*` helpers pass borrowed data: the slot must not free it, and the string only has to stay valid during the call. Deferred and batched emissions store their own copy. An `ss_data_t` owns its payload only when `ss_data_set_string()` or `ss_data_set_custom()` copied it there; release it with `ss_data_clear()` (or `ss_data_destroy()` for an object from `ss_data_create()`). The library never frees borrowed data, such as a pointer stored with `ss_data_set_string_ref()`:
+
+```c
+ss_data_t d = SS_DATA_INIT;
+ss_data_set_string(&d, buffer);   /* copied: buffer may change afterwards */
+ss_emit("status", &d);
+ss_data_clear(&d);                /* frees the copy */
+```
 
 ## Using Connection Handles
 

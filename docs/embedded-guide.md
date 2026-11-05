@@ -6,7 +6,7 @@ This guide covers using SS_Lib in resource-constrained embedded environments inc
 
 In static memory mode the library context, signals and slots live in static storage. `ss_init` (unless `SS_STATIC_CONTEXT` is 0), register, connect, emit, deferred emission, namespace, disconnect, unregister and cleanup never touch the heap.
 
-Functions whose job is to hand you an allocated object still use `SS_MALLOC`/`SS_CALLOC`: `ss_data_create`, `ss_data_set_string`, `ss_data_set_custom`, `ss_get_signal_list` and `ss_batch_create`. Avoid them on targets without a heap; the `ss_emit_*` helpers and `ss_emit_deferred` with a stack `ss_data_t` need no allocation.
+Functions whose job is to hand you an allocated object still use `SS_MALLOC`/`SS_CALLOC`: `ss_data_create`, `ss_data_set_string`, `ss_data_set_custom`, `ss_get_signal_list` and `ss_batch_create`. Avoid them on targets without a heap; the `ss_emit_*` helpers, and `ss_emit` or `ss_emit_deferred` with a stack `ss_data_t` (`SS_DATA_INIT`, filled with `ss_data_set_string_ref` / `ss_data_set_custom_ref`), need no allocation.
 
 ### Configuration
 

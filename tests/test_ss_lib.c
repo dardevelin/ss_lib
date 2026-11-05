@@ -326,8 +326,8 @@ void test_input_validation(void) {
 #if SS_ENABLE_CUSTOM_DATA
 static int g_custom_cleanup_called = 0;
 
-void custom_cleanup_fn(void* data) {
-    (void)data;
+void custom_cleanup_fn(const void* data, size_t size) {
+    assert(data != NULL && size == sizeof(int) && *(const int*)data == 99);
     g_custom_cleanup_called++;
 }
 
@@ -646,8 +646,9 @@ static void slot_record_pair(const ss_data_t* data, void* user_data) {
     g_pair_seen = *p;
 }
 
-static void count_cleanup_on_copy(void* ptr) {
+static void count_cleanup_on_copy(const void* ptr, size_t size) {
     (void)ptr;
+    (void)size;
     g_custom_cleanup_on_copy++;
 }
 
@@ -686,6 +687,143 @@ void test_deferred_custom_copy(void) {
     printf("Deferred custom data copy tests passed!\n");
 }
 
+#endif
+
+/* S12: the library frees only payloads it copied itself. A borrowed
+ * payload (written by hand, or seen by a slot) is never freed, so reusing
+ * such an object with a setter is safe. */
+static int g_reused_views = 0;
+
+static void slot_reuse_view(const ss_data_t* data, void* user_data) {
+    ss_data_t copy = *data;            /* a slot's data is borrowed */
+    (void)user_data;
+    assert(ss_data_set_int(&copy, 1) == SS_OK);
+    assert(ss_data_get_int(&copy, 0) == 1);
+    g_reused_views++;
+}
+
+void test_data_ownership(void) {
+    char text[8];
+    ss_data_t d;
+    ss_data_t* created;
+    ss_data_t* owned;
+    ss_batch_t* batch;
+    printf("\n=== Testing Data Ownership (S12) ===\n");
+
+    strcpy(text, "stack");
+
+    /* A setter on a stack object holding a borrowed string frees nothing */
+    memset(&d, 0, sizeof(d));
+    d.type = SS_TYPE_STRING;
+    d.value.s_val = text;
+    assert(ss_data_set_int(&d, 5) == SS_OK);
+    assert(ss_data_get_int(&d, 0) == 5);
+    assert(strcmp(text, "stack") == 0);
+
+    /* The copying setter replaces a borrowed string without freeing it */
+    d.type = SS_TYPE_STRING;
+    d.value.s_val = text;
+    assert(ss_data_set_string(&d, "copy") == SS_OK);
+    assert(ss_data_get_string(&d) != text);
+    assert(strcmp(ss_data_get_string(&d), "copy") == 0);
+    assert(ss_data_set_int(&d, 6) == SS_OK);       /* releases the copy */
+
+    /* A string written by hand on a created object is not the library's */
+    created = ss_data_create(SS_TYPE_STRING);
+    assert(created != NULL);
+    created->value.s_val = text;
+    ss_data_destroy(created);
+
+#if SS_ENABLE_CUSTOM_DATA
+    {
+        test_pair_t pair = {3, 4};
+        memset(&d, 0, sizeof(d));
+        d.type = SS_TYPE_CUSTOM;
+        d.custom_data = &pair;
+        d.size = sizeof(pair);
+        assert(ss_data_set_double(&d, 1.5) == SS_OK);
+        assert(pair.a == 3 && pair.b == 4);
+    }
+#endif
+
+    /* Slots see borrowed data, also when the emitter's object owns it */
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("reuse") == SS_OK);
+    assert(ss_connect("reuse", slot_reuse_view, NULL) == SS_OK);
+    assert(ss_signal_register("s12::reuse") == SS_OK);
+    assert(ss_connect("s12::reuse", slot_reuse_view, NULL) == SS_OK);
+    owned = ss_data_create(SS_TYPE_STRING);
+    assert(owned != NULL);
+    assert(ss_data_set_string(owned, "owned") == SS_OK);
+    g_reused_views = 0;
+    assert(ss_emit("reuse", owned) == SS_OK);
+    assert(ss_emit_namespaced("s12", "reuse", owned) == SS_OK);
+    assert(ss_emit_string("reuse", text) == SS_OK);
+    assert(ss_emit_deferred("reuse", owned) == SS_OK);
+    assert(ss_flush_deferred() == SS_OK);
+    batch = ss_batch_create();
+    assert(batch != NULL);
+    assert(ss_batch_add(batch, "reuse", owned) == SS_OK);
+    assert(ss_batch_emit(batch) == SS_OK);
+    ss_batch_destroy(batch);
+    assert(g_reused_views == 5);
+    assert(strcmp(ss_data_get_string(owned), "owned") == 0);
+    assert(strcmp(text, "stack") == 0);
+#if SS_ENABLE_CUSTOM_DATA
+    {
+        test_pair_t pair = {5, 6};
+        assert(ss_data_set_custom(owned, &pair, sizeof(pair), NULL) == SS_OK);
+        assert(ss_emit("reuse", owned) == SS_OK);
+        assert(ss_emit_deferred("reuse", owned) == SS_OK);
+        assert(ss_flush_deferred() == SS_OK);
+        assert(g_reused_views == 7);
+    }
+#endif
+    ss_data_destroy(owned);
+    ss_cleanup();
+    printf("Data ownership tests passed!\n");
+}
+
+/* S12: a borrowing setter given the object's own owned payload keeps it */
+void test_data_ref_self_assign(void) {
+    ss_data_t d = SS_DATA_INIT;
+    ss_data_t* created;
+    const char* copy;
+    printf("\n=== Testing _ref Setters With the Object's Own Payload ===\n");
+
+    assert(ss_data_set_string(&d, "mine") == SS_OK);
+    copy = ss_data_get_string(&d);
+    assert(ss_data_set_string_ref(&d, copy) == SS_OK);
+    assert(strcmp(ss_data_get_string(&d), "mine") == 0);
+    assert(d.type == SS_TYPE_STRING && d.owned != 0 && ss_data_get_string(&d) == copy);
+    ss_data_clear(&d);                       /* still owned: freed here, once */
+
+    created = ss_data_create(SS_TYPE_STRING);
+    assert(created != NULL);
+    assert(ss_data_set_string(created, "created") == SS_OK);
+    assert(ss_data_set_string_ref(created, ss_data_get_string(created)) == SS_OK);
+    assert(strcmp(ss_data_get_string(created), "created") == 0);
+    ss_data_destroy(created);
+
+#if SS_ENABLE_CUSTOM_DATA
+    {
+        test_pair_t pair = {8, 9};
+        size_t size = 0;
+        test_pair_t* held;
+        assert(ss_data_set_custom(&d, &pair, sizeof(pair), NULL) == SS_OK);
+        held = (test_pair_t*)ss_data_get_custom(&d, &size);
+        assert(ss_data_set_custom_ref(&d, held, size) == SS_OK);
+        held = (test_pair_t*)ss_data_get_custom(&d, &size);
+        assert(held->a == 8 && held->b == 9);
+        assert(d.type == SS_TYPE_CUSTOM && d.owned != 0);
+        assert(held != &pair && size == sizeof(pair));
+        ss_data_clear(&d);
+    }
+#endif
+    printf("_ref self-assignment tests passed!\n");
+}
+
+#if SS_ENABLE_CUSTOM_DATA
 /* Queued custom payloads are aligned for any standard type, like malloc
  * memory: in static mode they live in the library's own queue storage */
 typedef struct { char c; long double x; } test_align_ld_t;
@@ -1243,6 +1381,8 @@ int main(void) {
     test_unregister_during_emit();
     test_cleanup_during_emit();
     test_deferred_requeue_during_flush();
+    test_data_ownership();
+    test_data_ref_self_assign();
 #if SS_ENABLE_CUSTOM_DATA
     test_deferred_custom_copy();
     test_queued_payload_alignment();

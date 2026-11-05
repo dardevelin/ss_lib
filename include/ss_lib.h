@@ -75,27 +75,37 @@ typedef enum {
 /**
  * @brief Cleanup function for custom data
  *
- * Called by ss_data_set_custom() and ss_data_destroy() with the library's
- * copy of the custom data, so it can release resources the copy refers
- * to. The library frees the copy itself afterwards: the cleanup function
- * must not free the pointer it receives.
+ * Called once with the library's copy of the custom data, made by
+ * ss_data_set_custom(), just before the library frees that copy (when a
+ * setter replaces it, or on ss_data_clear() / ss_data_destroy()), so it
+ * can release resources the copy refers to. The copy is const because
+ * the library frees it itself: the cleanup function must not.
  *
  * @param data The library-owned copy of the custom data
+ * @param size Its size in bytes
  */
-typedef void (*ss_cleanup_func_t)(void* data);
+typedef void (*ss_cleanup_func_t)(const void* data, size_t size);
 
 /**
  * @brief Data structure passed to slot functions
  *
- * Ownership: an ss_data_t created with ss_data_create() owns the string
- * and custom data stored into it by ss_data_set_string() and
- * ss_data_set_custom(); ss_data_destroy() frees them. Do not assign
- * value.s_val or custom_data directly on such an object. A stack
- * ss_data_t filled in by hand (as the ss_emit_* helpers do) borrows its
- * pointers and must not be passed to ss_data_destroy() or ss_data_set_*.
+ * Ownership: only ss_data_set_string() and ss_data_set_custom() copy their
+ * payload. They set owned, and the copy belongs to the object: the next
+ * ss_data_set_* call, ss_data_clear() or ss_data_destroy() frees it.
+ * Everything else borrows and leaves owned at 0: direct field writes,
+ * ss_data_set_string_ref() / ss_data_set_custom_ref(), the ss_emit_*
+ * helpers, and the data that slots receive. The library never frees a
+ * borrowed payload.
+ *
+ * Start from SS_DATA_INIT or ss_data_init() (ss_data_create() returns an
+ * initialized object). Release an object that owns its payload with
+ * ss_data_clear() (or ss_data_destroy() if created) before it goes out
+ * of scope, and do not write its payload fields by hand until then.
  */
 typedef struct ss_data {
     ss_data_type_t type;        /**< Type of data */
+    unsigned char owned;        /**< Nonzero: the string or custom payload is
+                                     the library's copy. Read-only for callers */
     union {
         int i_val;              /**< Integer value */
         float f_val;            /**< Float value */
@@ -106,13 +116,21 @@ typedef struct ss_data {
 #if SS_ENABLE_CUSTOM_DATA
     size_t size;                /**< Size of custom data */
     void* custom_data;          /**< Pointer to custom data */
-    ss_cleanup_func_t custom_cleanup; /**< Optional cleanup for custom data */
+    ss_cleanup_func_t custom_cleanup; /**< Cleanup for an owned copy, or NULL */
 #endif
 } ss_data_t;
 
+/** @brief Initializer for an empty ss_data_t (SS_TYPE_VOID, nothing owned) */
+#if SS_ENABLE_CUSTOM_DATA
+#define SS_DATA_INIT { SS_TYPE_VOID, 0, { 0 }, 0, 0, 0 }
+#else
+#define SS_DATA_INIT { SS_TYPE_VOID, 0, { 0 } }
+#endif
+
 /**
  * @brief Slot function signature
- * @param data Signal data passed by emitter
+ * @param data Signal data passed by emitter, borrowed (owned is 0) and
+ *             valid only during the call
  * @param user_data User data passed during connection
  */
 typedef void (*ss_slot_func_t)(const ss_data_t* data, void* user_data);
@@ -389,7 +407,8 @@ ss_error_t ss_process_isr_queue(void);
  * @brief Queue an emission for the next ss_flush_deferred()
  *
  * The queue stores a copy of the payload: string and custom data are
- * copied, and the custom cleanup function is not called for the copy.
+ * copied, and the custom cleanup function is not called for the copy,
+ * which slots see as borrowed data.
  * In static memory mode string and custom payloads must fit in
  * SS_DEFERRED_PAYLOAD_SIZE bytes.
  *
@@ -408,18 +427,85 @@ ss_error_t ss_emit_deferred(const char* signal_name, const ss_data_t* data);
  */
 ss_error_t ss_flush_deferred(void);
 
-/* Data handling */
+/**
+ * @defgroup data Data Objects
+ * @brief Filling and releasing ss_data_t payloads
+ *
+ * ss_data_t describes who owns a payload. These functions take no lock:
+ * each object belongs to its caller.
+ * @{
+ */
+
+/**
+ * @brief Allocate an empty object of the given type (heap, in both modes)
+ * @return The object, or NULL; release it with ss_data_destroy()
+ */
 ss_data_t* ss_data_create(ss_data_type_t type);
+
+/** @brief ss_data_clear(), then free an object from ss_data_create(); NULL is a no-op */
 void ss_data_destroy(ss_data_t* data);
+
+/**
+ * @brief Make *data an empty SS_TYPE_VOID object, whatever it contains
+ *
+ * Same as assigning SS_DATA_INIT, for memory that holds no object yet. It
+ * does not release a payload: use ss_data_clear() on an object in use.
+ * NULL is a no-op.
+ */
+void ss_data_init(ss_data_t* data);
+
+/**
+ * @brief Release an owned payload and make the object SS_TYPE_VOID
+ *
+ * An owned custom payload's cleanup runs first. A borrowed payload is
+ * left alone. NULL is a no-op.
+ */
+void ss_data_clear(ss_data_t* data);
+
+/* Every setter first releases the payload the object owns, if any. */
 ss_error_t ss_data_set_int(ss_data_t* data, int value);
 ss_error_t ss_data_set_float(ss_data_t* data, float value);
 ss_error_t ss_data_set_double(ss_data_t* data, double value);
-ss_error_t ss_data_set_string(ss_data_t* data, const char* value);
 ss_error_t ss_data_set_pointer(ss_data_t* data, void* value);
 
+/**
+ * @brief Store a copy of a string, owned by the object
+ *
+ * Allocates in both memory modes. A NULL value stores a NULL string.
+ * @return SS_OK, SS_ERR_NULL_PARAM, or SS_ERR_MEMORY (object unchanged)
+ */
+ss_error_t ss_data_set_string(ss_data_t* data, const char* value);
+
+/**
+ * @brief Store a borrowed string, which must outlive every use of the object
+ *
+ * Never allocates; the library never frees the string. Passing the
+ * object's own payload leaves it unchanged, still owned.
+ * @return SS_OK, or SS_ERR_NULL_PARAM if data is NULL
+ */
+ss_error_t ss_data_set_string_ref(ss_data_t* data, const char* value);
+
 #if SS_ENABLE_CUSTOM_DATA
-ss_error_t ss_data_set_custom(ss_data_t* data, void* value, size_t size, 
-                             ss_cleanup_func_t cleanup);
+/**
+ * @brief Store a copy of size bytes at value, owned by the object
+ *
+ * Allocates in both memory modes. cleanup (may be NULL) is called once on
+ * the copy just before it is freed.
+ * @return SS_OK, SS_ERR_NULL_PARAM (NULL data or value, or size 0), or
+ *         SS_ERR_MEMORY (object unchanged)
+ */
+ss_error_t ss_data_set_custom(ss_data_t* data, const void* value, size_t size,
+                              ss_cleanup_func_t cleanup);
+
+/**
+ * @brief Store borrowed custom data, which must outlive every use of the object
+ *
+ * Never allocates and has no cleanup; the library never frees the data.
+ * Passing the object's own payload (same pointer and size) leaves it
+ * unchanged, still owned.
+ * @return SS_OK, or SS_ERR_NULL_PARAM (NULL data or value, or size 0)
+ */
+ss_error_t ss_data_set_custom_ref(ss_data_t* data, void* value, size_t size);
 #endif
 
 /* Data retrieval */
@@ -432,6 +518,8 @@ void* ss_data_get_pointer(const ss_data_t* data);
 #if SS_ENABLE_CUSTOM_DATA
 void* ss_data_get_custom(const ss_data_t* data, size_t* size);
 #endif
+
+/** @} */
 
 #if SS_ENABLE_INTROSPECTION
 /* Signal information */

@@ -244,10 +244,14 @@ Strings are copied with `SS_MALLOC`, so these three route every allocation. `SS_
 
 | Function | Description |
 |----------|-------------|
+| `SS_DATA_INIT`, `ss_data_init(data)` | Empty data object (on the stack) |
 | `ss_data_create(type)` | Allocate data object |
-| `ss_data_destroy(data)` | Free data object |
-| `ss_data_set_int/float/double/string/pointer(data, val)` | Set value |
-| `ss_data_set_custom(data, ptr, size, cleanup)` | Set custom data |
+| `ss_data_clear(data)` | Free the payload the object owns |
+| `ss_data_destroy(data)` | Clear and free a created data object |
+| `ss_data_set_int/float/double/string/pointer(data, val)` | Set value (`string` copies) |
+| `ss_data_set_string_ref(data, str)` | Set a borrowed string (no copy) |
+| `ss_data_set_custom(data, ptr, size, cleanup)` | Set custom data (copies) |
+| `ss_data_set_custom_ref(data, ptr, size)` | Set borrowed custom data (no copy) |
 | `ss_data_get_int/float/double(data, default)` | Get with default |
 | `ss_data_get_string/pointer/custom(data, ...)` | Get value |
 

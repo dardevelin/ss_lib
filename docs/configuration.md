@@ -18,7 +18,7 @@ The default mode uses standard `malloc`/`free` for allocation. No limits on sign
 
 Pre-allocated arrays for signals and slots; the library context lives in static storage. `ss_init` (unless `SS_STATIC_CONTEXT` is 0), register, connect, emit, deferred emission, namespace, disconnect, unregister and cleanup never touch the heap. Suitable for embedded systems where heap fragmentation is unacceptable.
 
-Functions whose job is to hand the caller an allocated object still allocate: `ss_data_create`, `ss_data_set_string`, `ss_data_set_custom`, `ss_get_signal_list` and `ss_batch_create`.
+Functions whose job is to hand the caller an allocated object still allocate: `ss_data_create`, `ss_data_set_string`, `ss_data_set_custom`, `ss_get_signal_list` and `ss_batch_create`. The borrowing setters `ss_data_set_string_ref` and `ss_data_set_custom_ref` never allocate.
 
 ```c
 #define SS_USE_STATIC_MEMORY 1

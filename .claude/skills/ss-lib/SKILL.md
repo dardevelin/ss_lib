@@ -107,21 +107,29 @@ ss_error_t ss_flush_deferred(void);
 - `ss_flush_deferred()` — Emit the entries queued when it starts, oldest first. Entries queued later (by slots) wait for the next flush, even if a slot runs a nested `ss_flush_deferred()`. Returns the last emission error.
 - Pending entries are released by `ss_cleanup()`.
 
-### Data Handling (14 functions)
+### Data Handling (18 functions)
 
 ```c
-// Creation/destruction
+// Initialization, release, creation/destruction
+#define    SS_DATA_INIT  /* empty SS_TYPE_VOID object: ss_data_t d = SS_DATA_INIT; */
+void       ss_data_init(ss_data_t* data);    // = SS_DATA_INIT, for memory of any content
+void       ss_data_clear(ss_data_t* data);   // free an owned payload, become SS_TYPE_VOID
 ss_data_t* ss_data_create(ss_data_type_t type);
-void       ss_data_destroy(ss_data_t* data);
+void       ss_data_destroy(ss_data_t* data); // ss_data_clear + free the object
 
-// Setters
+// Setters (each first releases the payload the object owns, if any)
 ss_error_t ss_data_set_int(ss_data_t* data, int value);
 ss_error_t ss_data_set_float(ss_data_t* data, float value);
 ss_error_t ss_data_set_double(ss_data_t* data, double value);
-ss_error_t ss_data_set_string(ss_data_t* data, const char* value);
+ss_error_t ss_data_set_string(ss_data_t* data, const char* value);      // copies: owned
+ss_error_t ss_data_set_string_ref(ss_data_t* data, const char* value);  // borrows
 ss_error_t ss_data_set_pointer(ss_data_t* data, void* value);
-ss_error_t ss_data_set_custom(ss_data_t* data, void* value, size_t size,
-                              ss_cleanup_func_t cleanup);  // Requires SS_ENABLE_CUSTOM_DATA
+// Requires SS_ENABLE_CUSTOM_DATA:
+ss_error_t ss_data_set_custom(ss_data_t* data, const void* value, size_t size,
+                              ss_cleanup_func_t cleanup);                // copies: owned
+ss_error_t ss_data_set_custom_ref(ss_data_t* data, void* value, size_t size);  // borrows
+
+typedef void (*ss_cleanup_func_t)(const void* data, size_t size);  // must not free data
 
 // Getters
 int         ss_data_get_int(const ss_data_t* data, int default_val);
@@ -132,17 +140,20 @@ void*       ss_data_get_pointer(const ss_data_t* data);
 void*       ss_data_get_custom(const ss_data_t* data, size_t* size);  // Requires SS_ENABLE_CUSTOM_DATA
 ```
 
-- `ss_data_create()` — Heap-allocates a zeroed `ss_data_t` (in static mode too). Must be freed with `ss_data_destroy()`.
-- `ss_data_set_string()` — **Copies** the string (with `SS_MALLOC`, or `SS_STRDUP` if defined).
-- `ss_data_set_custom()` — **Copies** the data via `memcpy` into a new allocation.
-- Every `ss_data_set_*` first releases the payload the object previously owned (switching type no longer leaks). `ss_data_set_string`/`ss_data_set_custom` keep the old value if allocation fails (`SS_ERR_MEMORY`).
-- `ss_data_destroy()` — Frees the owned string/custom payload (calling `custom_cleanup` first) and the struct.
+- `ss_data_create()` — Heap-allocates an empty `ss_data_t` (in static mode too). Must be freed with `ss_data_destroy()`.
+- `ss_data_set_string()` — **Copies** the string (with `SS_MALLOC`, or `SS_STRDUP` if defined); the object owns the copy.
+- `ss_data_set_custom()` — **Copies** the data via `memcpy` into a new allocation; the object owns the copy.
+- `ss_data_set_string_ref()` / `ss_data_set_custom_ref()` — **Borrow**: store your pointer, never allocate (usable without a heap), never free it.
+- Every `ss_data_set_*` first releases the payload the object owns, if any (a borrowed payload is not freed). `ss_data_set_string`/`ss_data_set_custom` keep the old value if allocation fails (`SS_ERR_MEMORY`).
+- `ss_data_clear()` — Frees an owned string/custom payload (calling `custom_cleanup` on the copy first) and makes the object `SS_TYPE_VOID`. `ss_data_destroy()` = `ss_data_clear()` + free of the struct.
 - Getters return default/NULL on type mismatch — they do not coerce types.
 
-**Ownership contract:**
-- An object from `ss_data_create()` owns the string/custom data stored by the setters. Never assign `value.s_val` or `custom_data` directly on such an object.
-- `custom_cleanup` receives the library's copy so it can release resources the copy *references*; it must NOT free the pointer it receives (the library frees it).
-- A stack `ss_data_t` filled in by hand (as the `ss_emit_*` helpers do) borrows its pointers: pass it to `ss_emit*`, but never to `ss_data_destroy()` or `ss_data_set_*`.
+**Ownership contract (3.0):**
+- `data->owned` (read-only for callers) is set only by the copying setters `ss_data_set_string` / `ss_data_set_custom`. The library frees a payload only when `owned` is set, exactly once: on the next setter, `ss_data_clear()` or `ss_data_destroy()`.
+- Everything else borrows: direct field writes, the `_ref` setters, the `ss_emit_*` helpers, and the data slots receive (`owned` is always 0 there, also for deferred/batch copies and when the emitter's object owns its payload). Misusing a borrowed object leaks at worst; it never frees memory the library does not own.
+- Initialize every `ss_data_t` with `SS_DATA_INIT` or `ss_data_init()` (an uninitialized `owned` could be nonzero). A stack object filled by `ss_data_set_string`/`_custom` must be released with `ss_data_clear()` before it goes out of scope.
+- Do not write `value.s_val` / `custom_data` by hand on an object that owns its payload: `ss_data_clear()` it first, or use the `_ref` setters.
+- The cleanup is called once with the library's copy as `const void*` plus its size, just before the library frees that copy. It releases resources the copy *references*; it must NOT free the pointer (the `const` makes `free(data)` a compiler diagnostic).
 
 ### Introspection (3 functions, requires `SS_ENABLE_INTROSPECTION`)
 
@@ -256,7 +267,7 @@ typedef enum {
 
 **`ss_emit_string()` does NOT copy the string.** It builds a stack `ss_data_t` whose `value.s_val` points at your string and emits it synchronously. Slots see your pointer only for the duration of their call.
 
-**`ss_data_set_string()` DOES copy the string** into memory owned by the `ss_data_t` object.
+**`ss_data_set_string()` DOES copy the string** into memory owned by the `ss_data_t` object (release it with `ss_data_clear()` or `ss_data_destroy()`). **`ss_data_set_string_ref()` does NOT copy**: the object borrows your string.
 
 **Rule:** with `ss_emit`/`ss_emit_string`, the string must outlive the emission, and a slot that wants to keep it must copy it (the pointer is only valid during the slot call, whatever the emitter used).
 
@@ -353,7 +364,7 @@ ss_cleanup();
 ### Static Memory Mode Rules
 
 - `ss_init()` uses static storage (unless `SS_STATIC_CONTEXT=0`); register, connect, emit, deferred, namespace, disconnect, unregister and cleanup never touch the heap.
-- Still allocating (by design, they hand you an object): `ss_data_create`, `ss_data_set_string`, `ss_data_set_custom`, `ss_get_signal_list`, `ss_batch_create`. Avoid them where no heap exists; use the `ss_emit_*` helpers.
+- Still allocating (by design, they hand you an object): `ss_data_create`, `ss_data_set_string`, `ss_data_set_custom`, `ss_get_signal_list`, `ss_batch_create`. Avoid them where no heap exists; use the `ss_emit_*` helpers, or a stack `ss_data_t d = SS_DATA_INIT;` filled with `ss_data_set_string_ref` / `ss_data_set_custom_ref` (no heap).
 - Limits are enforced with `SS_ERR_WOULD_OVERFLOW` (names, descriptions, payloads, full pools), never silent truncation.
 
 ### Custom Allocators
@@ -464,9 +475,20 @@ ss_data_set_custom(d, &pt, sizeof(Point), NULL);  // Copies pt
 ss_emit("moved", d);
 ss_data_destroy(d);
 
+// On the stack: borrow (no heap), or copy and clear
+ss_data_t s = SS_DATA_INIT;
+ss_data_set_custom_ref(&s, &pt, sizeof(Point));   // pt must outlive the use of s
+ss_emit("moved", &s);
+ss_data_set_custom(&s, &pt, sizeof(Point), NULL); // owned copy
+ss_emit_deferred("moved", &s);                    // the queue copies again
+ss_data_clear(&s);                                // frees the owned copy
+
 // With nested resources: cleanup releases what the copy references, never the copy itself
 typedef struct { int* items; size_t n; } List;
-void list_cleanup(void* p) { free(((List*)p)->items); }   // NOT free(p)
+void list_cleanup(const void* p, size_t size) {
+    (void)size;
+    free(((const List*)p)->items);   // NOT free(p): the library frees the copy
+}
 ```
 
 ### ISR Emission

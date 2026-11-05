@@ -46,7 +46,66 @@ Not landed yet: `ss_emit_from_isr()` and `ss_process_isr_queue()` take the bus.
 
 ## Data ownership
 
-Not landed yet: `ss_data_t` records whether it owns its payload.
+`ss_data_t` has a new `owned` field. The library frees a string or custom
+payload only when `owned` is set, and only `ss_data_set_string()` and
+`ss_data_set_custom()`, which copy, set it. Everything else borrows: direct
+field writes, the new `ss_data_set_string_ref()` / `ss_data_set_custom_ref()`,
+the `ss_emit_*` helpers, and the data slots receive. In 2.x the setters and
+`ss_data_destroy()` freed any string or custom pointer they found, so a
+borrowed pointer was freed by mistake.
+
+What to change:
+
+- **Initialize every `ss_data_t`.** Use `ss_data_t d = SS_DATA_INIT;` or
+  `ss_data_init(&d)` for stack and embedded objects (`ss_data_create()`
+  already returns an initialized one). Code that filled a stack object after
+  `memset(&d, 0, sizeof(d))` or `= {0}` keeps working. An object declared
+  without an initializer has a garbage `owned`; before passing it to a setter
+  or `ss_data_clear()`, initialize it.
+- **Clear stack objects that use the copying setters.** In 2.x a stack object
+  could only borrow. In 3.0 `ss_data_set_string()` and `ss_data_set_custom()`
+  work on stack objects too, and the copy must be released with
+  `ss_data_clear()` before the object goes out of scope:
+
+  ```c
+  ss_data_t d = SS_DATA_INIT;
+  ss_data_set_string(&d, buffer);   /* copies buffer */
+  ss_emit("status", &d);
+  ss_data_clear(&d);                /* frees the copy */
+  ```
+
+  `ss_data_destroy()` is now `ss_data_clear()` plus freeing an object from
+  `ss_data_create()`.
+- **Setters on borrowed objects are safe.** `ss_data_set_*()` on an object
+  holding a borrowed pointer no longer frees it (2.x documented this as
+  misuse). To store a pointer without copying, use
+  `ss_data_set_string_ref()` / `ss_data_set_custom_ref()` instead of writing
+  the fields by hand; neither allocates.
+- **Cleanup functions take `(const void* data, size_t size)`.** They are
+  called once, on the library's copy, just before the library frees it, and
+  must not free it themselves: the `const` turns a `free(data)` into a
+  compiler diagnostic. Change `void my_cleanup(void* p)` to
+  `void my_cleanup(const void* p, size_t size)`. Compile with
+  `-Werror=incompatible-pointer-types` while migrating (with clang,
+  `-Werror=incompatible-function-pointer-types`), because older compilers
+  only warn when a 2.x cleanup is passed to `ss_data_set_custom()`.
+- **`ss_data_set_custom()` takes `const void* value`**, since it only copies
+  it. Callers need no change.
+- **A hand-written `s_val` (or `custom_data`) on an `ss_data_create()` object
+  is no longer freed** by `ss_data_destroy()` or the next setter: it is
+  borrowed. 2.x documented this as misuse; if your code relied on it, store
+  the string with `ss_data_set_string()` instead (and free your own buffer),
+  or free it yourself.
+- **Do not write payload fields by hand on an object that owns its payload**
+  (after a copying setter): the next setter, `ss_data_clear()` or
+  `ss_data_destroy()` would free your pointer as if it were the copy, and the
+  copy would leak. Call `ss_data_clear()` first.
+- **Slots always receive borrowed data** (`owned` is 0), also when the
+  emitter's object owns its payload, so a slot that copies its `ss_data_t`
+  and reuses the copy with a setter no longer frees the emitter's payload.
+- **Size:** `owned` sits in the padding after `type`, so `sizeof(ss_data_t)`
+  is unchanged on 64-bit hosts and Arm. Targets without that padding (32-bit
+  x86, AVR) grow by up to 4 bytes per object.
 
 ## Configuration
 
