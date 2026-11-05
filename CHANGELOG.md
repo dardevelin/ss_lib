@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.4] - 2026-11-05
+
 ### Changed
 - README: Homebrew installs a prebuilt bottle on macOS 15 and 26 (Apple
   silicon) and Linux (x86_64 and arm64). CONTRIBUTING's release steps include
@@ -21,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with it.
 - CI also runs for pull requests to version branches (`v3`) and maintenance
   branches (`release/*`).
+- `make docs` checks for Doxygen first and says the HTML API docs are
+  optional; `docs/README.md` no longer says the documentation requires
+  Doxygen (it is Markdown), and the generated `docs/api/` is ignored by git.
 
 ### Added
 - `tests/test_reentrancy.c`, run by `make test` and ctest in every
@@ -302,7 +307,8 @@ public struct layouts are unchanged.
 - Signal introspection
 - Basic examples and tests
 
-[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v2.2.3...HEAD
+[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v2.2.4...HEAD
+[2.2.4]: https://github.com/dardevelin/ss_lib/compare/v2.2.3...v2.2.4
 [2.2.3]: https://github.com/dardevelin/ss_lib/compare/v2.2.2...v2.2.3
 [2.2.2]: https://github.com/dardevelin/ss_lib/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/dardevelin/ss_lib/compare/v2.2.0...v2.2.1

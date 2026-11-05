@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the internal design and data structures of SS_Lib 2.2.3. The source of truth is `src/ss_lib.c`; its header comment summarizes the same structure.
+This document describes the internal design and data structures of SS_Lib 2.2.4. The source of truth is `src/ss_lib.c`; its header comment summarizes the same structure.
 
 ## Overview
 
