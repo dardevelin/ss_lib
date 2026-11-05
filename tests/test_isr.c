@@ -23,6 +23,9 @@ void interrupt_hook(void);
 #include SS_TEST_IMPL
 
 #include <stdio.h>
+/* The asserts are the test: keep them in every build type (CMake's Release
+ * configuration defines NDEBUG) */
+#undef NDEBUG
 #include <assert.h>
 
 #if SS_ENABLE_ISR_SAFE

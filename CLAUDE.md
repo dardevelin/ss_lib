@@ -33,7 +33,7 @@ make help
 
 Every object is compiled with one `FEATURES` variable (default: ISR, memory and perf stats on). Variants are separate `BUILD_DIR`s, e.g. `make test BUILD_DIR=build/x FEATURES="-DSS_USE_STATIC_MEMORY=1"`, `IMPL=src/ss_lib_c89.c LIB_STD=-std=c89`, `SANITIZER=address|thread|undefined|memory`. `CC` from the environment is honoured.
 
-**Tests** (no framework; plain `main()` + `assert()`, never build with `-DNDEBUG`):
+**Tests** (no framework; plain `main()` + `assert()`; each test program undefines `NDEBUG` before `<assert.h>`, so the checks also run in CMake Release builds, and `make test` fails if a test program does not):
 - `tests/test_ss_lib.c`: the suite, including regression tests named after the review findings (S1, S2...). Each test does `ss_init()` ... `ss_cleanup()` because state is one global context. To run one test, comment out the other calls in `main()`, then `make tests && ./build/test_ss_lib`.
 - `tests/test_memory.c` (C89): `#include`s the implementation with `SS_MALLOC`/`SS_CALLOC`/`SS_FREE` routed to a tracking allocator; asserts no leaks, that every freed pointer came from those macros, and zero heap use in static mode.
 - `tests/test_isr.c` (C89): `#include`s the implementation with `SS_ISR_CRITICAL_ENTER`/`EXIT` routed to a hook, so a test can "interrupt" `ss_process_isr_queue()` at an exact point.
