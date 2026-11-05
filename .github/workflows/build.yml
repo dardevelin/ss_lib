@@ -1,10 +1,12 @@
 name: Build
 
 on:
+  # main, major-version integration branches (v3) and maintenance branches
+  # (release/2.x)
   push:
-    branches: [ main, develop ]
+    branches: [ main, develop, 'v[0-9]*', 'release/*' ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, 'v[0-9]*', 'release/*' ]
 
 permissions:
   contents: read

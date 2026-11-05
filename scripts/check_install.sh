@@ -5,6 +5,9 @@
 # then run them against the installed library. On macOS they must start
 # without library-path variables; on Linux a non-system prefix needs
 # LD_LIBRARY_PATH, as for any library.
+# The expected versions come from the installed package itself (the
+# Version field of ss_lib.pc), so the check holds for any release, and it
+# fails when the installed files disagree about that version.
 # Usage: scripts/check_install.sh PREFIX [CC]
 set -eu
 
@@ -12,6 +15,29 @@ prefix=$1
 cc=${2:-cc}
 pc="$prefix/lib/pkgconfig/ss_lib.pc"
 [ -f "$pc" ] || { echo "no $pc" >&2; exit 1; }
+
+# pkg-config: the fields it would print, without needing pkg-config
+field() {
+    sed -n "s/^$1: //p" "$pc" | sed -e "s|\${includedir}|$prefix/include|" \
+        -e "s|\${libdir}|$prefix/lib|"
+}
+version=$(field Version)
+major=${version%%.*}
+case "$version" in
+    *[!0-9.]* | "" | .* | *.) echo "$pc: bad Version '$version'" >&2; exit 1 ;;
+esac
+
+# A shared library, when one is installed, is named after the major version;
+# a static-only install (CMake without SS_BUILD_SHARED) has the archive
+case "$(uname -s)" in
+    Darwin) shared=libss_lib.dylib soname="libss_lib.$major.dylib" ;;
+    *) shared=libss_lib.so soname="libss_lib.so.$major" ;;
+esac
+if [ -e "$prefix/lib/$shared" ]; then
+    [ -e "$prefix/lib/$soname" ] || { echo "$prefix/lib/$soname is missing" >&2; exit 1; }
+else
+    [ -e "$prefix/lib/libss_lib.a" ] || { echo "no SS_Lib library in $prefix/lib" >&2; exit 1; }
+fi
 
 run() {
     case "$(uname -s)" in
@@ -26,6 +52,7 @@ run() {
 cat > "$prefix/check.c" <<'C'
 #include <ss_lib.h>
 #include <stdio.h>
+#include <string.h>
 static int calls = 0;
 static void on_tick(const ss_data_t* data, void* user_data) {
     (void)user_data;
@@ -38,21 +65,20 @@ int main(void) {
     if (ss_emit_int("tick", 2) != SS_OK) return 1;
     ss_cleanup();
     printf("installed SS_Lib %s works\n", ss_version());
+    if (strcmp(ss_version(), SS_VERSION_STRING) != 0) return 1;
     return calls == 2 ? 0 : 1;
 }
 C
 
-# pkg-config: the Cflags and Libs it would print, without needing pkg-config
-field() {
-    sed -n "s/^$1: //p" "$pc" | sed -e "s|\${includedir}|$prefix/include|" \
-        -e "s|\${libdir}|$prefix/lib|"
-}
 cflags=$(field Cflags)
 libs=$(field Libs)
 # They hold several flags each and must be word-split
 # shellcheck disable=SC2086
 "$cc" "$prefix/check.c" $cflags $libs -o "$prefix/check"
-run "$prefix/check"
+out=$(run "$prefix/check")
+echo "$out"
+[ "$out" = "installed SS_Lib $version works" ] || \
+    { echo "the installed library is not version $version" >&2; exit 1; }
 
 # CMake: find_package(ss_lib) must follow semver and give a working target
 if ! command -v cmake > /dev/null 2>&1; then
@@ -64,11 +90,16 @@ cp "$prefix/check.c" "$proj/check.c"
 cat > "$proj/CMakeLists.txt" <<'CMAKE'
 cmake_minimum_required(VERSION 3.10)
 project(ss_lib_install_check C)
-set(rejected 1 3 2.999)
-set(accepted 2 2.0)
+# Semver against the installed version M.m.p: any M.x request up to the
+# installed version is accepted; other majors and newer versions are not
+string(REGEX MATCH "^[0-9]+" major "${SS_LIB_VERSION}")
+math(EXPR previous "${major} - 1")
+math(EXPR next "${major} + 1")
+set(rejected ${previous} ${next} ${major}.999)
+set(accepted ${major} ${major}.0 ${SS_LIB_VERSION})
 if(NOT CMAKE_VERSION VERSION_LESS 3.19)
-    list(APPEND rejected 2.0...2.1 1...<2)
-    list(APPEND accepted 2...<3 2.0...2.999)
+    list(APPEND rejected ${previous}...<${major} ${next}...<${next}.999)
+    list(APPEND accepted ${major}...<${next} ${major}.0...${major}.999)
 endif()
 foreach(request ${rejected} ${accepted})
     unset(ss_lib_DIR CACHE)
@@ -81,11 +112,14 @@ foreach(request ${rejected} ${accepted})
     endif()
 endforeach()
 unset(ss_lib_DIR CACHE)
-find_package(ss_lib 2 REQUIRED NO_DEFAULT_PATH PATHS "${SS_LIB_PREFIX}")
+find_package(ss_lib ${SS_LIB_VERSION} EXACT REQUIRED NO_DEFAULT_PATH PATHS "${SS_LIB_PREFIX}")
 add_executable(check check.c)
 target_link_libraries(check ss_lib::ss_lib)
 CMAKE
-cmake -S "$proj" -B "$proj/build" -DSS_LIB_PREFIX="$prefix" \
+cmake -S "$proj" -B "$proj/build" -DSS_LIB_PREFIX="$prefix" -DSS_LIB_VERSION="$version" \
     -DCMAKE_C_COMPILER="$cc" > /dev/null
 cmake --build "$proj/build" > /dev/null
-run "$proj/build/check"
+out=$(run "$proj/build/check")
+echo "$out"
+[ "$out" = "installed SS_Lib $version works" ] || \
+    { echo "find_package(ss_lib) gave a library that is not version $version" >&2; exit 1; }
