@@ -174,6 +174,8 @@ test-asan:
 
 test-tsan:
 	@$(MAKE) --no-print-directory test SANITIZER=thread BUILD_DIR=build/tsan
+	@$(MAKE) --no-print-directory test SANITIZER=thread BUILD_DIR=build/tsan-trace \
+	    FEATURES="$(FEATURES) -DSS_ENABLE_DEBUG_TRACE=1"
 
 test-ubsan:
 	@$(MAKE) --no-print-directory test SANITIZER=undefined BUILD_DIR=build/ubsan

@@ -1737,10 +1737,14 @@ int ss_is_thread_safe(void) {
 
 #if SS_ENABLE_DEBUG_TRACE
 void ss_enable_trace(FILE* output) {
-    if (g_context) g_context->trace_output = output;
+    int locked;
+    ss_context_t* ctx = ctx_enter(&locked);
+    if (!ctx) return;
+    ctx->trace_output = output;
+    (void)ctx_leave(ctx, locked, SS_OK, NULL);
 }
 
 void ss_disable_trace(void) {
-    if (g_context) g_context->trace_output = NULL;
+    ss_enable_trace(NULL);
 }
 #endif

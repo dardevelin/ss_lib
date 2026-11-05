@@ -23,6 +23,9 @@
 static atomic_long g_calls;
 static atomic_long g_isr_sent;
 static atomic_long g_isr_seen;
+#if SS_ENABLE_DEBUG_TRACE
+static FILE* g_trace_sink;
+#endif
 
 static void slot_count(const ss_data_t* data, void* user_data) {
     (void)data; (void)user_data;
@@ -99,6 +102,13 @@ static void* worker(void* arg) {
             ss_memory_stats_t stats;
             (void)ss_get_memory_stats(&stats);
 #endif
+#if SS_ENABLE_DEBUG_TRACE
+            if (i % 20 == 8) {
+                ss_enable_trace(g_trace_sink);
+            } else {
+                ss_disable_trace();
+            }
+#endif
             break;
         }
         default:
@@ -122,6 +132,10 @@ int main(void) {
 
     assert(ss_init() == SS_OK);
     ss_set_thread_safe(1);
+#if SS_ENABLE_DEBUG_TRACE
+    g_trace_sink = fopen("/dev/null", "w");
+    assert(g_trace_sink != NULL);
+#endif
     assert(ss_signal_register("shared") == SS_OK);
     assert(ss_signal_register("isr") == SS_OK);
     assert(ss_signal_register("reenter") == SS_OK);
@@ -144,6 +158,9 @@ int main(void) {
     assert(ss_flush_deferred() == SS_OK);
 
     ss_cleanup();
+#if SS_ENABLE_DEBUG_TRACE
+    fclose(g_trace_sink);
+#endif
     printf("Concurrency stress test passed (%ld slot calls, %ld ISR events)\n",
            (long)atomic_load(&g_calls), (long)atomic_load(&g_isr_seen));
     return 0;

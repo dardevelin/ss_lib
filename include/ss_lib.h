@@ -519,7 +519,12 @@ int ss_is_thread_safe(void);
  */
 ss_error_t ss_set_namespace(const char* ns);
 
-/** @brief Current default namespace, or NULL; valid until the next change */
+/**
+ * @brief Current default namespace, or NULL; valid until the next change
+ *
+ * The string is the library's own buffer: with several threads, read it
+ * only while no other thread can call ss_set_namespace().
+ */
 const char* ss_get_namespace(void);
 
 /** @brief Emit "ns::signal_name" regardless of the default namespace */

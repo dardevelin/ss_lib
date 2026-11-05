@@ -447,7 +447,7 @@ const char* ss_get_namespace(void);
 
 Get the current default namespace.
 
-**Returns:** Namespace string (valid until the next change), or NULL if not set or library not initialized. Passing it back to `ss_set_namespace()` is safe (no-op).
+**Returns:** Namespace string (valid until the next change), or NULL if not set or library not initialized. Passing it back to `ss_set_namespace()` is safe (no-op). The string is the library's own buffer and is read without the lock, so with several threads read it only while no other thread can call `ss_set_namespace()`, or copy it then.
 
 ### ss_emit_namespaced
 
@@ -883,7 +883,7 @@ Configuration must be identical for the library and every caller; pass it on the
 ## Thread Safety
 
 When `SS_ENABLE_THREAD_SAFETY` is enabled and `ss_set_thread_safe(1)` is called:
-- Every function that touches shared state (signals, slots, deferred queue, namespace, error handler, profiling flag, slot limit) takes one recursive mutex
+- Every function that touches shared state (signals, slots, deferred queue, namespace, error handler, profiling flag, slot limit, trace stream) takes one recursive mutex
 - Signals can be emitted from multiple threads
 - Slots run with the mutex held and may call back into the library; a slot must not wait for another thread that is itself calling the library
 - Thread safety is disabled by default and must be enabled at runtime, after `ss_init()`, while no other thread uses the library
