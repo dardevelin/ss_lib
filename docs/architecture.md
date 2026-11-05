@@ -178,12 +178,12 @@ Entry states: `FREE -> WRITING -> READY -> READING -> FREE`.
 No locks, no allocation, no slot calls. Because claiming is a CAS, nested interrupts and several threads may enqueue concurrently.
 
 `ss_process_isr_queue` (normal context, through `ctx_enter`):
-1. Snapshots the READY entries and sorts them by sequence number (wrap-around safe)
+1. Snapshots the READY entries and sorts them by sequence number (wrap-around safe). An interrupt during the scan can queue one event in an entry already scanned and a newer one in an entry not yet scanned, so it scans again until a scan finds no new entry (at most `SS_ISR_QUEUE_SIZE` extra scans); READY entries stay READY until taken, so the snapshot then holds every event older than its newest
 2. For each, claims it `READY -> READING`, copies name and value, frees it (`-> FREE`), resolves the name against the default namespace and emits it
 
 Events queued after the snapshot wait for the next call. `ss_cleanup` discards READY entries.
 
-Atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins, or MSVC `Interlocked*`. If `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` are defined, they take precedence and wrap plain accesses, for cores without compare-and-swap (Cortex-M0, AVR).
+Atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins, or MSVC `Interlocked*`. If `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` are defined, they take precedence and wrap plain accesses, for cores without compare-and-swap (Cortex-M0, AVR); they must also be compiler memory barriers. `tests/test_isr.c` compiles the implementation with hooked macros to interrupt `ss_process_isr_queue` at every point of its scan.
 
 ## Namespace Implementation
 
