@@ -1,6 +1,6 @@
 # SS_Lib Documentation
 
-Welcome to the SS_Lib documentation. This directory contains detailed information about using and extending the signal-slot library. It describes version 2.2.3; see the [Changelog](../CHANGELOG.md) for changes from earlier versions.
+Welcome to the SS_Lib documentation. This directory contains detailed information about using and extending the signal-slot library. It describes version 3.0.0; see the [Changelog](../CHANGELOG.md) for changes from earlier versions.
 
 ## Documentation Structure
 
@@ -12,6 +12,7 @@ Welcome to the SS_Lib documentation. This directory contains detailed informatio
 - [Examples](examples.md) — Detailed example walkthroughs
 - [Architecture](architecture.md) — Internal design documentation
 - [Design Rationale](design.md) — Design decisions and trade-offs
+- [Migrating from 2.x to 3.0](migration-3.0.md) — What changes for 2.x programs ([3.0 plan](3.0-plan.md))
 
 ## Quick Links
 
