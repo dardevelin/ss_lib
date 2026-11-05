@@ -96,7 +96,7 @@ Handles identify a connection without the signal name or function pointer, and d
 
 ### Disable Unused Features
 
-Each disabled feature removes conditional checks from the code path. Pass the flags on the command line so the library and every caller see the same configuration (initialize with `ss_init_abi(SS_ABI_TAG)` to have a layout mismatch reported as `SS_ERR_CONFIG_MISMATCH`):
+Each disabled feature removes conditional checks from the code path. Pass the flags on the command line so the library and every caller see the same configuration (flags gate function declarations, not layouts, so a mismatch is a compile or link error):
 
 ```bash
 -DSS_ENABLE_THREAD_SAFETY=0      # no mutex checks

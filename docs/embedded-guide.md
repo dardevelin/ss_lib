@@ -35,7 +35,9 @@ In static mode the library's own RAM is in `.bss` (the context is in your pool i
 | Namespace | `SS_MAX_SIGNAL_NAME_LENGTH` bytes |
 | ISR queue (`SS_ENABLE_ISR_SAFE`) | `SS_ISR_QUEUE_SIZE` entries, each with a name buffer and three ints |
 
-The deferred queue is often the largest part; reduce `SS_DEFERRED_QUEUE_SIZE` if you do not use deferred emission. For the exact size on your target, `ss_get_required_pool_size()` returns the size of the context (everything above except the ISR queue) plus alignment slack, and `ss_get_memory_stats()` reports it as `total_bytes_allocated`. For reference, on a 64-bit host the embedded preset with 16 signals and 32 slots needs about 5 KB (about 4 KB with `SS_MINIMAL_BUILD`); 32-bit targets need less.
+The deferred queue is often the largest part; reduce `SS_DEFERRED_QUEUE_SIZE` if you do not use deferred emission. For the exact size on your target, `ss_get_required_pool_size()` returns the size of the context (everything above except the ISR queue) plus alignment slack, and `ss_get_memory_stats()` reports it as `total_bytes_allocated`. For reference, on a 64-bit host the embedded preset with 16 signals and 32 slots needs about 5 KB (about 4.5 KB with `SS_MINIMAL_BUILD`); 32-bit targets need less.
+
+`ss_data_t` has the same layout in every configuration: 24 bytes on Cortex-M (and other 32-bit Arm targets) and 32 bytes on 64-bit hosts. Each deferred and batch entry holds one. In 2.x it was 16 bytes on Cortex-M without custom data, so a build with `SS_ENABLE_CUSTOM_DATA=0` (such as `SS_MINIMAL_BUILD`) now uses 8 bytes more RAM per deferred entry: 128 bytes with the embedded preset's 16 entries. With custom data on it uses 8 bytes less per entry than 2.x (32 bytes).
 
 ### Initialization
 
@@ -56,7 +58,7 @@ if (ss_get_required_pool_size() > sizeof(pool)) {
 ss_init_static_abi(pool, sizeof(pool), SS_ABI_TAG);
 ```
 
-`ss_init_abi(SS_ABI_TAG)` / `ss_init_static_abi(..., SS_ABI_TAG)` return `SS_ERR_CONFIG_MISMATCH` if the application and the library were built with different `ss_data_t` layouts; prefer them in new code.
+`ss_init_abi(SS_ABI_TAG)` / `ss_init_static_abi(..., SS_ABI_TAG)` return `SS_ERR_CONFIG_MISMATCH` if the application and the library see different `ss_data_t` layouts (a header from another version, or options such as `-fshort-enums` used for only one of them); prefer them in new code. Feature flags no longer change layouts, but must still match, since they decide which functions are declared.
 
 ## ISR-Safe Operations
 

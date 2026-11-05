@@ -91,7 +91,25 @@ What to change:
   only warn when a 2.x cleanup is passed to `ss_data_set_custom()`.
 - **`ss_data_set_custom()` takes `const void* value`**, since it only copies
   it. Callers need no change.
-- **A hand-written `s_val` (or `custom_data`) on an `ss_data_create()` object
+- **Custom data moves into the value union.** `data->custom_data`,
+  `data->size` and `data->custom_cleanup` become `data->value.custom.ptr`,
+  `data->value.custom.size` and `data->value.custom.cleanup`. Prefer
+  `ss_data_get_custom(data, &size)` to read it, and `ss_data_set_custom()` /
+  `ss_data_set_custom_ref()` to store it; code that writes the fields by hand
+  changes as follows:
+
+  ```c
+  /* 2.x */
+  d.type = SS_TYPE_CUSTOM;
+  d.custom_data = &point;
+  d.size = sizeof(point);
+
+  /* 3.0 */
+  ss_data_set_custom_ref(&d, &point, sizeof(point));
+  ```
+
+  The old names no longer exist, so the compiler finds every use.
+- **A hand-written `s_val` (or `value.custom.ptr`) on an `ss_data_create()` object
   is no longer freed** by `ss_data_destroy()` or the next setter: it is
   borrowed. 2.x documented this as misuse; if your code relied on it, store
   the string with `ss_data_set_string()` instead (and free your own buffer),
@@ -103,11 +121,32 @@ What to change:
 - **Slots always receive borrowed data** (`owned` is 0), also when the
   emitter's object owns its payload, so a slot that copies its `ss_data_t`
   and reuses the copy with a setter no longer frees the emitter's payload.
-- **Size:** `owned` sits in the padding after `type`, so `sizeof(ss_data_t)`
-  is unchanged on 64-bit hosts and Arm. Targets without that padding (32-bit
-  x86, AVR) grow by up to 4 bytes per object.
+- **Size:** `ss_data_t` is the same in every configuration: 32 bytes on
+  64-bit hosts and 24 on Cortex-M. In 2.x it was 40 and 32 bytes with custom
+  data and 16 on both without. `owned` sits in the padding after `type`.
+  Builds without custom data, such as `SS_MINIMAL_BUILD`, grow by 16 bytes
+  per object on 64-bit hosts and 8 on Cortex-M, which includes each deferred
+  and batch entry; see the
+  [embedded guide](embedded-guide.md#memory-budget).
 
 ## Configuration
 
-Not landed yet: `SS_STATIC_CONTEXT` becomes `SS_STATIC_BUSES`, and no
-configuration macro changes a public type layout.
+- **No configuration macro changes a public type layout or enum value.** In
+  2.x `SS_ENABLE_CUSTOM_DATA` changed `ss_data_t` and `ss_data_type_t`, so a
+  caller built with different flags than the library corrupted memory. Now
+  `SS_TYPE_CUSTOM` and `value.custom` exist in every configuration and
+  `SS_DATA_INIT` is the same everywhere. Code that wrapped uses of
+  `SS_TYPE_CUSTOM` in `#if SS_ENABLE_CUSTOM_DATA` may drop the guard; the
+  custom data functions are still declared only with the flag.
+- **Flags must still match** between the library and every caller, because
+  they decide which functions are declared. A caller that uses a feature the
+  library lacks now fails to compile or link.
+- **A library built without custom data refuses to queue it:**
+  `ss_emit_deferred()` and `ss_batch_add()` return `SS_ERR_INVALID_TYPE` for
+  `SS_TYPE_CUSTOM` data (2.x had no such type there). `ss_emit()` passes it
+  to the slots as given.
+- **`SS_ABI_TAG` changes** to `sizeof(ss_data_t) * 16 + SS_ABI_REVISION`.
+  Keep passing the macro; a program that passed a hand-computed
+  `sizeof(ss_data_t)` to `ss_init_abi()` now gets `SS_ERR_CONFIG_MISMATCH`.
+
+Not landed yet: `SS_STATIC_CONTEXT` becomes `SS_STATIC_BUSES`.

@@ -2,7 +2,7 @@
 
 SS_Lib uses compile-time macros to control features, memory model, and behavior. All configuration happens through `include/ss_config.h` or via `-D` compiler flags.
 
-The configuration must be identical for the library and every file that includes `ss_lib.h`: it changes struct layouts and which functions are declared. Pass it on the command line (or edit `ss_config.h`), never with a `#define` in one source file before the include. The snippets below show macro values; `#define X 1` means `-DX=1`. Initializing with `ss_init_abi(SS_ABI_TAG)` instead of `ss_init()` returns `SS_ERR_CONFIG_MISMATCH` when the caller and the library disagree on the `ss_data_t` layout (`SS_ENABLE_CUSTOM_DATA`); other differences are not detected.
+No configuration macro changes a public type layout or enum value: `ss_data_t` and every other public struct look the same in every configuration (`make check-abi` verifies it). The configuration must still be identical for the library and every file that includes `ss_lib.h`, because it decides which functions are declared and sets limits such as `SS_MAX_SIGNAL_NAME_LENGTH`. A caller built with a feature the library lacks then fails to compile or link instead of corrupting memory. Pass the configuration on the command line (or edit `ss_config.h`), never with a `#define` in one source file before the include. The snippets below show macro values; `#define X 1` means `-DX=1`. Initializing with `ss_init_abi(SS_ABI_TAG)` instead of `ss_init()` returns `SS_ERR_CONFIG_MISMATCH` when the caller's `ss_data_t` differs from the library's, for example with a header from another version or `-fshort-enums`.
 
 ## Memory Model
 
@@ -75,7 +75,7 @@ Enables `ss_get_signal_count()`, `ss_get_signal_list()`, and `ss_free_signal_lis
 #define SS_ENABLE_CUSTOM_DATA 1  /* default: 1 */
 ```
 
-Enables `SS_TYPE_CUSTOM` data type and `ss_data_set_custom()`/`ss_data_get_custom()`. Custom data supports a cleanup callback for automatic resource management.
+Enables `ss_data_set_custom()`, `ss_data_set_custom_ref()` and `ss_data_get_custom()`, and queuing custom data with `ss_emit_deferred()` and `ss_batch_add()`. Custom data supports a cleanup callback for automatic resource management. `SS_TYPE_CUSTOM` and `value.custom` exist in every configuration, so the flag does not change `ss_data_t`; a library built without it returns `SS_ERR_INVALID_TYPE` when custom data is queued, because it cannot copy the payload.
 
 ### Performance Statistics
 

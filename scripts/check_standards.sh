@@ -4,6 +4,8 @@
 #
 #   scripts/check_standards.sh [CC...]        default: $CC or cc
 #   scripts/check_standards.sh --newest CC    print the newest -std CC accepts
+#   scripts/check_standards.sh --configs      print the configurations, one
+#                                             per line, the default (empty) first
 #
 # Standards a compiler does not know are reported and skipped, so the same
 # script runs on old toolchains and picks up new standards on new ones.
@@ -26,19 +28,27 @@ newest() {
     return 1
 }
 
+# The default configuration is the empty first line; scripts/check_abi.sh
+# reads this list with --configs
+CONFIGS="
+-DSS_ENABLE_ISR_SAFE=1 -DSS_ENABLE_MEMORY_STATS=1 -DSS_ENABLE_PERFORMANCE_STATS=1 -DSS_ENABLE_DEBUG_TRACE=1
+-DSS_USE_STATIC_MEMORY=1 -DSS_ENABLE_ISR_SAFE=1
+-DSS_MINIMAL_BUILD
+-DSS_EMBEDDED_BUILD -DSS_ENABLE_ISR_SAFE=1"
+
 if [ "${1:-}" = "--newest" ]; then
     newest "${2:-${CC:-cc}}"
+    exit
+fi
+
+if [ "${1:-}" = "--configs" ]; then
+    printf '%s\n' "$CONFIGS"
     exit
 fi
 
 [ $# -gt 0 ] || set -- "${CC:-cc}"
 
 WARN="-Wall -Wextra -pedantic -Werror -Wstrict-prototypes"
-CONFIGS="
--DSS_ENABLE_ISR_SAFE=1 -DSS_ENABLE_MEMORY_STATS=1 -DSS_ENABLE_PERFORMANCE_STATS=1 -DSS_ENABLE_DEBUG_TRACE=1
--DSS_USE_STATIC_MEMORY=1 -DSS_ENABLE_ISR_SAFE=1
--DSS_MINIMAL_BUILD
--DSS_EMBEDDED_BUILD -DSS_ENABLE_ISR_SAFE=1"
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT

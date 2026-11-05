@@ -108,7 +108,7 @@ Configuration macros must be identical in every file that includes the header; p
 
 ### Compile-Time Flags
 
-Configuration must be identical for the library and every file that includes `ss_lib.h`, so pass it on the command line (`-DSS_USE_STATIC_MEMORY=1`) rather than with `#define` in a source file. `ss_init_abi(SS_ABI_TAG)` (recommended for new code instead of `ss_init()`) returns `SS_ERR_CONFIG_MISMATCH` when a program was built with a different `ss_data_t` layout than the library (`SS_ENABLE_CUSTOM_DATA`); other mismatches are not detected.
+Configuration must be identical for the library and every file that includes `ss_lib.h`, so pass it on the command line (`-DSS_USE_STATIC_MEMORY=1`) rather than with `#define` in a source file. No option changes a public type layout, so a program that disagrees with the library on a feature flag fails to compile or link instead of corrupting memory. `ss_init_abi(SS_ABI_TAG)` (recommended for new code instead of `ss_init()`) also returns `SS_ERR_CONFIG_MISMATCH` when a program sees a different `ss_data_t` than the library, for example through a header from another version.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -177,7 +177,7 @@ Strings are copied with `SS_MALLOC`, so these three route every allocation. `SS_
 | Function | Description |
 |----------|-------------|
 | `ss_init()` | Initialize (context on the heap, or in static storage with `SS_USE_STATIC_MEMORY`) |
-| `ss_init_abi(SS_ABI_TAG)` | `ss_init()` plus a check that caller and library were built with the same flags |
+| `ss_init_abi(SS_ABI_TAG)` | `ss_init()` plus a check that caller and library agree on the `ss_data_t` layout |
 | `ss_init_static(pool, size)` | Initialize with the context in a caller-owned buffer (`ss_init_static_abi` checks flags) |
 | `ss_get_required_pool_size()` | Bytes `ss_init_static()` needs |
 | `ss_cleanup()` | Clean up all resources |
@@ -457,6 +457,7 @@ make test-c89       # ... against src/ss_lib_c89.c built as C89
 make test-newest    # ... built as the newest C standard the compiler supports
 make test-single    # ... against the generated single header (dynamic and static)
 make check-standards  # Compile as C89, C99, C11, C17, C23 and C2y with -Werror
+make check-abi     # Public struct sizes, offsets and enum values identical in every configuration
 make test-all       # All of the above plus check-single-header, check-version, check-install
 make test_embedded  # Embedded examples against an SS_EMBEDDED_BUILD library
 make test-pauth     # arm64: library built with pointer authentication below Armv8.3

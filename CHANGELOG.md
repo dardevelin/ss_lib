@@ -29,6 +29,20 @@ lists what changes for programs written for 2.x.
 - Every setter releases the previous payload only if the object owns it.
   Slots receive an owned object as a borrowed view, so a slot that reuses a
   copy of its data with a setter cannot free the emitter's payload.
+- **Breaking:** no configuration macro changes a public type layout or enum
+  value (A8). Custom data moves into the value union: `custom_data`, `size`
+  and `custom_cleanup` become `value.custom.ptr`, `value.custom.size` and
+  `value.custom.cleanup`. `SS_TYPE_CUSTOM` is declared in every
+  configuration and `SS_DATA_INIT` is `{ SS_TYPE_VOID, 0, { 0 } }` in all of
+  them. `ss_data_t` is 32 bytes on 64-bit hosts and 24 on Cortex-M in every
+  configuration (2.x: 40 and 32 with custom data, 16 without). Feature flags
+  still gate function declarations.
+- **Breaking:** `SS_ABI_TAG` is `sizeof(ss_data_t) * 16 + SS_ABI_REVISION`
+  (new macro, 1); `ss_init_abi()` and `ss_init_static_abi()` compare it as
+  before. It fits a 16-bit `size_t`.
+- `ss_emit_deferred()` and `ss_batch_add()` return `SS_ERR_INVALID_TYPE` for
+  custom data in a library built without `SS_ENABLE_CUSTOM_DATA`, which
+  cannot copy it. The code was reserved before.
 
 ### Added
 - `SS_DATA_INIT` and `ss_data_init()` for an empty object, and
@@ -37,6 +51,10 @@ lists what changes for programs written for 2.x.
   `ss_data_destroy()` is `ss_data_clear()` plus freeing the object.
 - `ss_data_set_string_ref()` and `ss_data_set_custom_ref()` store a borrowed
   payload without allocating, in either memory mode.
+- `scripts/check_abi.sh` (`make check-abi`, in `test-all` and CI's standards
+  job) fails when a public struct's size or member offsets, or an enum
+  value, differs between the configurations the project tests, or when
+  `ss_lib.h` has a preprocessor conditional inside a public type.
 
 ### Fixed
 - `docs/api-reference.md` showed `SS_VERSION_PATCH 1` next to version 2.2.4.

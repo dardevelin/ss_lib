@@ -36,17 +36,22 @@ typedef enum {
     SS_ERR_MEMORY,              /**< Memory allocation failed */
     SS_ERR_NOT_FOUND,           /**< Signal or slot not found */
     SS_ERR_ALREADY_EXISTS,      /**< Signal already registered */
-    SS_ERR_INVALID_TYPE,        /**< Reserved, not currently returned */
+    SS_ERR_INVALID_TYPE,        /**< Custom data queued (deferred or batch) in a
+                                     library built without SS_ENABLE_CUSTOM_DATA */
     SS_ERR_BUFFER_TOO_SMALL,    /**< Reserved, not currently returned */
     SS_ERR_MAX_SLOTS,           /**< Maximum slots per signal reached */
     SS_ERR_TIMEOUT,             /**< Reserved, not currently returned */
     SS_ERR_WOULD_OVERFLOW,      /**< Name, payload or queue exceeds a fixed limit */
     SS_ERR_ISR_UNSAFE,          /**< Reserved, not currently returned */
-    SS_ERR_CONFIG_MISMATCH      /**< Caller and library built with different flags */
+    SS_ERR_CONFIG_MISMATCH      /**< Caller's SS_ABI_TAG differs from the library's */
 } ss_error_t;
 
 /**
  * @brief Data types supported by signal emission
+ *
+ * The enumerators are the same in every configuration. The custom data
+ * functions, and queuing SS_TYPE_CUSTOM data, need
+ * SS_ENABLE_CUSTOM_DATA.
  */
 typedef enum {
     SS_TYPE_VOID,               /**< No data */
@@ -54,10 +59,8 @@ typedef enum {
     SS_TYPE_FLOAT,              /**< Float data */
     SS_TYPE_DOUBLE,             /**< Double data */
     SS_TYPE_STRING,             /**< String data (null-terminated) */
-    SS_TYPE_POINTER             /**< Generic pointer data */
-#if SS_ENABLE_CUSTOM_DATA
-    , SS_TYPE_CUSTOM            /**< Custom data with size */
-#endif
+    SS_TYPE_POINTER,            /**< Generic pointer data */
+    SS_TYPE_CUSTOM              /**< Custom data with size (value.custom) */
 } ss_data_type_t;
 
 /**
@@ -101,6 +104,10 @@ typedef void (*ss_cleanup_func_t)(const void* data, size_t size);
  * initialized object). Release an object that owns its payload with
  * ss_data_clear() (or ss_data_destroy() if created) before it goes out
  * of scope, and do not write its payload fields by hand until then.
+ *
+ * The layout is the same in every configuration: custom data lives in the
+ * value union whether or not SS_ENABLE_CUSTOM_DATA is set. Prefer
+ * ss_data_get_custom() to reading value.custom.
  */
 typedef struct ss_data {
     ss_data_type_t type;        /**< Type of data */
@@ -112,20 +119,16 @@ typedef struct ss_data {
         double d_val;           /**< Double value */
         const char* s_val;      /**< String value */
         void* p_val;            /**< Pointer value */
+        struct {
+            void* ptr;          /**< Custom data */
+            size_t size;        /**< Its size in bytes */
+            ss_cleanup_func_t cleanup; /**< Cleanup for an owned copy, or NULL */
+        } custom;               /**< SS_TYPE_CUSTOM value */
     } value;                    /**< Data value union */
-#if SS_ENABLE_CUSTOM_DATA
-    size_t size;                /**< Size of custom data */
-    void* custom_data;          /**< Pointer to custom data */
-    ss_cleanup_func_t custom_cleanup; /**< Cleanup for an owned copy, or NULL */
-#endif
 } ss_data_t;
 
 /** @brief Initializer for an empty ss_data_t (SS_TYPE_VOID, nothing owned) */
-#if SS_ENABLE_CUSTOM_DATA
-#define SS_DATA_INIT { SS_TYPE_VOID, 0, { 0 }, 0, 0, 0 }
-#else
 #define SS_DATA_INIT { SS_TYPE_VOID, 0, { 0 } }
-#endif
 
 /**
  * @brief Slot function signature
@@ -155,8 +158,8 @@ typedef uintptr_t ss_connection_t;
  * SS_USE_STATIC_MEMORY it lives in static storage (unless
  * SS_STATIC_CONTEXT is 0) and no heap is used.
  * Not thread-safe: call before other threads use the library.
- * Prefer ss_init_abi(SS_ABI_TAG), which also detects a library built
- * with different configuration flags.
+ * Prefer ss_init_abi(SS_ABI_TAG), which also detects a caller built
+ * against a different ss_data_t layout.
  *
  * @return SS_OK on success (also if already initialized),
  *         SS_ERR_ALREADY_EXISTS if a deferred ss_cleanup() is pending
@@ -184,18 +187,25 @@ ss_error_t ss_init_static(void* memory_pool, size_t pool_size);
  */
 size_t ss_get_required_pool_size(void);
 
+/** @brief Revision of the public layouts, bumped when one changes (1 to 15) */
+#define SS_ABI_REVISION 1
+
 /**
- * @brief Tag describing the configuration-dependent ABI as the caller sees
- * it; currently the layout of ss_data_t (which SS_ENABLE_CUSTOM_DATA
- * changes).
+ * @brief Tag describing the ABI as the caller sees it: SS_ABI_REVISION and
+ * sizeof(ss_data_t)
+ *
+ * No configuration macro changes a public layout, so the tag differs only
+ * when the caller and the library come from different versions or were
+ * compiled with options that change layouts (such as -fshort-enums or
+ * structure packing). It fits a 16-bit size_t.
  */
-#define SS_ABI_TAG ((size_t)sizeof(ss_data_t))
+#define SS_ABI_TAG ((size_t)(sizeof(ss_data_t) * 16u + SS_ABI_REVISION))
 
 /**
  * @brief ss_init() that first checks the caller's SS_ABI_TAG
  *
  * Call as ss_init_abi(SS_ABI_TAG). Returns SS_ERR_CONFIG_MISMATCH when
- * the caller was compiled with different flags than the library, which
+ * the caller's tag differs from the library's (see SS_ABI_TAG), which
  * would otherwise corrupt memory later.
  */
 ss_error_t ss_init_abi(size_t abi_tag);
@@ -412,9 +422,10 @@ ss_error_t ss_process_isr_queue(void);
  * In static memory mode string and custom payloads must fit in
  * SS_DEFERRED_PAYLOAD_SIZE bytes.
  *
- * @return SS_OK, SS_ERR_NULL_PARAM, SS_ERR_MEMORY, or
+ * @return SS_OK, SS_ERR_NULL_PARAM, SS_ERR_MEMORY,
  *         SS_ERR_WOULD_OVERFLOW if the queue is full or the name or
- *         payload is too long
+ *         payload is too long, or SS_ERR_INVALID_TYPE for custom data in
+ *         a library built without SS_ENABLE_CUSTOM_DATA
  */
 ss_error_t ss_emit_deferred(const char* signal_name, const ss_data_t* data);
 
@@ -621,7 +632,8 @@ ss_error_t ss_emit_namespaced(const char* ns, const char* signal_name,
 
 /*
  * Batch operations. A batch stores copies of its payloads like the
- * deferred queue. A batch is owned by the caller and must not be used
+ * deferred queue, and ss_batch_add() returns the same errors as
+ * ss_emit_deferred(). A batch is owned by the caller and must not be used
  * from several threads at once; slots may add to it or destroy it while
  * it is being emitted.
  */

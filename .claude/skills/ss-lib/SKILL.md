@@ -21,7 +21,7 @@ ss_disconnect("sig", fn);   // 5. Disconnect slots
 ss_cleanup();               // 6. Clean up everything
 ```
 
-Calls before `ss_init()` fail (`SS_ERR_NULL_PARAM`, 0 or NULL); skipping `ss_cleanup()` leaks in dynamic mode. Every compile-time option (`SS_ENABLE_*`, `SS_USE_STATIC_MEMORY`, presets, limits) must be identical for the library and every file that includes `ss_lib.h`: pass them on the command line (`-D...`), never `#define` them in one source file. New code should initialize with `ss_init_abi(SS_ABI_TAG)`, which returns `SS_ERR_CONFIG_MISMATCH` when the caller's `ss_data_t` layout differs from the library's (plain `ss_init()` does not check).
+Calls before `ss_init()` fail (`SS_ERR_NULL_PARAM`, 0 or NULL); skipping `ss_cleanup()` leaks in dynamic mode. Every compile-time option (`SS_ENABLE_*`, `SS_USE_STATIC_MEMORY`, presets, limits) must be identical for the library and every file that includes `ss_lib.h`: pass them on the command line (`-D...`), never `#define` them in one source file. Options never change a public type layout, so a mismatched feature flag is a compile or link error, but limits would silently disagree. New code should initialize with `ss_init_abi(SS_ABI_TAG)`, which returns `SS_ERR_CONFIG_MISMATCH` when the caller's `ss_data_t` layout differs from the library's, e.g. a header from another version (plain `ss_init()` does not check).
 
 ## Core API Reference
 
@@ -38,7 +38,7 @@ const char* ss_version(void);                                 // == SS_VERSION_S
 ```
 
 - `ss_init()` — Plain function. Context on the heap (dynamic mode) or in static storage (`SS_USE_STATIC_MEMORY`, no heap; with `SS_STATIC_CONTEXT=0` the context is `SS_CALLOC`'d instead). Returns `SS_OK` if already initialized (state is NOT reset), `SS_ERR_ALREADY_EXISTS` while a cleanup requested from a slot is still pending.
-- `ss_init_abi(SS_ABI_TAG)` / `ss_init_static_abi(pool, size, SS_ABI_TAG)` — Same as `ss_init()` / `ss_init_static()`, but first return `SS_ERR_CONFIG_MISMATCH` if the caller was compiled with a different `ss_data_t` layout (e.g. different `SS_ENABLE_CUSTOM_DATA`). Recommended for new code.
+- `ss_init_abi(SS_ABI_TAG)` / `ss_init_static_abi(pool, size, SS_ABI_TAG)` — Same as `ss_init()` / `ss_init_static()`, but first return `SS_ERR_CONFIG_MISMATCH` if the caller's `SS_ABI_TAG` (`sizeof(ss_data_t) * 16 + SS_ABI_REVISION`) differs from the library's: a header from another version, or layout-changing options such as `-fshort-enums`. Recommended for new code.
 - `ss_init_static(pool, size)` — With a pool of at least `ss_get_required_pool_size()` bytes (any alignment), places the library context in it. Works in both memory modes; signals and slots still follow the mode. The pool must outlive `ss_cleanup()`, which never frees it. A NULL or smaller pool is ignored and the call behaves exactly like `ss_init()` (2.1 compatibility): it never returns `SS_ERR_NULL_PARAM` / `SS_ERR_BUFFER_TOO_SMALL`, so check the size yourself if the pool placement matters.
 - `ss_cleanup()` — Releases signals, slots, pending deferred and ISR events. Safe if not initialized. Called from a slot, it is deferred until the outermost library call returns; meanwhile the library behaves as uninitialized and the remaining slots are skipped.
 - `ss_init()` / `ss_cleanup()` are not thread-safe: call them while no other thread uses the library.
@@ -103,7 +103,7 @@ ss_error_t ss_emit_deferred(const char* signal_name, const ss_data_t* data);
 ss_error_t ss_flush_deferred(void);
 ```
 
-- `ss_emit_deferred()` — Queue emission for later (FIFO, `SS_DEFERRED_QUEUE_SIZE` entries, default 64, 16 with `SS_EMBEDDED_BUILD`). The queue stores a **copy** of the payload: string and custom data are copied, so the caller may free its data right after the call. The `custom_cleanup` function is NOT called for the copy (slots see the bytes, not your object's lifetime). In static mode string/custom payloads must fit `SS_DEFERRED_PAYLOAD_SIZE` (default 32) bytes. `SS_ERR_WOULD_OVERFLOW` when the queue is full, the name is too long, or the payload is too large.
+- `ss_emit_deferred()` — Queue emission for later (FIFO, `SS_DEFERRED_QUEUE_SIZE` entries, default 64, 16 with `SS_EMBEDDED_BUILD`). The queue stores a **copy** of the payload: string and custom data are copied, so the caller may free its data right after the call. The `value.custom.cleanup` function is NOT called for the copy (slots see the bytes, not your object's lifetime). In static mode string/custom payloads must fit `SS_DEFERRED_PAYLOAD_SIZE` (default 32) bytes. `SS_ERR_WOULD_OVERFLOW` when the queue is full, the name is too long, or the payload is too large; `SS_ERR_INVALID_TYPE` for `SS_TYPE_CUSTOM` data in a library built without `SS_ENABLE_CUSTOM_DATA`.
 - `ss_flush_deferred()` — Emit the entries queued when it starts, oldest first. Entries queued later (by slots) wait for the next flush, even if a slot runs a nested `ss_flush_deferred()`. Returns the last emission error.
 - Pending entries are released by `ss_cleanup()`.
 
@@ -145,14 +145,14 @@ void*       ss_data_get_custom(const ss_data_t* data, size_t* size);  // Require
 - `ss_data_set_custom()` — **Copies** the data via `memcpy` into a new allocation; the object owns the copy.
 - `ss_data_set_string_ref()` / `ss_data_set_custom_ref()` — **Borrow**: store your pointer, never allocate (usable without a heap), never free it.
 - Every `ss_data_set_*` first releases the payload the object owns, if any (a borrowed payload is not freed). `ss_data_set_string`/`ss_data_set_custom` keep the old value if allocation fails (`SS_ERR_MEMORY`).
-- `ss_data_clear()` — Frees an owned string/custom payload (calling `custom_cleanup` on the copy first) and makes the object `SS_TYPE_VOID`. `ss_data_destroy()` = `ss_data_clear()` + free of the struct.
+- `ss_data_clear()` — Frees an owned string/custom payload (calling `value.custom.cleanup` on the copy first) and makes the object `SS_TYPE_VOID`. `ss_data_destroy()` = `ss_data_clear()` + free of the struct.
 - Getters return default/NULL on type mismatch — they do not coerce types.
 
 **Ownership contract (3.0):**
 - `data->owned` (read-only for callers) is set only by the copying setters `ss_data_set_string` / `ss_data_set_custom`. The library frees a payload only when `owned` is set, exactly once: on the next setter, `ss_data_clear()` or `ss_data_destroy()`.
 - Everything else borrows: direct field writes, the `_ref` setters, the `ss_emit_*` helpers, and the data slots receive (`owned` is always 0 there, also for deferred/batch copies and when the emitter's object owns its payload). Misusing a borrowed object leaks at worst; it never frees memory the library does not own.
 - Initialize every `ss_data_t` with `SS_DATA_INIT` or `ss_data_init()` (an uninitialized `owned` could be nonzero). A stack object filled by `ss_data_set_string`/`_custom` must be released with `ss_data_clear()` before it goes out of scope.
-- Do not write `value.s_val` / `custom_data` by hand on an object that owns its payload: `ss_data_clear()` it first, or use the `_ref` setters.
+- Do not write `value.s_val` / `value.custom` by hand on an object that owns its payload: `ss_data_clear()` it first, or use the `_ref` setters.
 - The cleanup is called once with the library's copy as `const void*` plus its size, just before the library frees that copy. It releases resources the copy *references*; it must NOT free the pointer (the `const` makes `free(data)` a compiler diagnostic).
 
 ### Introspection (3 functions, requires `SS_ENABLE_INTROSPECTION`)
@@ -259,9 +259,11 @@ typedef enum {
     SS_TYPE_DOUBLE,   // double
     SS_TYPE_STRING,   // const char* (null-terminated)
     SS_TYPE_POINTER,  // void*
-    SS_TYPE_CUSTOM    // Custom data with size (requires SS_ENABLE_CUSTOM_DATA)
+    SS_TYPE_CUSTOM    // value.custom.ptr/size/cleanup; read with ss_data_get_custom()
 } ss_data_type_t;
 ```
+
+Every enumerator and `ss_data_t` member exists in every configuration (`ss_data_t` is 32 bytes on 64-bit, 24 on Cortex-M). The custom data functions need `SS_ENABLE_CUSTOM_DATA`; a library without it returns `SS_ERR_INVALID_TYPE` when custom data is queued (`ss_emit_deferred`, `ss_batch_add`).
 
 ## String Handling — Critical Distinction
 
@@ -294,7 +296,7 @@ SS_ERR_NULL_PARAM        // NULL parameter passed
 SS_ERR_MEMORY            // Memory allocation failed
 SS_ERR_NOT_FOUND         // Signal or slot not found
 SS_ERR_ALREADY_EXISTS    // Signal already registered
-SS_ERR_INVALID_TYPE      // Reserved, not currently returned
+SS_ERR_INVALID_TYPE      // Custom data queued in a library built without SS_ENABLE_CUSTOM_DATA
 SS_ERR_BUFFER_TOO_SMALL  // Reserved, not currently returned (ss_init_static falls back instead)
 SS_ERR_MAX_SLOTS         // Signal already has max_slots_per_signal live slots
 SS_ERR_TIMEOUT           // Reserved, not currently returned
@@ -332,7 +334,7 @@ ss_cleanup();
 | `SS_USE_STATIC_MEMORY` | 0 | Use pre-allocated pools instead of malloc |
 | `SS_ENABLE_THREAD_SAFETY` | 1 | Compile thread-safety support |
 | `SS_ENABLE_INTROSPECTION` | 1 | Signal listing/counting APIs |
-| `SS_ENABLE_CUSTOM_DATA` | 1 | SS_TYPE_CUSTOM support |
+| `SS_ENABLE_CUSTOM_DATA` | 1 | Custom data functions and queuing of SS_TYPE_CUSTOM |
 | `SS_ENABLE_PERFORMANCE_STATS` | 0 | Per-signal timing stats |
 | `SS_ENABLE_MEMORY_STATS` | 0 | Memory usage tracking |
 | `SS_ENABLE_DEBUG_TRACE` | 0 | Debug trace output |

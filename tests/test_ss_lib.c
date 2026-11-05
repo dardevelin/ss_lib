@@ -663,9 +663,9 @@ void test_deferred_custom_copy(void) {
     assert(ss_connect("custom_sig", slot_record_pair, NULL) == SS_OK);
 
     d.type = SS_TYPE_CUSTOM;
-    d.custom_data = &pair;
-    d.size = sizeof(pair);
-    d.custom_cleanup = count_cleanup_on_copy;
+    d.value.custom.ptr = &pair;
+    d.value.custom.size = sizeof(pair);
+    d.value.custom.cleanup = count_cleanup_on_copy;
 
     g_custom_cleanup_on_copy = 0;
     assert(ss_emit_deferred("custom_sig", &d) == SS_OK);
@@ -739,8 +739,8 @@ void test_data_ownership(void) {
         test_pair_t pair = {3, 4};
         memset(&d, 0, sizeof(d));
         d.type = SS_TYPE_CUSTOM;
-        d.custom_data = &pair;
-        d.size = sizeof(pair);
+        d.value.custom.ptr = &pair;
+        d.value.custom.size = sizeof(pair);
         assert(ss_data_set_double(&d, 1.5) == SS_OK);
         assert(pair.a == 3 && pair.b == 4);
     }
@@ -864,8 +864,8 @@ void test_queued_payload_alignment(void) {
     assert(ss_signal_register("aligned") == SS_OK);
     assert(ss_connect("aligned", slot_check_payload_alignment, NULL) == SS_OK);
     d.type = SS_TYPE_CUSTOM;
-    d.custom_data = &value;
-    d.size = sizeof(value);
+    d.value.custom.ptr = &value;
+    d.value.custom.size = sizeof(value);
 
     g_payload_misalignment = 0;
     g_payload_calls = 0;
@@ -1202,16 +1202,68 @@ void test_init_static_pool(void) {
     printf("Static pool initialisation tests passed!\n");
 }
 
-/* A8: a caller built with a different ss_data_t layout is refused */
+/* A8: a caller built with a different ss_data_t layout or ABI revision is
+ * refused */
 void test_abi_check(void) {
     printf("\n=== Testing ABI Check (A8) ===\n");
-    assert(ss_init_abi(sizeof(ss_data_t) + 1) == SS_ERR_CONFIG_MISMATCH);
+    assert(SS_ABI_TAG == sizeof(ss_data_t) * 16u + SS_ABI_REVISION);
+    assert(SS_ABI_REVISION > 0 && SS_ABI_REVISION < 16);
+    assert(ss_init_abi(SS_ABI_TAG + 16u) == SS_ERR_CONFIG_MISMATCH);   /* size */
+    assert(ss_init_abi(SS_ABI_TAG + 1u) == SS_ERR_CONFIG_MISMATCH);    /* revision */
+    assert(ss_init_abi(sizeof(ss_data_t)) == SS_ERR_CONFIG_MISMATCH);  /* 2.x tag */
     assert(ss_signal_exists("anything") == 0);   /* still uninitialised */
-    assert(ss_init_abi(sizeof(ss_data_t)) == SS_OK);
+    assert(ss_init_abi(SS_ABI_TAG) == SS_OK);
+    ss_cleanup();
+    assert(ss_init_static_abi(NULL, 0, SS_ABI_TAG + 1u) == SS_ERR_CONFIG_MISMATCH);
+    assert(ss_init_static_abi(NULL, 0, SS_ABI_TAG) == SS_OK);
     ss_cleanup();
     assert(strcmp(ss_error_string(SS_ERR_CONFIG_MISMATCH), "Unknown error") != 0);
     printf("ABI check tests passed!\n");
 }
+
+/* A8: SS_TYPE_CUSTOM and value.custom exist in every configuration, but a
+ * library built without custom data cannot copy a custom payload, so
+ * queuing one is refused and nothing is emitted later */
+#if !SS_ENABLE_CUSTOM_DATA
+static int g_custom_unsupported_calls = 0;
+
+static void slot_count_custom_unsupported(const ss_data_t* data, void* user_data) {
+    (void)data;
+    (void)user_data;
+    g_custom_unsupported_calls++;
+}
+
+void test_custom_queued_without_support(void) {
+    int value = 7;
+    ss_data_t d = SS_DATA_INIT;
+    ss_batch_t* batch;
+    printf("\n=== Testing Queued Custom Data Without Custom Support (A8) ===\n");
+
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("custom") == SS_OK);
+    assert(ss_connect("custom", slot_count_custom_unsupported, NULL) == SS_OK);
+    d.type = SS_TYPE_CUSTOM;
+    d.value.custom.ptr = &value;
+    d.value.custom.size = sizeof(value);
+    g_custom_unsupported_calls = 0;
+
+    assert(ss_emit_deferred("custom", &d) == SS_ERR_INVALID_TYPE);
+    assert(ss_flush_deferred() == SS_OK);
+    batch = ss_batch_create();
+    assert(batch != NULL);
+    assert(ss_batch_add(batch, "custom", &d) == SS_ERR_INVALID_TYPE);
+    assert(ss_batch_emit(batch) == SS_OK);
+    ss_batch_destroy(batch);
+    assert(g_custom_unsupported_calls == 0);
+
+    /* Emitting directly only passes the caller's object on */
+    assert(ss_emit("custom", &d) == SS_OK);
+    assert(g_custom_unsupported_calls == 1);
+    ss_cleanup();
+    assert(strcmp(ss_error_string(SS_ERR_INVALID_TYPE), "Unknown error") != 0);
+    printf("Queued custom data without custom support tests passed!\n");
+}
+#endif
 
 /* Debug trace writes only to the stream given to ss_enable_trace() */
 #if SS_ENABLE_DEBUG_TRACE
@@ -1401,6 +1453,9 @@ int main(void) {
     test_default_namespace();
     test_init_static_pool();
     test_abi_check();
+#if !SS_ENABLE_CUSTOM_DATA
+    test_custom_queued_without_support();
+#endif
     test_queue_wraparound();
     test_nested_flush();
     test_error_handler_coverage();

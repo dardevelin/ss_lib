@@ -80,8 +80,8 @@ BENCH_BIN = $(BUILD_DIR)/benchmark_ss_lib
 .PHONY: all lib shared tests examples test test_embedded test-static test-minimal \
         test-c89 test-newest test-pauth test-single test-all test-asan test-tsan test-ubsan test-msan \
         test-valgrind coverage benchmark benchmark-all single-header \
-        check-standards check-single-header check-version cppcheck release-notes install \
-        check-install uninstall docs info help clean
+        check-standards check-abi check-single-header check-version cppcheck release-notes \
+        install check-install uninstall docs info help clean
 
 all: lib tests examples
 
@@ -176,8 +176,12 @@ test-pauth:
 check-standards:
 	@scripts/check_standards.sh $(CC)
 
+# Public struct layouts and enum values are the same in every configuration
+check-abi:
+	@scripts/check_abi.sh $(CC)
+
 test-all: test test-static test-minimal test-c89 test-newest test-single \
-          check-standards check-single-header check-version check-install
+          check-standards check-abi check-single-header check-version check-install
 
 # The test suite against include/ss_lib_single.h, the file users copy into
 # their projects, instead of src/ss_lib.c (GHSA-f5pm-2465-f895)
@@ -332,6 +336,7 @@ help:
 	@echo "  test-c89            ... against src/ss_lib_c89.c built as C89"
 	@echo "  test-newest         ... built as the newest C standard CC supports"
 	@echo "  check-standards     compile as C89 ... newest standard with -Werror"
+	@echo "  check-abi           fail if a public layout depends on the configuration"
 	@echo "  test-all            all of the above plus consistency checks"
 	@echo "  test-asan/-tsan/-ubsan/-msan/-valgrind   sanitizer runs"
 	@echo "  coverage            lcov report"
