@@ -7,9 +7,9 @@ SS_Lib provides a signal-slot mechanism for C programs. This reference covers al
 ## Version
 
 ```c
-#define SS_VERSION_MAJOR 2
-#define SS_VERSION_MINOR 2
-#define SS_VERSION_PATCH 1
+#define SS_VERSION_MAJOR 3
+#define SS_VERSION_MINOR 0
+#define SS_VERSION_PATCH 0
 #define SS_VERSION_STRING "3.0.0"
 
 const char* ss_version(void);   /* returns SS_VERSION_STRING of the compiled library */

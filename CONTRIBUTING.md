@@ -122,7 +122,7 @@ SS_Lib follows [semantic versioning](https://semver.org/). Pick the next version
 In a minor or patch release, deprecate instead of removing, and append new enum values instead of inserting them.
 
 1. Move the entries under `## [Unreleased]` in `CHANGELOG.md` to a new `## [x.y.z] - YYYY-MM-DD` section, and update the compare links at the bottom. This section becomes the GitHub release notes (`make release-notes` prints it).
-2. In `include/ss_lib.h`, set `SS_VERSION_MAJOR`/`MINOR`/`PATCH`, `SS_VERSION_STRING` and the `@version` comment.
+2. In `include/ss_lib.h`, set `SS_VERSION_MAJOR`/`MINOR`/`PATCH`, `SS_VERSION_STRING` and the `@version` comment. Update the copies written by hand: the version block and introduction of `docs/api-reference.md`, `docs/README.md`, `docs/architecture.md`, `CLAUDE.md` and `.claude/skills/ss-lib/SKILL.md`; `make check-version` fails until each one matches.
 3. Run `make single-header`, then `make test-all`; it includes `check-version`.
 4. Merge to `main` through a pull request with CI green.
 5. Tag the merge commit on `main` and push the tag:
