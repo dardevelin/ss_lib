@@ -68,7 +68,7 @@ LIB_NAME = $(BUILD_DIR)/libss_lib.a
 LIB_SO = $(BUILD_DIR)/libss_lib.$(SHARED_EXT)
 
 TEST_BINS = $(BUILD_DIR)/test_ss_lib $(BUILD_DIR)/test_simple $(BUILD_DIR)/test_memory \
-    $(BUILD_DIR)/test_isr
+    $(BUILD_DIR)/test_isr $(BUILD_DIR)/test_reentrancy
 ifneq ($(OS),Windows_NT)
     TEST_BINS += $(BUILD_DIR)/test_threads
 endif

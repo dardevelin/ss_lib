@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `tests/test_reentrancy.c`, run by `make test` and ctest in every
+  configuration and under every sanitizer and valgrind: 10,000 seeded random
+  programs whose slots unregister signals, call `ss_cleanup()`, disconnect,
+  emit, queue deferred emissions, flush and run batches, up to four emissions
+  deep, and check every payload they receive. It guards against the bugs in
+  advisory GHSA-f5pm-2465-f895: built against 2.1.1 with AddressSanitizer it
+  fails.
+
 ## [2.2.3] - 2026-11-05
 
 ### Fixed
