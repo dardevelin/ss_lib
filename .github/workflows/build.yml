@@ -43,6 +43,33 @@ jobs:
       - name: Valgrind
         run: make test-valgrind
 
+  linux-arm64:
+    name: Linux arm64 (${{ matrix.cc }})
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [ gcc, clang ]
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Test every configuration
+        run: make -j4 test-all
+
+      - name: Library with pointer authentication below Armv8.3
+        # GCC before 13.4/14.3 miscompiles it (GCC PR target/119372), so the
+        # gcc job checks every GCC installed on the runner
+        run: |
+          if [ "$CC" = clang ]; then ccs=clang; else ccs=$(cd /usr/bin && ls | grep -E '^gcc-[0-9]+$'); fi
+          for cc in $ccs; do
+            echo "== $cc $($cc -dumpfullversion 2>/dev/null || $cc -dumpversion)"
+            make clean > /dev/null
+            make test-pauth CC=$cc || exit 1
+          done
+
   sanitizers:
     name: Sanitizer (${{ matrix.target }})
     runs-on: ubuntu-latest

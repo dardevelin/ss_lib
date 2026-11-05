@@ -27,6 +27,24 @@
 #endif
 /* SS_FEATURE_MACROS_END */
 
+/* GCC before 13.4 and 14.3 (GCC PR target/119372) miscompiles return-
+ * address signing (-mbranch-protection=pac-ret or standard) for a target
+ * with pointer authentication below Armv8.3, which -march=native gives on
+ * several Arm cores: functions authenticate the return address twice
+ * (autiasp, then retaa) and crash on return. Compiling this file without
+ * the PAuth extension keeps the signing (paciasp/autiasp, as for plain
+ * Armv8-A) and returns with ret. Armv8.3 and later (__ARM_FEATURE_JCVT) are
+ * compiled correctly. Not in the single header: there the including file is
+ * built with the same flags, so its own code is affected either way. */
+#if defined(__aarch64__) && defined(__GNUC__) && !defined(__clang__) && \
+    defined(__ARM_FEATURE_PAC_DEFAULT) && !defined(__ARM_FEATURE_JCVT) && \
+    (__GNUC__ < 13 || (__GNUC__ == 13 && __GNUC_MINOR__ < 4) || \
+     (__GNUC__ == 14 && __GNUC_MINOR__ < 3)) && !defined(SS_LIB_SINGLE_IMPLEMENTED)
+#define SS_GCC_PAUTH_WORKAROUND 1
+#pragma GCC push_options
+#pragma GCC target("+nopauth")
+#endif
+
 #include "ss_lib.h"
 #include <stdlib.h>
 #include <string.h>
@@ -1756,4 +1774,8 @@ void ss_enable_trace(FILE* output) {
 void ss_disable_trace(void) {
     ss_enable_trace(NULL);
 }
+#endif
+
+#ifdef SS_GCC_PAUTH_WORKAROUND
+#pragma GCC pop_options
 #endif

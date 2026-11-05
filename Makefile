@@ -77,7 +77,7 @@ EXAMPLE_BINS = $(BUILD_DIR)/example_usage $(BUILD_DIR)/example_embedded_simple
 BENCH_BIN = $(BUILD_DIR)/benchmark_ss_lib
 
 .PHONY: all lib shared tests examples test test_embedded test-static test-minimal \
-        test-c89 test-newest test-all test-asan test-tsan test-ubsan test-msan \
+        test-c89 test-newest test-pauth test-all test-asan test-tsan test-ubsan test-msan \
         test-valgrind coverage benchmark benchmark-all single-header \
         check-standards check-single-header check-version cppcheck release-notes install \
         check-install uninstall docs info help clean
@@ -158,6 +158,17 @@ test-newest:
 	@std=$$(scripts/check_standards.sh --newest $(CC)) && echo "== -std=$$std" && \
 	    $(MAKE) --no-print-directory test BUILD_DIR=build/$$std CSTD=-std=$$std \
 	        LIB_STD="-std=$$std -Werror"
+
+# AArch64 only: the library built with return-address signing for a target
+# that has pointer authentication but is below Armv8.3, as -march=native
+# gives on several Arm cores (Homebrew builds with it). GCC before 13.4 and
+# 14.3 miscompiles such code (GCC PR target/119372). The test programs are
+# built normally, as programs using an installed library are.
+PAUTH_DIR = build/pauth
+test-pauth:
+	@$(MAKE) --no-print-directory test BUILD_DIR=$(PAUTH_DIR) \
+	    LIB_STD="$(LIB_STD) -Werror -march=armv8-a+pauth -mbranch-protection=standard" \
+	    TEST_BINS="$(PAUTH_DIR)/test_ss_lib $(PAUTH_DIR)/test_simple $(PAUTH_DIR)/test_threads"
 
 # Library, public header and single header compile warning-free from C89 to
 # the newest standard $(CC) supports
