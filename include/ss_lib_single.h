@@ -708,7 +708,12 @@ int ss_is_thread_safe(void);
  */
 ss_error_t ss_set_namespace(const char* ns);
 
-/** @brief Current default namespace, or NULL; valid until the next change */
+/**
+ * @brief Current default namespace, or NULL; valid until the next change
+ *
+ * The string is the library's own buffer: with several threads, read it
+ * only while no other thread can call ss_set_namespace().
+ */
 const char* ss_get_namespace(void);
 
 /** @brief Emit "ns::signal_name" regardless of the default namespace */
@@ -2450,11 +2455,15 @@ int ss_is_thread_safe(void) {
 
 #if SS_ENABLE_DEBUG_TRACE
 void ss_enable_trace(FILE* output) {
-    if (g_context) g_context->trace_output = output;
+    int locked;
+    ss_context_t* ctx = ctx_enter(&locked);
+    if (!ctx) return;
+    ctx->trace_output = output;
+    (void)ctx_leave(ctx, locked, SS_OK, NULL);
 }
 
 void ss_disable_trace(void) {
-    if (g_context) g_context->trace_output = NULL;
+    ss_enable_trace(NULL);
 }
 #endif
 #endif /* SS_IMPLEMENTATION */

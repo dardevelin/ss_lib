@@ -220,7 +220,7 @@ All allocation goes through `SS_MALLOC`, `SS_FREE` and `SS_CALLOC` from `ss_conf
 
 ## Error Reporting
 
-Public functions return `ss_error_t`. Failures of calls made while the library is initialized are also reported to the user error handler from `ctx_leave()`, after the mutex is released. Debug trace (`SS_ENABLE_DEBUG_TRACE`) writes to the stream set by `ss_enable_trace()` and is silent until then; the library uses an internal trace function. The public `SS_TRACE` macro in `ss_config.h` is kept only for source compatibility, deprecated and unused by the library.
+Public functions return `ss_error_t`. Failures of calls made while the library is initialized are also reported to the user error handler from `ctx_leave()`, after the mutex is released. Debug trace (`SS_ENABLE_DEBUG_TRACE`) writes to the stream set by `ss_enable_trace()` (stored in the context and changed under the lock) and is silent until then; the library uses an internal trace function. The public `SS_TRACE` macro in `ss_config.h` is kept only for source compatibility, deprecated and unused by the library.
 
 ## Build Variants
 

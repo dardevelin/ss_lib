@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `ss_enable_trace()` and `ss_disable_trace()` (`SS_ENABLE_DEBUG_TRACE`) now
+  take the library lock like the other setters, so changing the trace stream
+  no longer races with threads that are emitting. `make test-tsan` also runs
+  the stress test with trace compiled in and toggled.
+- The `ss_get_namespace()` docs say that the returned buffer must not be read
+  while another thread can call `ss_set_namespace()`.
+
 ## [2.2.1] - 2026-11-04
 
 ### Fixed
