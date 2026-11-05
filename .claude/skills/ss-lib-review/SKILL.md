@@ -253,15 +253,15 @@ ss_connect_ex(bus, "sig", slot, user_data, SS_PRIORITY_HIGH, &handle);
 
 **Consequence:** Each bus's trace is silent until `ss_enable_trace(bus, stream)` names a stream.
 
-**Fix:** Call `ss_enable_trace(bus, stderr)` (or another stream) after creating the bus; `ss_disable_trace(bus)` stops it. The `SS_TRACE` macro in `ss_config.h` is deprecated and unused by the library; flag new uses of it.
+**Fix:** Call `ss_enable_trace(bus, stderr)` (or another stream) after creating the bus; `ss_disable_trace(bus)` stops it. These functions are the only trace interface; 3.0 has no trace macro.
 
 ### 19. Migrating 2.x Code
 
-**Look for:** 2.x calls that 3.0 no longer has (the global init and cleanup functions, the pool-size query, the runtime thread-safety toggle and the static-context macro; `docs/migration-3.0.md` lists them by name), and stateful calls without a bus argument.
+**Look for:** 2.x calls that 3.0 no longer has (the global init and cleanup functions, the pool-size query, the runtime thread-safety toggle, the static-context macro, the trace macro and the two error codes 2.x never returned; `docs/migration-3.0.md` lists them by name), stateful calls without a bus argument, and `ss_get_namespace` used as returning a pointer (it now copies into a caller buffer and returns `ss_error_t`).
 
 **Consequence:** They fail to compile or link; none silently changes meaning.
 
-**Fix:** Follow `docs/migration-3.0.md`: create a bus (`ss_bus_create(&bus, flags)`, or `ss_bus_create_in(&bus, pool, size, flags)` for a pool, sized with `ss_bus_pool_size()`), pass it first to every stateful call, choose thread safety with `SS_BUS_THREAD_SAFE`, destroy it with `ss_bus_destroy(bus)`, and use `SS_STATIC_BUSES` in static mode. Note that a too-small pool is now an error (`SS_ERR_BUFFER_TOO_SMALL`), not a silent fallback.
+**Fix:** Follow `docs/migration-3.0.md`: create a bus (`ss_bus_create(&bus, flags)`, or `ss_bus_create_in(&bus, pool, size, flags)` for a pool, sized with `ss_bus_pool_size()`), pass it first to every stateful call, choose thread safety with `SS_BUS_THREAD_SAFE`, destroy it with `ss_bus_destroy(bus)`, and use `SS_STATIC_BUSES` in static mode. Note that a too-small pool is now an error (`SS_ERR_BUFFER_TOO_SMALL`), not a silent fallback. Replace `const char* ns = ss_get_namespace()` with `char ns[SS_MAX_SIGNAL_NAME_LENGTH]; ss_get_namespace(bus, ns, sizeof(ns))`, and a NULL check on it with `ns[0] == '\0'`.
 
 ### No Longer Issues
 

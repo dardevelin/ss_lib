@@ -207,7 +207,7 @@ Atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins, or MSVC `I
 
 ## Namespace Implementation
 
-Namespaces are syntactic: there is no namespace registry. `ss_set_namespace` copies the namespace into the bus's inline `ns` buffer (`NULL` or `""` clears it; a namespace too long for even `"ns::x"` is `SS_ERR_WOULD_OVERFLOW`). Passing the pointer returned by `ss_get_namespace()` (the buffer itself) is detected and is a no-op. Name resolution (above) applies it to every name-taking function. `ss_emit_namespaced(bus, ns, name, data)` builds `"ns::name"` itself and ignores the default namespace.
+Namespaces are syntactic: there is no namespace registry. `ss_set_namespace` copies the namespace into the bus's inline `ns` buffer (`NULL` or `""` clears it; a namespace too long for even `"ns::x"` is `SS_ERR_WOULD_OVERFLOW`). `ss_get_namespace(bus, buf, size)` copies it out under the bus's lock (`""` when unset; `SS_ERR_BUFFER_TOO_SMALL`, with `buf` set to `""`, when it does not fit), so the buffer is never handed out: a reader cannot see it change, and the argument of `ss_set_namespace` can never point into it, so the copy needs no overlap check. A namespace saved with `ss_get_namespace` restores with `ss_set_namespace`. Name resolution (above) applies the namespace to every name-taking function. `ss_emit_namespaced(bus, ns, name, data)` builds `"ns::name"` itself and ignores the default namespace.
 
 ## Thread Safety
 
@@ -242,7 +242,7 @@ All allocation goes through `SS_MALLOC`, `SS_FREE` and `SS_CALLOC` from `ss_conf
 
 ## Error Reporting
 
-Public functions return `ss_error_t`. Failures of calls on a bus are also reported to that bus's error handler from `bus_leave()`, after the mutex is released. Debug trace (`SS_ENABLE_DEBUG_TRACE`) writes to the stream set by `ss_enable_trace(bus, stream)` (stored in the bus and changed under its lock) and is silent until then; the library uses an internal trace function. The public `SS_TRACE` macro in `ss_config.h` is kept only for source compatibility, deprecated and unused by the library.
+Public functions return `ss_error_t`. Failures of calls on a bus are also reported to that bus's error handler from `bus_leave()`, after the mutex is released. Debug trace (`SS_ENABLE_DEBUG_TRACE`) writes to the stream set by `ss_enable_trace(bus, stream)` (stored in the bus and changed under its lock) and is silent until then; the library uses an internal trace function, and no public trace macro exists.
 
 ## Build Variants
 
