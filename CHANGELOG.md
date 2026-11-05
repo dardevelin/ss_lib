@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `make -j test-all` could fail with "Library not loaded" (macOS) or a
+  missing shared library (Linux): tests, examples and the benchmark linked
+  with `-lss_lib`, which picks the shared library once `check-install` has
+  built it. They now link the static archive by path.
+
 ## [2.2.1] - 2026-11-04
 
 ### Fixed
