@@ -156,11 +156,115 @@ typedef struct {
     unsigned long pushed;  /* entries ever pushed; next entry's seq */
 } ss_queue_t;
 
+/* ISR queue entries, part of every bus. The atomics come from a small
+ * shim: C11 atomics, GCC/Clang builtins, MSVC Interlocked functions, or
+ * plain accesses inside SS_ISR_CRITICAL_ENTER/EXIT. ISR_FREE is 0, so a
+ * zeroed bus has an empty queue. */
+#if SS_ENABLE_ISR_SAFE
+
+#if defined(SS_ISR_CRITICAL_ENTER) && defined(SS_ISR_CRITICAL_EXIT)
+typedef volatile int ss_atomic_int;
+static int ss_atomic_load(ss_atomic_int* p) {
+    int v;
+    SS_ISR_CRITICAL_ENTER();
+    v = *p;
+    SS_ISR_CRITICAL_EXIT();
+    return v;
+}
+static void ss_atomic_store(ss_atomic_int* p, int v) {
+    SS_ISR_CRITICAL_ENTER();
+    *p = v;
+    SS_ISR_CRITICAL_EXIT();
+}
+static int ss_atomic_cas(ss_atomic_int* p, int expected, int desired) {
+    int ok;
+    SS_ISR_CRITICAL_ENTER();
+    ok = (*p == expected);
+    if (ok) *p = desired;
+    SS_ISR_CRITICAL_EXIT();
+    return ok;
+}
+static int ss_atomic_fetch_add(ss_atomic_int* p, int v) {
+    int old;
+    SS_ISR_CRITICAL_ENTER();
+    old = *p;
+    *p = (int)((unsigned int)old + (unsigned int)v);
+    SS_ISR_CRITICAL_EXIT();
+    return old;
+}
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && \
+      !defined(__STDC_NO_ATOMICS__)
+#include <stdatomic.h>
+typedef atomic_int ss_atomic_int;
+static int ss_atomic_load(ss_atomic_int* p) {
+    return atomic_load_explicit(p, memory_order_acquire);
+}
+static void ss_atomic_store(ss_atomic_int* p, int v) {
+    atomic_store_explicit(p, v, memory_order_release);
+}
+static int ss_atomic_cas(ss_atomic_int* p, int expected, int desired) {
+    return atomic_compare_exchange_strong_explicit(p, &expected, desired,
+                                                   memory_order_acq_rel,
+                                                   memory_order_acquire);
+}
+static int ss_atomic_fetch_add(ss_atomic_int* p, int v) {
+    return atomic_fetch_add_explicit(p, v, memory_order_relaxed);
+}
+#elif defined(__GNUC__)
+typedef int ss_atomic_int;
+static int ss_atomic_load(ss_atomic_int* p) {
+    return __atomic_load_n(p, __ATOMIC_ACQUIRE);
+}
+static void ss_atomic_store(ss_atomic_int* p, int v) {
+    __atomic_store_n(p, v, __ATOMIC_RELEASE);
+}
+static int ss_atomic_cas(ss_atomic_int* p, int expected, int desired) {
+    return __atomic_compare_exchange_n(p, &expected, desired, 0,
+                                       __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+static int ss_atomic_fetch_add(ss_atomic_int* p, int v) {
+    return __atomic_fetch_add(p, v, __ATOMIC_RELAXED);
+}
+#elif defined(_MSC_VER)
+typedef volatile long ss_atomic_int;
+static int ss_atomic_load(ss_atomic_int* p) {
+    return (int)InterlockedCompareExchange(p, 0, 0);
+}
+static void ss_atomic_store(ss_atomic_int* p, int v) {
+    InterlockedExchange(p, (long)v);
+}
+static int ss_atomic_cas(ss_atomic_int* p, int expected, int desired) {
+    return InterlockedCompareExchange(p, (long)desired, (long)expected) == (long)expected;
+}
+static int ss_atomic_fetch_add(ss_atomic_int* p, int v) {
+    return (int)InterlockedExchangeAdd(p, (long)v);
+}
+#else
+#error "SS_ENABLE_ISR_SAFE needs C11 atomics, GCC/Clang, MSVC, or SS_ISR_CRITICAL_ENTER/EXIT"
+#endif
+
+enum { ISR_FREE = 0, ISR_WRITING = 1, ISR_READY = 2, ISR_READING = 3 };
+
+typedef struct {
+    ss_atomic_int state;   /* FREE -> WRITING (ISR) -> READY -> READING -> FREE */
+    ss_atomic_int seq;     /* queue order, compared with wrap-around */
+    int value;
+    char signal_name[SS_MAX_SIGNAL_NAME_LENGTH];
+} ss_isr_entry_t;
+#endif /* SS_ENABLE_ISR_SAFE */
+
 /* Where a bus's own storage came from, so ss_bus_destroy() knows how to
  * release it */
 enum { BUS_FREE = 0, BUS_BUILT_IN, BUS_ON_HEAP, BUS_IN_POOL };
 
 struct ss_bus {
+#if SS_ENABLE_ISR_SAFE
+    /* Written by ss_emit_from_isr() without the lock: only through the
+     * atomics, and the name and value of an entry it has claimed. First in
+     * the bus, so Thumb-1 code reaches it with small offsets. */
+    ss_isr_entry_t isr_queue[SS_ISR_QUEUE_SIZE];
+    ss_atomic_int isr_seq;  /* the next event's sequence number */
+#endif
 #if SS_USE_STATIC_MEMORY
     ss_signal_t signals[SS_MAX_SIGNALS];
     ss_slot_t slots[SS_MAX_SLOTS];
@@ -199,9 +303,9 @@ typedef struct {
 } ss_bus_align_probe_t;
 #define SS_BUS_ALIGN offsetof(ss_bus_align_probe_t, bus)
 
-/* Static mode: the built-in buses of ss_bus_create(), in .bss. Apart from
- * the ISR queue, the only library state outside a bus. Claimed and
- * released without a lock (see ss_bus_create_abi). */
+/* Static mode: the built-in buses of ss_bus_create(), in .bss. The only
+ * library state outside a bus. Claimed and released without a lock (see
+ * ss_bus_create_abi). */
 #if SS_USE_STATIC_MEMORY && SS_STATIC_BUSES > 0
 static ss_bus_t g_static_buses[SS_STATIC_BUSES];
 #endif
@@ -812,116 +916,27 @@ static ss_error_t queue_flush(ss_bus_t* bus, ss_queue_t* q, const int* stop) {
 
 #if SS_ENABLE_ISR_SAFE
 
-#if defined(SS_ISR_CRITICAL_ENTER) && defined(SS_ISR_CRITICAL_EXIT)
-typedef volatile int ss_atomic_int;
-static int ss_atomic_load(ss_atomic_int* p) {
-    int v;
-    SS_ISR_CRITICAL_ENTER();
-    v = *p;
-    SS_ISR_CRITICAL_EXIT();
-    return v;
-}
-static void ss_atomic_store(ss_atomic_int* p, int v) {
-    SS_ISR_CRITICAL_ENTER();
-    *p = v;
-    SS_ISR_CRITICAL_EXIT();
-}
-static int ss_atomic_cas(ss_atomic_int* p, int expected, int desired) {
-    int ok;
-    SS_ISR_CRITICAL_ENTER();
-    ok = (*p == expected);
-    if (ok) *p = desired;
-    SS_ISR_CRITICAL_EXIT();
-    return ok;
-}
-static int ss_atomic_fetch_add(ss_atomic_int* p, int v) {
-    int old;
-    SS_ISR_CRITICAL_ENTER();
-    old = *p;
-    *p = (int)((unsigned int)old + (unsigned int)v);
-    SS_ISR_CRITICAL_EXIT();
-    return old;
-}
-#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && \
-      !defined(__STDC_NO_ATOMICS__)
-#include <stdatomic.h>
-typedef atomic_int ss_atomic_int;
-static int ss_atomic_load(ss_atomic_int* p) {
-    return atomic_load_explicit(p, memory_order_acquire);
-}
-static void ss_atomic_store(ss_atomic_int* p, int v) {
-    atomic_store_explicit(p, v, memory_order_release);
-}
-static int ss_atomic_cas(ss_atomic_int* p, int expected, int desired) {
-    return atomic_compare_exchange_strong_explicit(p, &expected, desired,
-                                                   memory_order_acq_rel,
-                                                   memory_order_acquire);
-}
-static int ss_atomic_fetch_add(ss_atomic_int* p, int v) {
-    return atomic_fetch_add_explicit(p, v, memory_order_relaxed);
-}
-#elif defined(__GNUC__)
-typedef int ss_atomic_int;
-static int ss_atomic_load(ss_atomic_int* p) {
-    return __atomic_load_n(p, __ATOMIC_ACQUIRE);
-}
-static void ss_atomic_store(ss_atomic_int* p, int v) {
-    __atomic_store_n(p, v, __ATOMIC_RELEASE);
-}
-static int ss_atomic_cas(ss_atomic_int* p, int expected, int desired) {
-    return __atomic_compare_exchange_n(p, &expected, desired, 0,
-                                       __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
-}
-static int ss_atomic_fetch_add(ss_atomic_int* p, int v) {
-    return __atomic_fetch_add(p, v, __ATOMIC_RELAXED);
-}
-#elif defined(_MSC_VER)
-typedef volatile long ss_atomic_int;
-static int ss_atomic_load(ss_atomic_int* p) {
-    return (int)InterlockedCompareExchange(p, 0, 0);
-}
-static void ss_atomic_store(ss_atomic_int* p, int v) {
-    InterlockedExchange(p, (long)v);
-}
-static int ss_atomic_cas(ss_atomic_int* p, int expected, int desired) {
-    return InterlockedCompareExchange(p, (long)desired, (long)expected) == (long)expected;
-}
-static int ss_atomic_fetch_add(ss_atomic_int* p, int v) {
-    return (int)InterlockedExchangeAdd(p, (long)v);
-}
-#else
-#error "SS_ENABLE_ISR_SAFE needs C11 atomics, GCC/Clang, MSVC, or SS_ISR_CRITICAL_ENTER/EXIT"
-#endif
-
-enum { ISR_FREE = 0, ISR_WRITING = 1, ISR_READY = 2, ISR_READING = 3 };
-
-typedef struct {
-    ss_atomic_int state;   /* FREE -> WRITING (ISR) -> READY -> READING -> FREE */
-    ss_atomic_int seq;     /* queue order, compared with wrap-around */
-    int value;
-    char signal_name[SS_MAX_SIGNAL_NAME_LENGTH];
-} ss_isr_entry_t;
-
-/* The ISR queue is global, shared by every bus: ss_emit_from_isr() takes no
- * bus and works before any bus exists, and ss_process_isr_queue(bus)
- * delivers to the bus it is given. Destroying a bus leaves queued events
- * for the next bus that processes the queue. */
-static ss_isr_entry_t g_isr_queue[SS_ISR_QUEUE_SIZE];
-static ss_atomic_int g_isr_seq;
-
-ss_error_t ss_emit_from_isr(const char* signal_name, int value) {
+/* Each bus has its own ISR queue (bus->isr_queue, bus->isr_seq), and
+ * ss_process_isr_queue(bus) delivers only the events queued on that bus.
+ * ss_emit_from_isr() takes no lock and touches nothing else in the bus, so
+ * it may run during any other call on the bus except ss_bus_destroy(): the
+ * caller disables the interrupts that emit on a bus before destroying it.
+ * The queued events go with the bus's memory; destruction never reads an
+ * entry or waits for one, so an entry still being written (WRITING) cannot
+ * stall or confuse it. */
+ss_error_t ss_emit_from_isr(ss_bus_t* bus, const char* signal_name, int value) {
     size_t len, i;
-    if (!signal_name || signal_name[0] == '\0') return SS_ERR_NULL_PARAM;
+    if (!bus || !signal_name || signal_name[0] == '\0') return SS_ERR_NULL_PARAM;
     for (len = 0; len < SS_MAX_SIGNAL_NAME_LENGTH && signal_name[len]; len++) {
     }
     if (len == SS_MAX_SIGNAL_NAME_LENGTH) return SS_ERR_WOULD_OVERFLOW;
 
     for (i = 0; i < SS_ISR_QUEUE_SIZE; i++) {
-        ss_isr_entry_t* e = &g_isr_queue[i];
+        ss_isr_entry_t* e = &bus->isr_queue[i];
         if (ss_atomic_cas(&e->state, ISR_FREE, ISR_WRITING)) {
             memcpy(e->signal_name, signal_name, len + 1);
             e->value = value;
-            ss_atomic_store(&e->seq, ss_atomic_fetch_add(&g_isr_seq, 1));
+            ss_atomic_store(&e->seq, ss_atomic_fetch_add(&bus->isr_seq, 1));
             ss_atomic_store(&e->state, ISR_READY);   /* publishes the fields */
             return SS_OK;
         }
@@ -950,8 +965,8 @@ ss_error_t ss_process_isr_queue(ss_bus_t* bus) {
         n = 0;
         for (i = 0; i < SS_ISR_QUEUE_SIZE; i++) {
             unsigned int seq;
-            if (ss_atomic_load(&g_isr_queue[i].state) != ISR_READY) continue;
-            seq = (unsigned int)ss_atomic_load(&g_isr_queue[i].seq);
+            if (ss_atomic_load(&bus->isr_queue[i].state) != ISR_READY) continue;
+            seq = (unsigned int)ss_atomic_load(&bus->isr_queue[i].seq);
             for (j = n; j > 0 && (int)(seq - seqs[j - 1]) < 0; j--) {
                 order[j] = order[j - 1];
                 seqs[j] = seqs[j - 1];
@@ -963,7 +978,7 @@ ss_error_t ss_process_isr_queue(ss_bus_t* bus) {
     } while (n != previous && ++scans <= SS_ISR_QUEUE_SIZE);
 
     for (i = 0; i < n && !bus->closing; i++) {
-        ss_isr_entry_t* e = &g_isr_queue[order[i]];
+        ss_isr_entry_t* e = &bus->isr_queue[order[i]];
         ss_data_t data = data_of(SS_TYPE_INT);
         ss_error_t err = SS_OK;
         const char* qualified;

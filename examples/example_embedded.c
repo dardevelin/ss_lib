@@ -17,6 +17,10 @@
 #error "Build this example with the embedded configuration: make test_embedded"
 #endif
 
+/* The bus the ISRs emit on. Set before the interrupts that emit are
+ * enabled; they are disabled again before the bus is destroyed. */
+static ss_bus_t* bus = NULL;
+
 /* Simulated hardware registers */
 static volatile uint16_t ADC_VALUE = 0;
 static volatile uint8_t BUTTON_STATE = 0;
@@ -78,14 +82,14 @@ void on_button_pressed(const ss_data_t* data, void* user_data) {
 
 /* user_data: the bus, connected below */
 void on_timer_tick(const ss_data_t* data, void* user_data) {
-    ss_bus_t* bus = (ss_bus_t*)user_data;
+    ss_bus_t* slot_bus = (ss_bus_t*)user_data;   /* a slot gets its bus this way */
     static uint32_t last_report = 0;
     uint32_t ticks = ss_data_get_int(data, 0);
     
     /* Report every 10 ticks */
     if (ticks - last_report >= 10) {
         ss_memory_stats_t stats;
-        ss_get_memory_stats(bus, &stats);
+        ss_get_memory_stats(slot_bus, &stats);
         
         printf("[TIMER] Tick %lu - Signals: %zu/%zu, Slots: %zu/%zu\n",
                (unsigned long)ticks,
@@ -102,7 +106,7 @@ void ADC_ISR(void) {
     ADC_VALUE = 650 + (TIMER_TICKS % 200);  /* Simulate temperature rise */
     
     /* Emit from ISR - no malloc, no locks */
-    ss_emit_from_isr("adc_ready", ADC_VALUE);
+    ss_emit_from_isr(bus, "adc_ready", ADC_VALUE);
 }
 
 void TIMER_ISR(void) {
@@ -110,12 +114,12 @@ void TIMER_ISR(void) {
     
     /* Check temperature threshold */
     if (g_app_state.temperature > g_app_state.threshold) {
-        ss_emit_from_isr("temp_critical", 1);
+        ss_emit_from_isr(bus, "temp_critical", 1);
     }
     
     /* Periodic tick */
     if (TIMER_TICKS % 5 == 0) {
-        ss_emit_from_isr("timer_tick", TIMER_TICKS);
+        ss_emit_from_isr(bus, "timer_tick", TIMER_TICKS);
     }
 }
 
@@ -125,7 +129,7 @@ void GPIO_ISR(void) {
     
     /* Detect rising edge */
     if (current && !prev_state) {
-        ss_emit_from_isr("button_press", current);
+        ss_emit_from_isr(bus, "button_press", current);
     }
     
     prev_state = current;
@@ -133,7 +137,6 @@ void GPIO_ISR(void) {
 
 /* Main application */
 int main(void) {
-    ss_bus_t* bus = NULL;
     ss_error_t err;
     ss_memory_stats_t mem_stats;
     ss_perf_stats_t perf_stats;
@@ -230,8 +233,10 @@ int main(void) {
     printf("RAM per bus: %zu bytes (ss_bus_pool_size(), with alignment slack)\n",
            ss_bus_pool_size());
     
-    /* Disable the interrupts that emit, then release the bus */
+    /* Disable the interrupts that emit, then release the bus: destroying it
+     * drops the events still queued on it */
     ss_bus_destroy(bus);
+    bus = NULL;
     
     return 0;
 }

@@ -295,7 +295,7 @@ static void benchmark_isr_emit(benchmark_result_t* result) {
     counter = 0;
     for (int i = 0; i < result->iterations; i++) {
         uint64_t start = get_time_ns();
-        ss_emit_from_isr("bench_isr", i);
+        ss_emit_from_isr(bus, "bench_isr", i);
         uint64_t end = get_time_ns();
         
         uint64_t elapsed = end - start;
