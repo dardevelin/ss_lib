@@ -16,7 +16,8 @@ make test             # test_ss_lib, test_simple, test_memory, test_isr,
                       #   test_reentrancy, test_threads
 make test-all         # test + test-static + test-minimal + test-c89 + test-newest
                       #   + test-single (the suite against include/ss_lib_single.h)
-                      #   + check-standards + check-single-header + check-version
+                      #   + check-standards + check-abi (public layouts identical in
+                      #     every configuration) + check-single-header + check-version
                       #   + check-install (make install into build/, use it via
                       #     pkg-config flags and find_package, uninstall)
                       #   (run before finishing)
@@ -52,7 +53,7 @@ ctest names: `test_basic`, `test_simple`, `test_memory`, `test_isr`, `test_reent
 
 ## Configuration Must Match Across Library and Callers
 
-All configuration is compile-time macros in `include/ss_config.h`; they gate code and declarations in `include/ss_lib.h`. `ss_init_abi(SS_ABI_TAG)` (caller's `sizeof(ss_data_t)`) returns `SS_ERR_CONFIG_MISMATCH` on a layout mismatch; plain `ss_init()` cannot check. Never `#define` configuration inside a source file (the examples take it from the command line). Public macros and signatures cannot be removed or turned into macros in a minor release: deprecate instead. Presets (`SS_MINIMAL_BUILD`, `SS_EMBEDDED_BUILD`) sit at the top of `ss_config.h` because other defaults depend on them.
+All configuration is compile-time macros in `include/ss_config.h`; they gate code and function declarations in `include/ss_lib.h`, but never a public type's layout or an enum value: no `#if` inside a public struct, union or enum body. `make check-abi` (`scripts/check_abi.sh`, in `test-all` and CI) enforces this by comparing every public struct's size and offsets and every enum value across all configurations. `ss_init_abi(SS_ABI_TAG)` (`sizeof(ss_data_t)` and `SS_ABI_REVISION`; bump the revision when a public layout changes) returns `SS_ERR_CONFIG_MISMATCH` when caller and library disagree; plain `ss_init()` cannot check. Never `#define` configuration inside a source file (the examples take it from the command line). Public macros and signatures cannot be removed or turned into macros in a minor release: deprecate instead. Presets (`SS_MINIMAL_BUILD`, `SS_EMBEDDED_BUILD`) sit at the top of `ss_config.h` because other defaults depend on them.
 
 ## Architecture
 

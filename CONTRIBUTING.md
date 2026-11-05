@@ -91,6 +91,7 @@ ss_error_t ss_example_function(const char* param) {
 - `include/ss_lib_single.h` is generated. After changing `include/ss_lib.h`, `include/ss_config.h` or `src/ss_lib.c`, run `make single-header` and commit the result; `make check-single-header` fails CI when it is stale. Never edit it by hand.
 - The version lives only in `include/ss_lib.h`; the Makefile, CMake, Doxygen, pkg-config and the shared library's soname read it from there. See [Releasing](#releasing).
 - Configuration macros must not be `#define`d in examples or tests; pass them on the command line so the library and its callers agree.
+- Configuration macros may gate functions and code, never a public type's layout or an enum value: no `#if` inside a public struct, union or enum body in `include/ss_lib.h`. `make check-abi` fails otherwise. When a public layout changes on purpose (a major version), bump `SS_ABI_REVISION`.
 
 ### Commit Messages
 

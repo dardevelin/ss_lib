@@ -457,6 +457,7 @@ make test-c89       # ... against src/ss_lib_c89.c built as C89
 make test-newest    # ... built as the newest C standard the compiler supports
 make test-single    # ... against the generated single header (dynamic and static)
 make check-standards  # Compile as C89, C99, C11, C17, C23 and C2y with -Werror
+make check-abi     # Public struct sizes, offsets and enum values identical in every configuration
 make test-all       # All of the above plus check-single-header, check-version, check-install
 make test_embedded  # Embedded examples against an SS_EMBEDDED_BUILD library
 make test-pauth     # arm64: library built with pointer authentication below Armv8.3
