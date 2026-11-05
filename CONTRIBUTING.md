@@ -10,6 +10,8 @@ By participating in this project, you agree to maintain a respectful and constru
 
 ### Reporting Bugs
 
+Report security vulnerabilities privately, as [SECURITY.md](SECURITY.md) describes, not in a public issue.
+
 Before creating bug reports, please check existing issues to avoid duplicates. When creating a bug report, include:
 
 - A clear and descriptive title
