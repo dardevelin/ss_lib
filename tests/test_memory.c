@@ -96,8 +96,9 @@ static void count_slot(const ss_data_t* data, void* user_data) {
     g_calls++;
 }
 
-/* Exercise every path that registers, connects, emits, defers or tears
- * down on one bus, leaving deferred entries pending for ss_bus_destroy(). */
+/* Exercise every path that registers, connects, emits, defers, queues from
+ * an ISR or tears down on one bus, leaving deferred and ISR entries pending
+ * for ss_bus_destroy(). */
 static void run_core_paths_on(ss_bus_t* bus) {
     ss_data_t s;
     ss_connection_t handle = 0;
@@ -130,6 +131,11 @@ static void run_core_paths_on(ss_bus_t* bus) {
     }
 #endif
     assert(ss_emit_deferred(bus, "b", &s) == SS_OK);       /* left pending */
+#if SS_ENABLE_ISR_SAFE
+    assert(ss_emit_from_isr(bus, "b", 1) == SS_OK);
+    assert(ss_process_isr_queue(bus) == SS_OK);
+    assert(ss_emit_from_isr(bus, "b", 2) == SS_OK);       /* dropped by destroy */
+#endif
     assert(ss_disconnect_handle(bus, handle) == SS_OK);
     assert(ss_disconnect(bus, "a", count_slot) == SS_OK);
     assert(ss_signal_unregister(bus, "a") == SS_OK);

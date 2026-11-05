@@ -135,7 +135,7 @@ Configuration must be identical for the library and every file that includes `ss
 | `SS_DEFERRED_QUEUE_SIZE` | 64 | Deferred emission queue depth |
 | `SS_DEFERRED_PAYLOAD_SIZE` | 32 | Bytes of string/custom data per deferred or batch entry (static mode) |
 | `SS_BATCH_MAX_ENTRIES` | `SS_DEFERRED_QUEUE_SIZE` | Entries per batch |
-| `SS_ISR_QUEUE_SIZE` | 16 | ISR queue depth |
+| `SS_ISR_QUEUE_SIZE` | 16 | ISR queue depth, per bus |
 | `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` | undefined | Interrupt disable/restore for targets without atomic compare-and-swap (Cortex-M0, AVR) |
 
 See the [Configuration Guide](docs/configuration.md) for all options.
@@ -181,7 +181,7 @@ Strings are copied with `SS_MALLOC`, so these three route every allocation. `SS_
 
 ### Buses
 
-Every function that uses library state takes `ss_bus_t* bus` as its first argument; the tables below leave it out where it is the only change. `ss_version()`, `ss_error_string()`, `ss_free_signal_list()`, the data functions, `ss_emit_from_isr()` and the batch functions other than `ss_batch_create()` take no bus.
+Every function that uses library state takes `ss_bus_t* bus` as its first argument; the tables below leave it out where it is the only change. `ss_version()`, `ss_error_string()`, `ss_free_signal_list()`, the data functions and the batch functions other than `ss_batch_create()` take no bus.
 
 | Function | Description |
 |----------|-------------|
@@ -223,8 +223,8 @@ Both create macros pass `SS_ABI_TAG` to `ss_bus_create_abi()` / `ss_bus_create_i
 | `ss_emit_double(signal, value)` | Emit double |
 | `ss_emit_string(signal, str)` | Emit string |
 | `ss_emit_pointer(signal, ptr)` | Emit pointer |
-| `ss_emit_from_isr(signal, value)` | Queue an int event from an ISR (no bus: one queue shared by every bus) |
-| `ss_process_isr_queue(bus)` | Deliver queued ISR events to the bus (main loop) |
+| `ss_emit_from_isr(signal, value)` | Queue an int event on the bus from an ISR (each bus has its own queue) |
+| `ss_process_isr_queue(bus)` | Deliver the bus's queued ISR events (main loop) |
 
 ### Namespaces
 
@@ -406,16 +406,18 @@ printf("Slots: %zu/%zu\n", mem.slots_used, mem.slots_allocated);
  * (the same flags for the library and this file) */
 #include "ss_lib.h"
 
+static ss_bus_t* bus;   /* set before the ADC interrupt is enabled */
+
 void ADC_ISR(void) {
     uint16_t value = ADC->DATA;
-    ss_emit_from_isr("adc_ready", value);   /* queued, no slot runs here */
+    ss_emit_from_isr(bus, "adc_ready", value);   /* queued, no slot runs here */
 }
 
 int main(void) {
-    ss_bus_t* bus = NULL;
     ss_bus_create(&bus, 0);                 /* the built-in bus: no heap */
     ss_signal_register(bus, "adc_ready");
     ss_connect(bus, "adc_ready", on_adc_ready, NULL);
+    enable_adc_interrupt();                 /* only once the bus exists */
     for (;;) {
         ss_process_isr_queue(bus);          /* slots run here */
     }

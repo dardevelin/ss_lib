@@ -32,7 +32,7 @@ make test_embedded
 ```
 
 Covers:
-- Queueing events from simulated ISRs with `ss_emit_from_isr()`
+- Queueing events from simulated ISRs with `ss_emit_from_isr(bus, ...)`, the bus kept in a global that is set before the "interrupts" run
 - Delivering them from the main loop with `ss_process_isr_queue()`
 - Static memory with the `SS_EMBEDDED_BUILD` preset: the bus is the built-in one, and the example prints its size (`ss_bus_pool_size()`)
 - Memory statistics and per-signal profiling

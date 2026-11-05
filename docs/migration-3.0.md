@@ -86,13 +86,14 @@ number of arguments changes; no call silently changes meaning.
 | `ss_connect`, `ss_connect_ex`, `ss_disconnect`, `ss_disconnect_handle`, `ss_disconnect_all` | `ss_data_*` |
 | `ss_emit`, `ss_emit_void`, `ss_emit_int`, `ss_emit_float`, `ss_emit_double`, `ss_emit_string`, `ss_emit_pointer`, `ss_emit_namespaced` | `ss_free_signal_list` |
 | `ss_emit_deferred`, `ss_flush_deferred` | `ss_batch_add`, `ss_batch_emit`, `ss_batch_destroy` (the batch knows its bus) |
-| `ss_set_namespace`, `ss_get_namespace` (which also copies into a buffer, see [below](#removed-and-changed-in-passing)) | `ss_emit_from_isr` (until the ISR queue moves into the bus) |
+| `ss_set_namespace`, `ss_get_namespace` (which also copies into a buffer, see [below](#removed-and-changed-in-passing)) | |
 | `ss_get_signal_count`, `ss_get_signal_list` | |
 | `ss_get_memory_stats`, `ss_reset_memory_stats` | |
 | `ss_get_perf_stats`, `ss_enable_profiling`, `ss_reset_perf_stats` | |
 | `ss_set_error_handler`, `ss_set_max_slots_per_signal`, `ss_get_max_slots_per_signal` | |
 | `ss_enable_trace`, `ss_disable_trace` | |
-| `ss_process_isr_queue`, `ss_batch_create` | |
+| `ss_emit_from_isr`, `ss_process_isr_queue` (see [ISR queue](#isr-queue)) | |
+| `ss_batch_create` | |
 
 For code that has one bus in a variable named `bus`, this `sed` command adds
 the argument to every call in the table. It needs GNU sed (`gsed` on
@@ -102,7 +103,7 @@ across lines before the opening parenthesis.
 ```sh
 sed -i -E \
   -e 's/\b(ss_flush_deferred|ss_get_signal_count|ss_reset_memory_stats|ss_reset_perf_stats|ss_get_max_slots_per_signal|ss_disable_trace|ss_process_isr_queue|ss_batch_create)\(\s*\)/\1(bus)/g' \
-  -e 's/\b(ss_signal_register(_ex)?|ss_signal_unregister|ss_signal_exists|ss_connect(_ex)?|ss_disconnect(_handle|_all)?|ss_emit(_void|_int|_float|_double|_string|_pointer|_namespaced|_deferred)?|ss_set_namespace|ss_get_signal_list|ss_get_memory_stats|ss_get_perf_stats|ss_enable_profiling|ss_set_error_handler|ss_set_max_slots_per_signal|ss_enable_trace)\(/\1(bus, /g' \
+  -e 's/\b(ss_signal_register(_ex)?|ss_signal_unregister|ss_signal_exists|ss_connect(_ex)?|ss_disconnect(_handle|_all)?|ss_emit(_void|_int|_float|_double|_string|_pointer|_namespaced|_deferred|_from_isr)?|ss_set_namespace|ss_get_signal_list|ss_get_memory_stats|ss_get_perf_stats|ss_enable_profiling|ss_set_error_handler|ss_set_max_slots_per_signal|ss_enable_trace)\(/\1(bus, /g' \
   src/*.c
 ```
 
@@ -191,11 +192,37 @@ of its own slots can still be destroyed, but not used.
 
 ## ISR queue
 
-Not landed yet: `ss_emit_from_isr()` takes the bus. For now the ISR queue is
-still shared by every bus: `ss_emit_from_isr(name, value)` is unchanged and
-`ss_process_isr_queue(bus)` delivers the queued events to the given bus.
-Destroying a bus no longer drops queued events; they wait for the next
-`ss_process_isr_queue()`.
+Each bus has its own ISR queue, so `ss_emit_from_isr()` takes the bus:
+
+```c
+/* 2.x */
+void ADC_IRQHandler(void) {
+    ss_emit_from_isr("adc_ready", ADC->DR);
+}
+/* main loop: */ ss_process_isr_queue();
+
+/* 3.0 */
+static ss_bus_t* bus;   /* set before the interrupt is enabled */
+void ADC_IRQHandler(void) {
+    ss_emit_from_isr(bus, "adc_ready", ADC->DR);
+}
+/* main loop: */ ss_process_isr_queue(bus);
+```
+
+- An ISR needs the bus pointer: keep it in a global that the program sets
+  before enabling the interrupts that emit.
+- **Create the bus before enabling those interrupts.** In 2.x the queue was
+  a global array, usable before `ss_init()`. In 3.0 there is no queue
+  without a bus; a NULL bus returns `SS_ERR_NULL_PARAM` and queues nothing.
+- **Disable those interrupts before `ss_bus_destroy()`.** Destroying a bus
+  drops the events still queued on it, as `ss_cleanup()` did, and frees or
+  recycles its memory, which an interrupt must not write into afterwards.
+- `ss_process_isr_queue(bus)` delivers only the events queued on that bus.
+  A program with several buses queues each event on the bus that should
+  deliver it.
+- RAM: the queue (`SS_ISR_QUEUE_SIZE` entries, 704 bytes with the defaults
+  on 32-bit targets) is now inside each bus. A program with one bus uses
+  the same RAM as in 2.x; each further bus costs the queue again.
 ## Data ownership
 
 `ss_data_t` has a new `owned` field. The library frees a string or custom

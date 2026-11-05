@@ -233,12 +233,15 @@ size_t ss_bus_pool_size(void);
 /**
  * @brief Destroy a bus and everything it holds
  *
- * Releases signals, slots and pending deferred emissions. NULL is a no-op.
+ * Releases signals, slots, pending deferred emissions and the events
+ * still in the bus's ISR queue. NULL is a no-op.
  * Called from a slot, the destruction is deferred until the bus's
  * outermost call returns; meanwhile the bus refuses every call
- * (SS_ERR_NULL_PARAM). Afterwards the bus must not be used, like memory
- * after free(). Destroy batches created for the bus first. Not
- * thread-safe with respect to other threads using the same bus.
+ * (SS_ERR_NULL_PARAM) except ss_emit_from_isr(), whose events are dropped.
+ * Afterwards the bus must not be used, like memory after free(). Destroy
+ * batches created for the bus first, and disable the interrupts (or stop
+ * the threads) that call ss_emit_from_isr() on it. Not thread-safe with
+ * respect to other threads using the same bus.
  */
 void ss_bus_destroy(ss_bus_t* bus);
 
@@ -408,25 +411,27 @@ ss_error_t ss_emit_pointer(ss_bus_t* bus, const char* signal_name, void* value);
 
 #if SS_ENABLE_ISR_SAFE
 /**
- * @brief Queue an integer event from an interrupt handler
+ * @brief Queue an integer event on bus from an interrupt handler
  *
- * No locks, no allocation, no slot calls: the event is stored in a
+ * No locks, no allocation, no slot calls: the event is stored in the bus's
  * fixed queue of SS_ISR_QUEUE_SIZE entries and delivered later by
- * ss_process_isr_queue(). Safe with nested interrupts and from several
- * threads. The queue is shared by every bus and usable before any bus
- * exists; an event goes to the bus that next processes the queue.
+ * ss_process_isr_queue(bus). Safe with nested interrupts, from several
+ * threads, and during any other call on the bus, with or without
+ * SS_BUS_THREAD_SAFE. Create the bus before enabling the interrupts that
+ * emit on it, and disable them before ss_bus_destroy(bus).
  *
- * @return SS_OK, SS_ERR_NULL_PARAM, or SS_ERR_WOULD_OVERFLOW if the
- *         queue is full or the name exceeds SS_MAX_SIGNAL_NAME_LENGTH-1
+ * @return SS_OK, SS_ERR_NULL_PARAM for a NULL bus or a NULL or empty name
+ *         (nothing is queued), or SS_ERR_WOULD_OVERFLOW if the bus's queue
+ *         is full or the name exceeds SS_MAX_SIGNAL_NAME_LENGTH-1
  */
-ss_error_t ss_emit_from_isr(const char* signal_name, int value);
+ss_error_t ss_emit_from_isr(ss_bus_t* bus, const char* signal_name, int value);
 
 /**
- * @brief Deliver queued ISR events to bus, oldest first, from normal context
+ * @brief Deliver bus's queued ISR events, oldest first, from normal context
  *
- * Call regularly from the main loop. Names are resolved against the bus's
- * default namespace at delivery time. Events stay queued when a bus is
- * destroyed.
+ * Call regularly from the main loop. Delivers only the events queued on
+ * this bus. Names are resolved against the bus's default namespace at
+ * delivery time. Destroying the bus drops the events still queued.
  *
  * @return SS_OK, SS_ERR_NULL_PARAM for a NULL or closing bus, or the last
  *         emission error (e.g. SS_ERR_NOT_FOUND for unknown signals)

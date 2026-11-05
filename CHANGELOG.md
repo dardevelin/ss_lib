@@ -38,10 +38,17 @@ lists what changes for programs written for 2.x.
   `SS_STATIC_CONTEXT`, and returns `SS_ERR_WOULD_OVERFLOW` when all are in
   use; static mode never allocates a bus. Claiming and releasing built-in
   buses is not locked.
-- The ISR queue stays shared by every bus for now: `ss_emit_from_isr()` takes
-  no bus and works before any bus exists, `ss_process_isr_queue(bus)`
-  delivers to the given bus, and destroying a bus leaves queued events in
-  place (`ss_cleanup()` dropped them).
+- **Breaking:** each bus has its own ISR queue and sequence counter (A9):
+  `ss_emit_from_isr(bus, signal_name, value)` queues on that bus and
+  `ss_process_isr_queue(bus)` delivers only that bus's events, oldest first
+  also when an interrupt arrives during the scan. The path still takes no
+  lock and never allocates. A NULL bus returns `SS_ERR_NULL_PARAM`.
+  `ss_bus_destroy()` drops the bus's queued events, as `ss_cleanup()` did:
+  create the bus before enabling the interrupts that emit, and disable them
+  before destroying it. The queue (`SS_ISR_QUEUE_SIZE` entries, 704 bytes
+  with the static-mode defaults on 32-bit targets) is now part of each bus,
+  so a one-bus program uses the same RAM as 2.x and each further bus costs
+  the queue again.
 - **Breaking:** `ss_data_t` records whether it owns its payload (S12). The new
   `owned` field (in the padding after `type`) is set only by the copying
   setters `ss_data_set_string()` and `ss_data_set_custom()`, and the library

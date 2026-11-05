@@ -56,7 +56,7 @@ const char* ss_version(void);                      // == SS_VERSION_STRING
 - `ss_bus_create(&bus, flags)` — Dynamic mode: allocates the bus with `SS_CALLOC` (safe from any thread). Static mode (`SS_USE_STATIC_MEMORY`): takes one of `SS_STATIC_BUSES` built-in buses (default 1, in `.bss`), never the heap; returns `SS_ERR_WOULD_OVERFLOW` when all are in use. Claiming and releasing built-in buses is not locked: create and destroy them from one thread (normally at startup).
 - `ss_bus_create_in(&bus, pool, size, flags)` — Places the bus in caller memory, in either mode. Any alignment; `ss_bus_pool_size()` bytes always suffice. A NULL pool returns `SS_ERR_NULL_PARAM`, a smaller one `SS_ERR_BUFFER_TOO_SMALL` (no fallback to the heap). The pool must outlive the bus and is never freed by the library. Signals and slots still follow the memory mode.
 - Both: `flags` is 0 or `SS_BUS_THREAD_SAFE`. `SS_ERR_CONFIG_MISMATCH` when the caller's `SS_ABI_TAG` (`sizeof(ss_data_t) * 16 + SS_ABI_REVISION`) differs from the library's (another version, `-fshort-enums`, packing), or for a flag the library lacks (`SS_BUS_THREAD_SAFE` without `SS_ENABLE_THREAD_SAFETY`, or unknown bits). `*bus` is NULL on every failure; always check the result. FFI callers that cannot use macros call the `_abi` functions with the tag computed on their side.
-- `ss_bus_destroy(bus)` — Releases signals, slots and pending deferred entries. NULL is a no-op. Called from a slot, it is deferred until the bus's outermost call returns; meanwhile the remaining slots are skipped and the bus refuses every call (`SS_ERR_NULL_PARAM`, 0 or NULL). Not thread-safe with respect to other threads using the same bus. Other buses are not affected.
+- `ss_bus_destroy(bus)` — Releases signals, slots, pending deferred entries and queued ISR events. NULL is a no-op. Disable the interrupts that call `ss_emit_from_isr()` on the bus first. Called from a slot, it is deferred until the bus's outermost call returns; meanwhile the remaining slots are skipped and the bus refuses every call (`SS_ERR_NULL_PARAM`, 0 or NULL). Not thread-safe with respect to other threads using the same bus. Other buses are not affected.
 - Version macros: `SS_VERSION_MAJOR`, `SS_VERSION_MINOR`, `SS_VERSION_PATCH`, `SS_VERSION_STRING`.
 
 ### Signals (4 functions)
@@ -104,13 +104,13 @@ ss_error_t ss_emit_float(ss_bus_t* bus, const char* signal_name, float value);
 ss_error_t ss_emit_double(ss_bus_t* bus, const char* signal_name, double value);
 ss_error_t ss_emit_string(ss_bus_t* bus, const char* signal_name, const char* value);
 ss_error_t ss_emit_pointer(ss_bus_t* bus, const char* signal_name, void* value);
-ss_error_t ss_emit_from_isr(const char* signal_name, int value);  // Requires SS_ENABLE_ISR_SAFE
+ss_error_t ss_emit_from_isr(ss_bus_t* bus, const char* signal_name, int value);  // Requires SS_ENABLE_ISR_SAFE
 ```
 
 - Type-specific helpers (`ss_emit_int`, `ss_emit_float`, etc.) construct a stack-local `ss_data_t` and call `ss_emit()`.
 - Slots may call any library function, including emitting, unregistering or `ss_bus_destroy()` on their own bus. A slot that needs its bus gets it through `user_data` (the slot signature has no bus).
-- `ss_emit_from_isr()` — int only, takes **no bus**. No locks, no allocation, no slot calls; claims an entry of one global queue shared by every bus, with atomic compare-and-swap, so it is safe with nested interrupts and from several threads, and usable before any bus exists. Returns `SS_ERR_NULL_PARAM` for NULL/empty names, `SS_ERR_WOULD_OVERFLOW` if the queue (`SS_ISR_QUEUE_SIZE`, default 16) is full or the name is too long.
-- `ss_error_t ss_process_isr_queue(ss_bus_t* bus)` (with `SS_ENABLE_ISR_SAFE`) — **Required** to deliver ISR events: call it from the main loop. Delivers every queued event to `bus`, oldest first, resolving names against that bus's default namespace at delivery. Returns `SS_ERR_NULL_PARAM` for a NULL or closing bus, else the last emission error (e.g. `SS_ERR_NOT_FOUND`). Destroying a bus does not drop queued events: the next bus that processes the queue gets them.
+- `ss_emit_from_isr(bus, ...)` — int only. Each bus has its own ISR queue (`SS_ISR_QUEUE_SIZE` entries, default 16). No locks (also on a `SS_BUS_THREAD_SAFE` bus), no allocation, no slot calls; claims an entry of the bus's queue with atomic compare-and-swap, so it is safe with nested interrupts, from several threads and during any other call on the bus except `ss_bus_destroy()`. The ISR gets the bus from a global set **before the interrupts that emit are enabled**; disable them **before `ss_bus_destroy()`**, which drops the events still queued. Returns `SS_ERR_NULL_PARAM` for a NULL bus or NULL/empty names (nothing queued), `SS_ERR_WOULD_OVERFLOW` if the bus's queue is full or the name is too long.
+- `ss_error_t ss_process_isr_queue(ss_bus_t* bus)` (with `SS_ENABLE_ISR_SAFE`) — **Required** to deliver ISR events: call it from the main loop. Delivers the events queued on `bus` (never another bus's), oldest first, resolving names against that bus's default namespace at delivery. Returns `SS_ERR_NULL_PARAM` for a NULL or closing bus, else the last emission error (e.g. `SS_ERR_NOT_FOUND`).
 - On cores without compare-and-swap (Cortex-M0, AVR) define `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` (e.g. save PRIMASK + `__disable_irq()` / restore).
 
 ### Deferred Emission (2 functions)
@@ -374,7 +374,7 @@ ss_bus_destroy(bus);
 | `SS_DEFERRED_PAYLOAD_SIZE` | 32 | Static mode: max string/custom bytes per deferred/batch entry |
 | `SS_MAX_DESCRIPTION_LENGTH` | 32 | Static mode: description buffer incl. NUL |
 | `SS_STATIC_BUSES` | 1 | Static mode: built-in buses for `ss_bus_create()` in `.bss`, each `ss_bus_pool_size()` bytes; 0 = none (buses only from `ss_bus_create_in()` pools) |
-| `SS_ISR_QUEUE_SIZE` | 16 | ISR emission queue size (one queue shared by all buses) |
+| `SS_ISR_QUEUE_SIZE` | 16 | ISR emission queue size, per bus (704 bytes per bus with static-mode defaults on 32-bit) |
 | `SS_ISR_CRITICAL_ENTER/EXIT` | undefined | Interrupt-disable hooks for cores without CAS |
 | `SS_CACHE_LINE_SIZE` | 64 | Not used by the implementation |
 
@@ -386,7 +386,7 @@ ss_bus_destroy(bus);
 
 ### Static Memory Mode Rules
 
-- Each bus holds its own signal array, slot array, deferred queue and namespace buffer: a second bus costs the same RAM again (`ss_bus_pool_size()`). `ss_bus_create()` takes a built-in bus (`SS_STATIC_BUSES`, default 1), `ss_bus_create_in()` uses your memory; register, connect, emit, deferred, ISR delivery, namespace, disconnect, unregister and destroy never touch the heap on any bus.
+- Each bus holds its own signal array, slot array, deferred queue, ISR queue (with `SS_ENABLE_ISR_SAFE`) and namespace buffer: a second bus costs the same RAM again (`ss_bus_pool_size()`). `ss_bus_create()` takes a built-in bus (`SS_STATIC_BUSES`, default 1), `ss_bus_create_in()` uses your memory; register, connect, emit, deferred, ISR queueing and delivery, namespace, disconnect, unregister and destroy never touch the heap on any bus.
 - Still allocating (by design, they hand you an object): `ss_data_create`, `ss_data_set_string`, `ss_data_set_custom`, `ss_get_signal_list`, `ss_batch_create`. Avoid them where no heap exists; use the `ss_emit_*` helpers, or a stack `ss_data_t d = SS_DATA_INIT;` filled with `ss_data_set_string_ref` / `ss_data_set_custom_ref` (no heap).
 - Limits are enforced with `SS_ERR_WOULD_OVERFLOW` (names, descriptions, payloads, full pools, all built-in buses in use), never silent truncation.
 
@@ -551,12 +551,14 @@ void list_cleanup(const void* p, size_t size) {
 ```c
 // Compile with -DSS_ENABLE_ISR_SAFE=1
 
-// In ISR handler (no locks, no malloc, no bus):
+static ss_bus_t* bus;   // set by ss_bus_create() before the timer interrupt is enabled
+
+// In ISR handler (no locks, no malloc):
 void TIM2_IRQHandler(void) {
-    ss_emit_from_isr("timer_tick", tick_count);  // int only
+    ss_emit_from_isr(bus, "timer_tick", tick_count);  // int only, queued on this bus
 }
 
-// In main loop — deliver queued ISR events to the bus (nothing is delivered otherwise):
+// In main loop — deliver the bus's queued ISR events (nothing is delivered otherwise):
 for (;;) {
     ss_process_isr_queue(bus);   // oldest first, slots run here in normal context
     /* ... */

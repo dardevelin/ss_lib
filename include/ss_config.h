@@ -121,6 +121,8 @@
 /* #define SS_ISR_CRITICAL_ENTER() */
 /* #define SS_ISR_CRITICAL_EXIT() */
 
+/* Entries in each bus's ISR queue (each holds a SS_MAX_SIGNAL_NAME_LENGTH
+ * name and three ints) */
 #ifndef SS_ISR_QUEUE_SIZE
     #define SS_ISR_QUEUE_SIZE 16
 #endif

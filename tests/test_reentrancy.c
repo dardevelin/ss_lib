@@ -212,7 +212,7 @@ static void step(void) {
     }
     case 14:
 #if SS_ENABLE_ISR_SAFE
-        (void)ss_emit_from_isr(name, (int)rnd(1000));
+        (void)ss_emit_from_isr(bus, name, (int)rnd(1000));
         (void)ss_process_isr_queue(bus);
 #endif
         break;

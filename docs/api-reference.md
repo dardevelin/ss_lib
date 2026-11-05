@@ -4,7 +4,7 @@
 
 SS_Lib provides a signal-slot mechanism for C programs. This reference covers all public functions, data types, and configuration options of version 3.0.0.
 
-All library state lives in a **bus** (`ss_bus_t`). Every function that uses that state takes the bus as its first argument; the data functions, `ss_version()`, `ss_error_string()`, `ss_free_signal_list()` and `ss_emit_from_isr()` take none. Buses share nothing: the same signal name on two buses names two different signals, and each bus has its own slots, deferred queue, namespace, error handler, slot limit, connection handles, statistics and trace stream. The library has no default bus.
+All library state lives in a **bus** (`ss_bus_t`). Every function that uses that state takes the bus as its first argument; the data functions, `ss_version()`, `ss_error_string()` and `ss_free_signal_list()` take none. Buses share nothing: the same signal name on two buses names two different signals, and each bus has its own slots, deferred queue, ISR queue, namespace, error handler, slot limit, connection handles, statistics and trace stream. The library has no default bus.
 
 ## Version
 
@@ -250,11 +250,11 @@ The create macros pass the caller's `SS_ABI_TAG`, and creation returns `SS_ERR_C
 void ss_bus_destroy(ss_bus_t* bus);
 ```
 
-Destroy a bus: release its signals, slots and pending deferred entries, destroy its mutex, and free the bus (heap) or release its place (built-in bus). A pool is left to its owner. NULL is a no-op. Not thread-safe with respect to other threads using the same bus. Destroy the batches created for the bus first.
+Destroy a bus: release its signals, slots and pending deferred entries, drop the events still in its ISR queue, destroy its mutex, and free the bus (heap) or release its place (built-in bus). A pool is left to its owner. NULL is a no-op. Not thread-safe with respect to other threads using the same bus. Destroy the batches created for the bus first, and disable the interrupts (or stop the threads) that call `ss_emit_from_isr()` on it.
 
-Called from inside a slot, the destruction is deferred until the bus's outermost call returns. Meanwhile the remaining slots of emissions in progress on the bus are skipped, a flush stops, and the bus refuses every call: functions return `SS_ERR_NULL_PARAM` (or 0 / NULL, or do nothing), and another `ss_bus_destroy()` is a no-op. Other buses are not affected.
+Called from inside a slot, the destruction is deferred until the bus's outermost call returns. Meanwhile the remaining slots of emissions in progress on the bus are skipped, a flush stops, and the bus refuses every call: functions return `SS_ERR_NULL_PARAM` (or 0 / NULL, or do nothing), and another `ss_bus_destroy()` is a no-op. The exception is `ss_emit_from_isr()`, which still queues (the bus memory is valid until the destruction completes); those events are dropped with the rest. Other buses are not affected.
 
-After the destruction completes, the bus must not be used, like memory after `free()`: the pointer is dangling, and a later call is undefined behavior. ISR events still queued stay in the shared ISR queue (see [ss_process_isr_queue](#ss_process_isr_queue)).
+After the destruction completes, the bus must not be used, like memory after `free()`: the pointer is dangling, and a later call, `ss_emit_from_isr()` included, is undefined behavior.
 
 ### ss_version
 
@@ -466,16 +466,19 @@ Emit a signal with a pointer value.
 ### ss_emit_from_isr
 
 ```c
-ss_error_t ss_emit_from_isr(const char* signal_name, int value);
+ss_error_t ss_emit_from_isr(ss_bus_t* bus, const char* signal_name, int value);
 ```
 
-Queue an integer event from an interrupt handler. Requires `SS_ENABLE_ISR_SAFE=1`. No locks, no allocation, no slot calls: the name and value are stored in a fixed queue of `SS_ISR_QUEUE_SIZE` entries, claimed with atomic compare-and-swap, and delivered later by `ss_process_isr_queue()`. Safe with nested interrupts and from several threads.
+Queue an integer event on `bus` from an interrupt handler. Requires `SS_ENABLE_ISR_SAFE=1`. No locks, no allocation, no slot calls: the name and value are stored in the bus's fixed queue of `SS_ISR_QUEUE_SIZE` entries, claimed with atomic compare-and-swap, and delivered later by `ss_process_isr_queue(bus)`. Safe with nested interrupts, from several threads, and while any other call on the bus is in progress except `ss_bus_destroy()`; it takes no lock, also on a bus created with `SS_BUS_THREAD_SAFE`.
 
-The ISR queue is global, shared by every bus, and takes no bus: it is usable before any bus exists, and an event goes to whichever bus next processes the queue.
+Each bus has its own queue: an event is delivered only by `ss_process_isr_queue()` on the bus it was queued on, and a full queue on one bus does not affect another. An ISR needs the bus, so keep it in a global set before the interrupts that emit are enabled:
+
+- Create the bus before enabling the interrupts that emit on it. A NULL bus returns `SS_ERR_NULL_PARAM` and queues nothing.
+- Disable those interrupts (or stop those threads) before `ss_bus_destroy()`, which drops the events still queued. While a destruction requested from a slot is pending the bus memory is still valid, so an event queued then returns `SS_OK` and is dropped.
 
 Atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins or MSVC Interlocked functions. On targets without compare-and-swap (Cortex-M0, AVR) define `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` (see [Configuration](configuration.md#isr-safe-emission)).
 
-**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if signal_name is NULL or empty, `SS_ERR_WOULD_OVERFLOW` if the queue is full or the name is longer than `SS_MAX_SIGNAL_NAME_LENGTH - 1`.
+**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if bus is NULL or signal_name is NULL or empty, `SS_ERR_WOULD_OVERFLOW` if the bus's queue is full or the name is longer than `SS_MAX_SIGNAL_NAME_LENGTH - 1`. Errors reach no error handler (an ISR must not run one).
 
 ### ss_process_isr_queue
 
@@ -483,7 +486,7 @@ Atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins or MSVC Int
 ss_error_t ss_process_isr_queue(ss_bus_t* bus);
 ```
 
-Deliver the queued ISR events, oldest first, to `bus`, from normal context. Requires `SS_ENABLE_ISR_SAFE=1`. Call it regularly from the main loop; slots run here. Names are resolved against the bus's default namespace at delivery time. Events queued while it runs wait for the next call. If a slot destroys the bus, delivery stops and the remaining events stay queued. Destroying a bus leaves queued events in the shared queue for the next bus that processes it.
+Deliver the events queued on `bus` by `ss_emit_from_isr(bus, ...)`, oldest first, from normal context. Requires `SS_ENABLE_ISR_SAFE=1`. Call it regularly from the main loop; slots run here. It never delivers another bus's events. Names are resolved against the bus's default namespace at delivery time. The order holds also when an interrupt queues events while it scans the queue. Events queued while it runs wait for the next call. If a slot destroys the bus, delivery stops and the destruction drops the remaining events.
 
 **Returns:** `SS_OK`, `SS_ERR_NULL_PARAM` if the bus is NULL or being destroyed, or the last emission error (e.g. `SS_ERR_NOT_FOUND` for a signal not registered on the bus).
 
@@ -967,7 +970,7 @@ Disable the bus's debug trace output.
 | `SS_ENABLE_MEMORY_STATS` | 0 | Enable memory tracking |
 | `SS_ENABLE_DEBUG_TRACE` | 0 | Enable debug trace output |
 | `SS_ENABLE_ISR_SAFE` | 0 | Enable ISR-safe operations |
-| `SS_ISR_QUEUE_SIZE` | 16 | ISR queue depth |
+| `SS_ISR_QUEUE_SIZE` | 16 | ISR queue depth, per bus |
 | `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` | undefined | Disable/restore interrupts on targets without atomic compare-and-swap |
 | `SS_DEFERRED_QUEUE_SIZE` | 64 (16 with `SS_EMBEDDED_BUILD`) | Deferred emission queue depth, per bus |
 | `SS_DEFERRED_PAYLOAD_SIZE` | 32 | String/custom bytes per deferred or batch entry (static mode) |
@@ -992,7 +995,7 @@ No macro changes a public type layout or enum value. Configuration must still be
 - **Cross-bus calls from slots go in one direction only.** A slot of bus A that calls bus B holds A's lock while it takes B's. If another thread's slot of B calls A at the same time, the two threads deadlock. Pick an order (for example "UI bus may call the model bus, never the reverse") and keep to it.
 - `ss_bus_destroy()` is not thread-safe with respect to other threads using the same bus. In static mode, creating and destroying built-in buses is not locked: do it from one thread. In dynamic mode, `ss_bus_create()` only calls `SS_CALLOC` and is safe from any thread; `ss_bus_create_in()` is safe from any thread for distinct pools.
 - A batch must not be used from several threads at once.
-- `ss_emit_from_isr()` needs no lock.
+- `ss_emit_from_isr()` takes no lock, on any bus, and may run in other threads while the bus is in use (but not during `ss_bus_destroy()`).
 
 ## Best Practices
 
