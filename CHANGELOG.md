@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `scripts/check_install.sh` (`make check-install` and CI's CMake jobs) no
+  longer hard-codes major version 2: it reads the installed version from
+  `ss_lib.pc` and checks that the shared library name, the CMake package's
+  version handling (`find_package` accepts the same major up to the installed
+  version and rejects other majors), and `ss_version()` at run time all agree
+  with it.
+- CI also runs for pull requests to version branches (`v3`) and maintenance
+  branches (`release/*`).
+
 ### Added
 - `tests/test_reentrancy.c`, run by `make test` and ctest in every
   configuration and under every sanitizer and valgrind: 10,000 seeded random
