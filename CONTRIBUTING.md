@@ -151,7 +151,7 @@ make test-valgrind
 ./build/test_ss_lib
 ```
 
-Test programs: `tests/test_ss_lib.c` (main suite, including regression tests), `tests/test_simple.c`, `tests/test_memory.c` (tracking allocator: no leaks, allocator routing, zero heap in static mode), `tests/test_isr.c` (interrupts `ss_process_isr_queue()` at every point of its scan with a hooked critical section), and `tests/test_threads.c` (pthread stress test).
+`make test-single` runs the same test programs against `include/ss_lib_single.h` (through `tests/single_header_impl.c`), the file users copy into their projects; `make test-all` and `make test-asan` include it. Test programs: `tests/test_ss_lib.c` (main suite, including regression tests), `tests/test_simple.c`, `tests/test_memory.c` (tracking allocator: no leaks, allocator routing, zero heap in static mode), `tests/test_isr.c` (interrupts `ss_process_isr_queue()` at every point of its scan with a hooked critical section), and `tests/test_threads.c` (pthread stress test).
 
 ### Writing Tests
 

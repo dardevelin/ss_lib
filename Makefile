@@ -14,6 +14,7 @@ OPT ?= -O2
 WARN = -Wall -Wextra -pedantic
 FEATURES ?= -DSS_ENABLE_ISR_SAFE=1 -DSS_ENABLE_MEMORY_STATS=1 -DSS_ENABLE_PERFORMANCE_STATS=1
 IMPL ?= src/ss_lib.c
+IMPL_HEADERS = include/ss_lib.h include/ss_config.h include/ss_lib_single.h
 BUILD_DIR ?= build
 
 CFLAGS = $(CSTD) $(WARN) $(OPT) -Iinclude $(FEATURES) $(EXTRA_CFLAGS)
@@ -77,7 +78,7 @@ EXAMPLE_BINS = $(BUILD_DIR)/example_usage $(BUILD_DIR)/example_embedded_simple
 BENCH_BIN = $(BUILD_DIR)/benchmark_ss_lib
 
 .PHONY: all lib shared tests examples test test_embedded test-static test-minimal \
-        test-c89 test-newest test-pauth test-all test-asan test-tsan test-ubsan test-msan \
+        test-c89 test-newest test-pauth test-single test-all test-asan test-tsan test-ubsan test-msan \
         test-valgrind coverage benchmark benchmark-all single-header \
         check-standards check-single-header check-version cppcheck release-notes install \
         check-install uninstall docs info help clean
@@ -92,7 +93,7 @@ examples: $(EXAMPLE_BINS)
 $(BUILD_DIR):
 	@mkdir -p $@
 
-$(LIB_OBJ): $(IMPL) include/ss_lib.h include/ss_config.h | $(BUILD_DIR)
+$(LIB_OBJ): $(IMPL) $(IMPL_HEADERS) | $(BUILD_DIR)
 	$(CC) $(LIB_CFLAGS) -c $< -o $@
 
 $(LIB_NAME): $(LIB_OBJ)
@@ -111,11 +112,11 @@ $(BUILD_DIR)/test_%: tests/test_%.c $(LIB_NAME)
 	$(CC) $(CFLAGS) $< $(LIB_NAME) $(LDFLAGS) -o $@
 
 # Compiles the implementation into the test with a tracking allocator
-$(BUILD_DIR)/test_memory: tests/test_memory.c $(IMPL) include/ss_lib.h include/ss_config.h | $(BUILD_DIR)
+$(BUILD_DIR)/test_memory: tests/test_memory.c $(IMPL) $(IMPL_HEADERS) | $(BUILD_DIR)
 	$(CC) $(LIB_CFLAGS) -DSS_TEST_IMPL='"../$(IMPL)"' $< $(LDFLAGS) -o $@
 
 # Compiles the implementation into the test with a hookable ISR critical section
-$(BUILD_DIR)/test_isr: tests/test_isr.c $(IMPL) include/ss_lib.h include/ss_config.h | $(BUILD_DIR)
+$(BUILD_DIR)/test_isr: tests/test_isr.c $(IMPL) $(IMPL_HEADERS) | $(BUILD_DIR)
 	$(CC) $(LIB_CFLAGS) -DSS_TEST_IMPL='"../$(IMPL)"' $< $(LDFLAGS) -o $@
 
 $(BUILD_DIR)/example_%: examples/example_%.c $(LIB_NAME)
@@ -175,13 +176,22 @@ test-pauth:
 check-standards:
 	@scripts/check_standards.sh $(CC)
 
-test-all: test test-static test-minimal test-c89 test-newest check-standards \
-          check-single-header check-version check-install
+test-all: test test-static test-minimal test-c89 test-newest test-single \
+          check-standards check-single-header check-version check-install
+
+# The test suite against include/ss_lib_single.h, the file users copy into
+# their projects, instead of src/ss_lib.c (GHSA-f5pm-2465-f895)
+SINGLE_DIR = build/single
+test-single:
+	@$(MAKE) --no-print-directory test IMPL=tests/single_header_impl.c BUILD_DIR=$(SINGLE_DIR)
+	@$(MAKE) --no-print-directory test IMPL=tests/single_header_impl.c \
+	    BUILD_DIR=$(SINGLE_DIR)-static FEATURES="$(FEATURES) -DSS_USE_STATIC_MEMORY=1"
 
 test-asan:
 	@$(MAKE) --no-print-directory test SANITIZER=address BUILD_DIR=build/asan
 	@$(MAKE) --no-print-directory test SANITIZER=address BUILD_DIR=build/asan-static \
 	    FEATURES="$(FEATURES) -DSS_USE_STATIC_MEMORY=1"
+	@$(MAKE) --no-print-directory test-single SANITIZER=address SINGLE_DIR=build/asan-single
 
 test-tsan:
 	@$(MAKE) --no-print-directory test SANITIZER=thread BUILD_DIR=build/tsan

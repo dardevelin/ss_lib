@@ -451,6 +451,7 @@ make test-static    # ... with SS_USE_STATIC_MEMORY=1
 make test-minimal   # ... with SS_MINIMAL_BUILD
 make test-c89       # ... against src/ss_lib_c89.c built as C89
 make test-newest    # ... built as the newest C standard the compiler supports
+make test-single    # ... against the generated single header (dynamic and static)
 make check-standards  # Compile as C89, C99, C11, C17, C23 and C2y with -Werror
 make test-all       # All of the above plus check-single-header, check-version, check-install
 make test_embedded  # Embedded examples against an SS_EMBEDDED_BUILD library
