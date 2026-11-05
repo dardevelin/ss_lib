@@ -157,7 +157,7 @@ typedef struct {
 } ss_entry_t;
 ```
 
-- `queue_push` copies the resolved name and the data. String and custom payloads are copied (static mode: into the inline buffer, `SS_ERR_WOULD_OVERFLOW` if larger than `SS_DEFERRED_PAYLOAD_SIZE`; dynamic mode: `SS_MALLOC`). `custom_cleanup` is cleared in the entry: it belongs to the caller's object and is never called for the copy.
+- `queue_push` copies the resolved name and the data. String and custom payloads are copied (static mode: into the inline buffer, aligned like `long double`, from C11 `max_align_t` (not with MSVC, whose C headers lack it), and with GCC/Clang `__int128`, `SS_ERR_WOULD_OVERFLOW` if larger than `SS_DEFERRED_PAYLOAD_SIZE`; dynamic mode: `SS_MALLOC`). `custom_cleanup` is cleared in the entry: it belongs to the caller's object and is never called for the copy.
 - Every entry gets a push sequence number from the queue's `pushed` counter. `queue_flush` records `pushed` when it starts and stops at the first entry pushed after that (wrap-safe comparison), so it emits only the entries queued before it started, oldest first, even when a slot runs a nested flush of the same queue. Each entry is **popped before it is emitted**, so slots may push to, or flush, the same queue; entries pushed meanwhile wait for the next flush. The slot sees an `ss_data_t` rebuilt by `entry_view` that points into the entry's payload copy, released right after the emission.
 - Flushing stops early if the context is closing (or, for batches, if the batch was destroyed by a slot).
 
