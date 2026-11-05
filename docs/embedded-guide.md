@@ -4,7 +4,7 @@ This guide covers using SS_Lib in resource-constrained embedded environments inc
 
 ## Static Memory Mode
 
-In static memory mode the library context, signals and slots live in static storage. `ss_init` (unless `SS_STATIC_CONTEXT` is 0), register, connect, emit, deferred emission, namespace, disconnect, unregister and cleanup never touch the heap.
+In static memory mode each bus holds its signals and slots in fixed arrays, and the bus itself is a built-in bus in static storage or lives in a pool you provide. Bus creation, register, connect, emit, deferred emission, ISR delivery, namespace, disconnect, unregister and bus destruction never touch the heap.
 
 Functions whose job is to hand you an allocated object still use `SS_MALLOC`/`SS_CALLOC`: `ss_data_create`, `ss_data_set_string`, `ss_data_set_custom`, `ss_get_signal_list` and `ss_batch_create`. Avoid them on targets without a heap; the `ss_emit_*` helpers, and `ss_emit` or `ss_emit_deferred` with a stack `ss_data_t` (`SS_DATA_INIT`, filled with `ss_data_set_string_ref` / `ss_data_set_custom_ref`), need no allocation.
 
@@ -25,7 +25,7 @@ Fixed limits in static mode:
 
 ### Memory Budget
 
-In static mode the library's own RAM is in `.bss` (the context is in your pool instead if you use `ss_init_static()` with `SS_STATIC_CONTEXT=0`):
+In static mode all of a bus's RAM is inside the bus: a built-in bus is in `.bss`, a pool bus in your pool. Per bus:
 
 | Component | Size |
 |-----------|------|
@@ -33,32 +33,57 @@ In static mode the library's own RAM is in `.bss` (the context is in your pool i
 | Slot array | `SS_MAX_SLOTS` entries of a few pointers each |
 | Deferred queue | `SS_DEFERRED_QUEUE_SIZE` entries, each with a name buffer, an `ss_data_t` and `SS_DEFERRED_PAYLOAD_SIZE` payload bytes |
 | Namespace | `SS_MAX_SIGNAL_NAME_LENGTH` bytes |
-| ISR queue (`SS_ENABLE_ISR_SAFE`) | `SS_ISR_QUEUE_SIZE` entries, each with a name buffer and three ints |
 
-The deferred queue is often the largest part; reduce `SS_DEFERRED_QUEUE_SIZE` if you do not use deferred emission. For the exact size on your target, `ss_get_required_pool_size()` returns the size of the context (everything above except the ISR queue) plus alignment slack, and `ss_get_memory_stats()` reports it as `total_bytes_allocated`. For reference, on a 64-bit host the embedded preset with 16 signals and 32 slots needs about 5 KB (about 4.5 KB with `SS_MINIMAL_BUILD`); 32-bit targets need less.
+Besides the buses, the library has one global in RAM: with `SS_ENABLE_ISR_SAFE`, the ISR queue of `SS_ISR_QUEUE_SIZE` entries, each with a name buffer and three ints, shared by every bus.
 
-`ss_data_t` has the same layout in every configuration: 24 bytes on Cortex-M (and other 32-bit Arm targets) and 32 bytes on 64-bit hosts. Each deferred and batch entry holds one. In 2.x it was 16 bytes on Cortex-M without custom data, so a build with `SS_ENABLE_CUSTOM_DATA=0` (such as `SS_MINIMAL_BUILD`) now uses 8 bytes more RAM per deferred entry: 128 bytes with the embedded preset's 16 entries. With custom data on it uses 8 bytes less per entry than 2.x (32 bytes).
+The deferred queue is often the largest part; reduce `SS_DEFERRED_QUEUE_SIZE` if you do not use deferred emission. For the exact size on your target, `ss_bus_pool_size()` returns the size of a bus plus alignment slack, and `ss_get_memory_stats()` reports the bus's size as `total_bytes_allocated`.
 
-### Initialization
+### RAM per bus
+
+Every bus costs the same RAM, so `SS_STATIC_BUSES` (the number of built-in buses, all in `.bss` whether used or not) defaults to 1. A second built-in bus costs the same again; a bus in a pool costs its pool. A program with one bus uses about the same RAM as 2.x.
+
+Measured sizes:
+
+- 64-bit host (macOS arm64), the configuration of `make test_embedded` (`SS_EMBEDDED_BUILD`, 16 signals, 32 slots, memory and performance stats, ISR queue): `ss_bus_pool_size()` is 5663 bytes, including alignment slack.
+- Cortex-M (`arm-none-eabi-gcc -Os`, the same on M0 and M4), `sizeof` the bus:
+
+  | Configuration | RAM per bus |
+  |---|---|
+  | `SS_EMBEDDED_BUILD SS_MINIMAL_BUILD`, 16 signals, 32 slots (the CI Embedded job's M4 build) | 3224 bytes |
+  | `SS_EMBEDDED_BUILD SS_MINIMAL_BUILD`, default 32 signals, 128 slots (the CI M0 build) | 6360 bytes |
+  | `SS_EMBEDDED_BUILD`, 16 signals, 32 slots, memory stats (as `make test_embedded`, without performance stats) | 3744 bytes |
+
+  The ISR queue adds 704 bytes once, whatever the number of buses. The CI
+  job's `.bss` is one built-in bus plus the ISR queue: 3936 bytes for the M4
+  build and 7072 for the M0 build.
+
+`ss_data_t` has the same layout in every configuration: 24 bytes on Cortex-M (and other 32-bit Arm targets) and 32 bytes on 64-bit hosts. Each deferred and batch entry holds one. In 2.x it was 16 bytes on Cortex-M without custom data, so a build with `SS_ENABLE_CUSTOM_DATA=0` (such as `SS_MINIMAL_BUILD`) now uses 8 bytes more RAM per deferred entry: 128 bytes per bus with the embedded preset's 16 entries. With custom data on it uses 8 bytes less per entry than 2.x (32 bytes).
+
+### Creating the bus
 
 ```c
-ss_init();  /* Uses static storage, no heap allocation */
-```
+static ss_bus_t* bus;   /* the application's bus */
 
-`ss_init_static(pool, size)` places the context in a buffer you provide instead (any alignment, at least `ss_get_required_pool_size()` bytes; `ss_cleanup()` never frees it). Use it to put the context in a specific memory region, or to avoid the heap for the context in dynamic mode. A NULL or too small buffer is ignored and the call behaves like `ss_init()` (for 2.1 compatibility), so check `ss_get_required_pool_size()` yourself.
-
-In static mode the built-in context is still compiled in, so a pool alone does not save RAM. Build with `-DSS_STATIC_CONTEXT=0` to drop it when you always pass a pool; `ss_init()` then allocates the context with `SS_CALLOC`.
-
-```c
-static unsigned char pool[CONTEXT_POOL_SIZE];   /* >= ss_get_required_pool_size() */
-
-if (ss_get_required_pool_size() > sizeof(pool)) {
-    /* enlarge the pool */
+if (ss_bus_create(&bus, 0) != SS_OK) {
+    /* SS_ERR_WOULD_OVERFLOW: every built-in bus is in use */
 }
-ss_init_static_abi(pool, sizeof(pool), SS_ABI_TAG);
 ```
 
-`ss_init_abi(SS_ABI_TAG)` / `ss_init_static_abi(..., SS_ABI_TAG)` return `SS_ERR_CONFIG_MISMATCH` if the application and the library see different `ss_data_t` layouts (a header from another version, or options such as `-fshort-enums` used for only one of them); prefer them in new code. Feature flags no longer change layouts, but must still match, since they decide which functions are declared.
+In static mode `ss_bus_create()` takes one of the `SS_STATIC_BUSES` built-in buses and never uses the heap; when all are in use it returns `SS_ERR_WOULD_OVERFLOW`. Claiming and releasing built-in buses is not locked, so create and destroy them from one thread, normally at startup, and create the bus before enabling the interrupts that emit. `ss_bus_destroy(bus)` releases the bus's place for a later `ss_bus_create()`.
+
+`ss_bus_create_in(&bus, pool, size, 0)` places a bus in a buffer you provide instead, in either memory mode: to put it in a specific memory region, to have more buses than `SS_STATIC_BUSES`, or to avoid the heap for the bus in dynamic mode. The buffer needs no particular alignment and at least `ss_bus_pool_size()` bytes; it must outlive the bus, and `ss_bus_destroy()` never frees it. A NULL buffer returns `SS_ERR_NULL_PARAM` and a buffer that is too small `SS_ERR_BUFFER_TOO_SMALL`. Build with `-DSS_STATIC_BUSES=0` to drop the built-in buses when you always use pools.
+
+```c
+static unsigned char pool[BUS_POOL_SIZE];   /* >= ss_bus_pool_size() */
+
+if (ss_bus_create_in(&bus, pool, sizeof(pool), 0) == SS_ERR_BUFFER_TOO_SMALL) {
+    /* enlarge the pool to ss_bus_pool_size() */
+}
+```
+
+`ss_bus_pool_size()` is a runtime value, so size the pool from a measurement on your target (for example the size printed by `examples/example_embedded.c`) and keep the check.
+
+Both create macros pass the application's `SS_ABI_TAG`, so creation returns `SS_ERR_CONFIG_MISMATCH` if the application and the library see different `ss_data_t` layouts (a header from another version, or options such as `-fshort-enums` used for only one of them). Feature flags no longer change layouts, but must still match, since they decide which functions are declared.
 
 ## ISR-Safe Operations
 
@@ -79,12 +104,13 @@ void ADC_IRQHandler(void) {
 }
 
 int main(void) {
-    ss_init();
-    ss_signal_register("adc_ready");
-    ss_connect("adc_ready", on_adc_ready, NULL);
+    ss_bus_t* bus;
+    ss_bus_create(&bus, 0);       /* before enabling the interrupts that emit */
+    ss_signal_register(bus, "adc_ready");
+    ss_connect(bus, "adc_ready", on_adc_ready, NULL);
 
     for (;;) {
-        ss_process_isr_queue();   /* delivers queued events, oldest first */
+        ss_process_isr_queue(bus);   /* delivers queued events, oldest first */
         /* ... other work ... */
     }
 }
@@ -94,7 +120,7 @@ Never call `ss_emit()` or other library functions from an ISR; only `ss_emit_fro
 
 ### How It Works
 
-`ss_emit_from_isr` claims a free queue entry with an atomic compare-and-swap, copies the name and value into it and marks it ready. No mutex is acquired, no memory is allocated and no slot is called, so it is safe with nested interrupts and from several threads, and usable before `ss_init()`. `ss_process_isr_queue()` takes a snapshot of the ready entries, frees each one and emits it in queue order, also when an interrupt queues events while it takes the snapshot. Names are resolved against the default namespace at delivery. Events queued during delivery wait for the next call; `ss_cleanup()` discards queued events.
+`ss_emit_from_isr` claims a free queue entry with an atomic compare-and-swap, copies the name and value into it and marks it ready. No mutex is acquired, no memory is allocated and no slot is called, so it is safe with nested interrupts and from several threads. The queue is global and shared by every bus, so it is usable before a bus exists. `ss_process_isr_queue(bus)` takes a snapshot of the ready entries, frees each one and emits it in queue order, also when an interrupt queues events while it takes the snapshot. Names are resolved against the bus's default namespace at delivery, and the slots of that bus run. Events queued during delivery wait for the next call. Destroying a bus leaves queued events in the queue for the next bus that processes it, so disable the interrupts that emit before `ss_bus_destroy()`.
 
 The atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins or MSVC Interlocked functions. On cores without compare-and-swap (Cortex-M0/M0+, AVR), define `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` to disable and restore interrupts, e.g. in `ss_config.h`. Both must also be compiler memory barriers, so the compiler cannot move the queue's reads and writes out of the critical section; the CMSIS functions below are:
 
@@ -150,14 +176,16 @@ static void on_button_press(const ss_data_t* data, void* user_data) {
     HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 }
 
+static ss_bus_t* bus;
+
 void system_init(void) {
-    ss_init();
+    ss_bus_create(&bus, 0);   /* a built-in bus: no heap */
 
-    ss_signal_register("adc_complete");
-    ss_signal_register("button_press");
+    ss_signal_register(bus, "adc_complete");
+    ss_signal_register(bus, "button_press");
 
-    ss_connect("adc_complete", on_adc_complete, NULL);
-    ss_connect("button_press", on_button_press, NULL);
+    ss_connect(bus, "adc_complete", on_adc_complete, NULL);
+    ss_connect(bus, "button_press", on_button_press, NULL);
 }
 
 /* ISR handlers */
@@ -176,7 +204,7 @@ int main(void) {
     HAL_Init();
     system_init();
     for (;;) {
-        ss_process_isr_queue();   /* slots run here, not in the ISRs */
+        ss_process_isr_queue(bus);   /* slots run here, not in the ISRs */
     }
 }
 ```
@@ -216,7 +244,7 @@ On the host, `make test_embedded` builds the embedded examples against a library
 
 ## Tips
 
-1. **Size signal pools conservatively** — Unused signal/slot entries waste RAM
+1. **Size signal pools conservatively** — Unused signal/slot entries waste RAM, in every bus; keep `SS_STATIC_BUSES` at the number of buses you create
 2. **Use short signal names** — Reduce `SS_MAX_SIGNAL_NAME_LENGTH` to save RAM
 3. **Disable unused features** — Every disabled feature reduces code size
 4. **Drain the ISR queue often** — The queue has a fixed depth; when it is full, `ss_emit_from_isr()` rejects new events with `SS_ERR_WOULD_OVERFLOW`

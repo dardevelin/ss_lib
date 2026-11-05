@@ -4,6 +4,8 @@
 
 SS_Lib provides a signal-slot mechanism for C programs. This reference covers all public functions, data types, and configuration options of version 3.0.0.
 
+All library state lives in a **bus** (`ss_bus_t`). Every function that uses that state takes the bus as its first argument; the data functions, `ss_version()`, `ss_error_string()`, `ss_free_signal_list()` and `ss_emit_from_isr()` take none. Buses share nothing: the same signal name on two buses names two different signals, and each bus has its own slots, deferred queue, namespace, error handler, slot limit, connection handles, statistics and trace stream. The library has no default bus.
+
 ## Version
 
 ```c
@@ -25,16 +27,17 @@ typedef enum {
     SS_ERR_NOT_FOUND,       /* Signal or slot not found */
     SS_ERR_ALREADY_EXISTS,  /* Signal already registered */
     SS_ERR_INVALID_TYPE,    /* Custom data queued without SS_ENABLE_CUSTOM_DATA */
-    SS_ERR_BUFFER_TOO_SMALL,/* Reserved, not currently returned */
+    SS_ERR_BUFFER_TOO_SMALL,/* Pool too small for ss_bus_create_in() */
     SS_ERR_MAX_SLOTS,       /* Maximum slots per signal reached */
     SS_ERR_TIMEOUT,         /* Reserved, not currently returned */
-    SS_ERR_WOULD_OVERFLOW,  /* Name, payload or queue exceeds a fixed limit */
+    SS_ERR_WOULD_OVERFLOW,  /* Name, payload, queue or the built-in buses exceed a fixed limit */
     SS_ERR_ISR_UNSAFE,      /* Reserved, not currently returned */
-    SS_ERR_CONFIG_MISMATCH  /* Caller's SS_ABI_TAG differs from the library's */
+    SS_ERR_CONFIG_MISMATCH  /* Caller's SS_ABI_TAG differs from the library's,
+                               or a bus flag the library does not support */
 } ss_error_t;
 ```
 
-Functions that need an initialized library return `SS_ERR_NULL_PARAM` (or 0 / NULL) when it is not initialized.
+Functions that take a bus return `SS_ERR_NULL_PARAM` (or 0 / NULL, or do nothing) when the bus is NULL or is being destroyed (see [ss_bus_destroy](#ss_bus_destroy)).
 
 ## Data Types
 
@@ -154,70 +157,102 @@ typedef uintptr_t ss_connection_t;
 
 ---
 
-## Core Functions
+## Buses
 
-### ss_init
-
-```c
-ss_error_t ss_init(void);
-```
-
-Initialize the library. In dynamic mode the library context is heap-allocated; with `SS_USE_STATIC_MEMORY` it lives in static storage and no heap is used. Not thread-safe: call it before other threads use the library.
-
-In static mode with `SS_STATIC_CONTEXT=0` there is no built-in storage and the context is allocated with `SS_CALLOC`. For new code prefer `ss_init_abi(SS_ABI_TAG)`, which also checks that the caller was compiled with the same `ss_data_t` layout as the library (see [ABI check](#abi-check)).
-
-**Returns:** `SS_OK` on success, also if already initialized. `SS_ERR_MEMORY` if allocation or mutex creation fails, `SS_ERR_ALREADY_EXISTS` if called while an `ss_cleanup()` requested from a slot is still pending.
-
-### ss_init_static
+### ss_bus_t
 
 ```c
-ss_error_t ss_init_static(void* memory_pool, size_t pool_size);
+typedef struct ss_bus ss_bus_t;   /* opaque */
 ```
 
-Initialize the library with its context placed in a caller-owned buffer. The buffer needs no particular alignment; if it holds at least `ss_get_required_pool_size()` bytes, the context lives in it, and it must outlive `ss_cleanup()`, which never frees it. Works in both memory modes; signals and slots still follow the mode (heap in dynamic mode, fixed arrays in static mode). For compatibility with 2.1, a NULL or smaller buffer is ignored and the call behaves exactly like `ss_init()`, so check the size yourself. `ss_init_static_abi(pool, size, SS_ABI_TAG)` adds the [ABI check](#abi-check).
+A bus holds signals, slots, the deferred queue, the default namespace and the per-bus settings. Its layout depends on the configuration, so callers only ever hold a pointer. Where the bus itself lives depends on how it was created:
+
+| Created by | Dynamic mode | Static mode |
+|------------|--------------|-------------|
+| `ss_bus_create()` | Heap (`SS_CALLOC`) | One of `SS_STATIC_BUSES` built-in buses in `.bss`; never the heap |
+| `ss_bus_create_in()` | Caller's pool | Caller's pool |
+
+Signals and slots follow the memory mode: heap nodes in dynamic mode, the bus's own fixed arrays in static mode.
+
+### SS_BUS_THREAD_SAFE
+
+```c
+#define SS_BUS_THREAD_SAFE 0x1u
+```
+
+Creation flag: the bus gets its own recursive mutex, and every call on it locks that mutex. Needs a library built with `SS_ENABLE_THREAD_SAFETY=1`; otherwise creation returns `SS_ERR_CONFIG_MISMATCH`. A bus created without the flag has no mutex and must be used from one thread at a time. The choice is fixed for the bus's lifetime. See [Thread Safety](#thread-safety).
+
+### ss_bus_create
+
+```c
+#define ss_bus_create(bus, flags) ss_bus_create_abi((bus), (flags), SS_ABI_TAG)
+ss_error_t ss_bus_create_abi(ss_bus_t** bus, unsigned int flags, size_t abi_tag);
+```
+
+Create a bus: `ss_bus_t* bus; ss_bus_create(&bus, 0);`. The macro passes the caller's `SS_ABI_TAG`, so every creation runs the [ABI check](#abi-check). Callers that cannot use macros (FFI) call `ss_bus_create_abi()` with the tag value their bindings were built for.
+
+In dynamic mode the bus is allocated with `SS_CALLOC`; creation is safe from any thread. In static mode it takes the first unused built-in bus and never uses the heap. Claiming and releasing built-in buses is not locked: create and destroy them from one thread, normally at startup.
 
 **Parameters:**
-- `memory_pool` — Caller-owned buffer
-- `pool_size` — Size of the buffer in bytes
+- `bus` — Receives the new bus; set to NULL on every failure after the NULL check
+- `flags` — 0 or `SS_BUS_THREAD_SAFE`
+- `abi_tag` — `SS_ABI_TAG` as the caller sees it
 
-**Returns:** As `ss_init()` (`SS_OK` also if already initialized; the buffer is then unused). Never returns `SS_ERR_NULL_PARAM` or `SS_ERR_BUFFER_TOO_SMALL`.
+**Returns**, checked in this order:
+1. `SS_ERR_NULL_PARAM` if `bus` is NULL.
+2. `SS_ERR_CONFIG_MISMATCH` if `abi_tag` differs from the library's `SS_ABI_TAG`, or `flags` has a bit the library does not support (`SS_BUS_THREAD_SAFE` without `SS_ENABLE_THREAD_SAFETY`, or any unknown bit).
+3. `SS_ERR_WOULD_OVERFLOW` (static mode) if every built-in bus is in use; `SS_ERR_MEMORY` (dynamic mode) if the allocation fails.
+4. `SS_ERR_MEMORY` if the mutex cannot be created.
+5. `SS_OK`.
+
+Failed creation reaches no error handler: there is no bus to hold one.
+
+### ss_bus_create_in
 
 ```c
-static unsigned char pool[4096];
-if (ss_get_required_pool_size() > sizeof(pool)) {
-    /* too small: ss_init_static() would fall back to ss_init() */
-}
-ss_init_static(pool, sizeof(pool));
+#define ss_bus_create_in(bus, pool, size, flags) \
+    ss_bus_create_in_abi((bus), (pool), (size), (flags), SS_ABI_TAG)
+ss_error_t ss_bus_create_in_abi(ss_bus_t** bus, void* pool, size_t pool_size,
+                                unsigned int flags, size_t abi_tag);
+size_t ss_bus_pool_size(void);
 ```
 
-### ss_get_required_pool_size
+Create a bus in caller-owned memory, in either memory mode. The pool needs no particular alignment; `ss_bus_pool_size()` bytes (the bus plus alignment slack) always suffice. The pool must outlive the bus; `ss_bus_destroy()` never frees it, and after it the pool can hold a new bus. In static mode this is how to have more buses than `SS_STATIC_BUSES` without the heap.
+
+**Returns**, checked in this order: `SS_ERR_NULL_PARAM` if `bus` is NULL; `SS_ERR_CONFIG_MISMATCH` as for `ss_bus_create()`; `SS_ERR_NULL_PARAM` if `pool` is NULL; `SS_ERR_BUFFER_TOO_SMALL` if the pool, after aligning its start, cannot hold the bus (the pool is not written); `SS_ERR_MEMORY` if the mutex cannot be created; `SS_OK`.
 
 ```c
-size_t ss_get_required_pool_size(void);
+static unsigned char* pool;
+ss_bus_t* bus;
+pool = malloc(ss_bus_pool_size());     /* or a static buffer known to be big enough */
+if (ss_bus_create_in(&bus, pool, ss_bus_pool_size(), 0) != SS_OK) { /* ... */ }
+/* ... */
+ss_bus_destroy(bus);
+free(pool);
 ```
 
-Bytes needed by `ss_init_static()` for the current configuration, including alignment slack.
+`ss_bus_pool_size()` is a runtime value: it depends on the library's configuration.
 
 ### ABI check
 
 ```c
-#define SS_ABI_REVISION 1   /* bumped when a public layout changes */
+#define SS_ABI_REVISION 1   /* bumped when a public layout changes (1 to 15) */
 #define SS_ABI_TAG ((size_t)(sizeof(ss_data_t) * 16u + SS_ABI_REVISION))
-ss_error_t ss_init_abi(size_t abi_tag);
-ss_error_t ss_init_static_abi(void* memory_pool, size_t pool_size, size_t abi_tag);
 ```
 
-Opt-in versions of `ss_init()` and `ss_init_static()` that first compare the caller's `SS_ABI_TAG` with the library's. Always pass `SS_ABI_TAG`. The tag combines `SS_ABI_REVISION` with `sizeof(ss_data_t)` as the caller's compilation sees it, and fits a 16-bit `size_t`. Configuration macros no longer change public layouts, so the tag catches what they cannot: a header from another version, and compiler options that change layouts, such as `-fshort-enums` or structure packing. A mismatch returns `SS_ERR_CONFIG_MISMATCH` instead of corrupting memory later; otherwise they behave and return exactly like `ss_init()` / `ss_init_static()`. Recommended for new code. Feature flags must still be the same for the library and every caller, because they decide which functions are declared: a difference shows up as a compile or link error.
+The create macros pass the caller's `SS_ABI_TAG`, and creation returns `SS_ERR_CONFIG_MISMATCH` when it differs from the library's. The tag combines `SS_ABI_REVISION` with `sizeof(ss_data_t)` as the caller's compilation sees it, and fits a 16-bit `size_t`. Configuration macros do not change public layouts, so the tag catches what they cannot: a header from another version, and compiler options that change layouts, such as `-fshort-enums` or structure packing. Feature flags must still be the same for the library and every caller, because they decide which functions are declared: a difference shows up as a compile or link error.
 
-### ss_cleanup
+### ss_bus_destroy
 
 ```c
-void ss_cleanup(void);
+void ss_bus_destroy(ss_bus_t* bus);
 ```
 
-Clean up all resources and reset the library: releases signals, slots, pending deferred entries and queued ISR events, and resets runtime settings (thread safety, namespace, error handler, trace, slot limit). Never frees an `ss_init_static()` buffer. Safe to call when not initialized (no-op). Not thread-safe with respect to other threads using the library.
+Destroy a bus: release its signals, slots and pending deferred entries, destroy its mutex, and free the bus (heap) or release its place (built-in bus). A pool is left to its owner. NULL is a no-op. Not thread-safe with respect to other threads using the same bus. Destroy the batches created for the bus first.
 
-Called from inside a slot, the cleanup is deferred until the outermost library call returns. Meanwhile the remaining slots of emissions in progress are skipped and the library behaves as uninitialized (calls return `SS_ERR_NULL_PARAM`, 0 or NULL; `ss_init()` returns `SS_ERR_ALREADY_EXISTS`).
+Called from inside a slot, the destruction is deferred until the bus's outermost call returns. Meanwhile the remaining slots of emissions in progress on the bus are skipped, a flush stops, and the bus refuses every call: functions return `SS_ERR_NULL_PARAM` (or 0 / NULL, or do nothing), and another `ss_bus_destroy()` is a no-op. Other buses are not affected.
+
+After the destruction completes, the bus must not be used, like memory after `free()`: the pointer is dangling, and a later call is undefined behavior. ISR events still queued stay in the shared ISR queue (see [ss_process_isr_queue](#ss_process_isr_queue)).
 
 ### ss_version
 
@@ -234,28 +269,29 @@ Runtime version string of the compiled library, equal to `SS_VERSION_STRING`.
 ### ss_signal_register
 
 ```c
-ss_error_t ss_signal_register(const char* signal_name);
+ss_error_t ss_signal_register(ss_bus_t* bus, const char* signal_name);
 ```
 
-Register a new signal with default priority (`SS_PRIORITY_NORMAL`). Equivalent to `ss_signal_register_ex(signal_name, NULL, SS_PRIORITY_NORMAL)`.
+Register a new signal on the bus with default priority (`SS_PRIORITY_NORMAL`). Equivalent to `ss_signal_register_ex(bus, signal_name, NULL, SS_PRIORITY_NORMAL)`.
 
 **Parameters:**
-- `signal_name` — Unique name for the signal (must be shorter than `SS_MAX_SIGNAL_NAME_LENGTH`)
+- `bus` — The bus
+- `signal_name` — Name for the signal, unique on this bus (must be shorter than `SS_MAX_SIGNAL_NAME_LENGTH`)
 
-**Returns:** `SS_OK` on success, `SS_ERR_ALREADY_EXISTS` if signal exists, `SS_ERR_NULL_PARAM` if name is NULL or empty, `SS_ERR_WOULD_OVERFLOW` if the name is too long or (static mode) all `SS_MAX_SIGNALS` entries are in use, `SS_ERR_MEMORY` if allocation fails (dynamic mode).
+**Returns:** `SS_OK` on success, `SS_ERR_ALREADY_EXISTS` if the signal exists on this bus, `SS_ERR_NULL_PARAM` if the bus is NULL or the name is NULL or empty, `SS_ERR_WOULD_OVERFLOW` if the name is too long or (static mode) all `SS_MAX_SIGNALS` entries of the bus are in use, `SS_ERR_MEMORY` if allocation fails (dynamic mode).
 
 ### ss_signal_register_ex
 
 ```c
-ss_error_t ss_signal_register_ex(const char* signal_name,
-                                  const char* description,
-                                  ss_priority_t priority);
+ss_error_t ss_signal_register_ex(ss_bus_t* bus, const char* signal_name,
+                                 const char* description, ss_priority_t priority);
 ```
 
 Register a signal with metadata.
 
 **Parameters:**
-- `signal_name` — Unique name for the signal
+- `bus` — The bus
+- `signal_name` — Name for the signal, unique on this bus
 - `description` — Human-readable description (can be NULL). Stored only when `SS_ENABLE_INTROSPECTION` is on (it is only read by `ss_get_signal_list()`). In static mode it must fit `SS_MAX_DESCRIPTION_LENGTH` bytes including the terminator.
 - `priority` — Default priority for the signal
 
@@ -264,53 +300,58 @@ Register a signal with metadata.
 ### ss_signal_unregister
 
 ```c
-ss_error_t ss_signal_unregister(const char* signal_name);
+ss_error_t ss_signal_unregister(ss_bus_t* bus, const char* signal_name);
 ```
 
 Unregister a signal and disconnect all connected slots. Safe to call from a slot of the same signal: the remaining slots of that emission are skipped, the memory is released when the emission ends, and the name can be registered again at once.
 
-**Returns:** `SS_OK` on success, `SS_ERR_NOT_FOUND` if signal doesn't exist.
+**Returns:** `SS_OK` on success, `SS_ERR_NOT_FOUND` if the signal doesn't exist on this bus.
 
 ### ss_signal_exists
 
 ```c
-int ss_signal_exists(const char* signal_name);
+int ss_signal_exists(ss_bus_t* bus, const char* signal_name);
 ```
 
-Check if a signal is registered.
+Check if a signal is registered on the bus.
 
-**Returns:** 1 if the signal exists, 0 otherwise. Returns 0 if the library is not initialized or name is NULL.
+**Returns:** 1 if the signal exists, 0 otherwise. Returns 0 if the bus or name is NULL.
 
 ---
 
 ## Connection Management
 
+Connection handles are per bus: two buses may hand out the same handle value, and a handle only means something to the bus that returned it.
+
 ### ss_connect
 
 ```c
-ss_error_t ss_connect(const char* signal_name, ss_slot_func_t slot, void* user_data);
+ss_error_t ss_connect(ss_bus_t* bus, const char* signal_name, ss_slot_func_t slot,
+                      void* user_data);
 ```
 
-Connect a slot to a signal with default priority (`SS_PRIORITY_NORMAL`). Equivalent to `ss_connect_ex(signal_name, slot, user_data, SS_PRIORITY_NORMAL, NULL)`.
+Connect a slot to a signal with default priority (`SS_PRIORITY_NORMAL`). Equivalent to `ss_connect_ex(bus, signal_name, slot, user_data, SS_PRIORITY_NORMAL, NULL)`. The slot signature has no bus parameter; a slot that needs its bus gets it through `user_data`.
 
 **Parameters:**
+- `bus` — The bus
 - `signal_name` — Name of the signal
 - `slot` — Callback function
 - `user_data` — User data passed to the callback (can be NULL)
 
-**Returns:** `SS_OK` on success, `SS_ERR_NOT_FOUND` if signal doesn't exist, `SS_ERR_MAX_SLOTS` if the per-signal limit is reached (only live slots count), `SS_ERR_NULL_PARAM` if signal_name or slot is NULL, `SS_ERR_WOULD_OVERFLOW` if all `SS_MAX_SLOTS` entries are in use (static mode), `SS_ERR_MEMORY` if allocation fails (dynamic mode).
+**Returns:** `SS_OK` on success, `SS_ERR_NOT_FOUND` if the signal doesn't exist, `SS_ERR_MAX_SLOTS` if the per-signal limit is reached (only live slots count), `SS_ERR_NULL_PARAM` if the bus, signal_name or slot is NULL, `SS_ERR_WOULD_OVERFLOW` if all `SS_MAX_SLOTS` entries of the bus are in use (static mode), `SS_ERR_MEMORY` if allocation fails (dynamic mode).
 
 ### ss_connect_ex
 
 ```c
-ss_error_t ss_connect_ex(const char* signal_name, ss_slot_func_t slot,
-                          void* user_data, ss_priority_t priority,
-                          ss_connection_t* handle);
+ss_error_t ss_connect_ex(ss_bus_t* bus, const char* signal_name, ss_slot_func_t slot,
+                         void* user_data, ss_priority_t priority,
+                         ss_connection_t* handle);
 ```
 
 Connect a slot with priority and optional connection handle.
 
 **Parameters:**
+- `bus` — The bus
 - `signal_name` — Name of the signal
 - `slot` — Callback function
 - `user_data` — User data passed to the callback
@@ -322,7 +363,7 @@ Connect a slot with priority and optional connection handle.
 ### ss_disconnect
 
 ```c
-ss_error_t ss_disconnect(const char* signal_name, ss_slot_func_t slot);
+ss_error_t ss_disconnect(ss_bus_t* bus, const char* signal_name, ss_slot_func_t slot);
 ```
 
 Disconnect the first matching slot from a signal. If the signal is currently emitting, the slot is marked, is not called again, and is freed when the emission ends.
@@ -332,22 +373,22 @@ Disconnect the first matching slot from a signal. If the signal is currently emi
 ### ss_disconnect_handle
 
 ```c
-ss_error_t ss_disconnect_handle(ss_connection_t handle);
+ss_error_t ss_disconnect_handle(ss_bus_t* bus, ss_connection_t handle);
 ```
 
-Disconnect a slot using its connection handle. Searches all signals for the matching handle. If the signal is currently emitting, the slot is marked, is not called again, and is freed when the emission ends.
+Disconnect a slot using its connection handle. Searches all signals of the bus for the matching handle. If the signal is currently emitting, the slot is marked, is not called again, and is freed when the emission ends.
 
-**Returns:** `SS_OK` on success, `SS_ERR_NOT_FOUND` if handle is invalid, `SS_ERR_NULL_PARAM` if handle is 0.
+**Returns:** `SS_OK` on success, `SS_ERR_NOT_FOUND` if no slot of this bus has the handle, `SS_ERR_NULL_PARAM` if the bus is NULL or the handle is 0.
 
 ### ss_disconnect_all
 
 ```c
-ss_error_t ss_disconnect_all(const char* signal_name);
+ss_error_t ss_disconnect_all(ss_bus_t* bus, const char* signal_name);
 ```
 
 Disconnect all slots from a signal. If the signal is currently emitting, the remaining slots of that emission are skipped and freed when it ends.
 
-**Returns:** `SS_OK` on success, `SS_ERR_NOT_FOUND` if signal doesn't exist.
+**Returns:** `SS_OK` on success, `SS_ERR_NOT_FOUND` if the signal doesn't exist.
 
 ---
 
@@ -356,24 +397,26 @@ Disconnect all slots from a signal. If the signal is currently emitting, the rem
 ### ss_emit
 
 ```c
-ss_error_t ss_emit(const char* signal_name, const ss_data_t* data);
+ss_error_t ss_emit(ss_bus_t* bus, const char* signal_name, const ss_data_t* data);
 ```
 
-Emit a signal, invoking all connected slots in priority order. Slots may call any library function, including on the signal being emitted:
+Emit a signal, invoking all its connected slots in priority order. Slots may call any library function, on this bus or another, including on the signal being emitted:
 - Slots disconnected during the emission are not called; they are freed when it ends.
 - A slot connected during the emission may or may not be called by it, depending on where its priority places it in the list; do not rely on either.
-- `ss_signal_unregister()` or `ss_cleanup()` from a slot skips the remaining slots (see those functions).
+- `ss_signal_unregister()` or `ss_bus_destroy()` from a slot skips the remaining slots (see those functions).
+- With thread-safe buses, cross-bus calls from slots must go in one direction only (see [Thread Safety](#thread-safety)).
 
 **Parameters:**
+- `bus` — The bus
 - `signal_name` — Name of the signal to emit
 - `data` — Data to pass to slots (can be NULL). Slots see it as borrowed: if the object owns its payload, they receive a copy with `owned` cleared, pointing to the same payload.
 
-**Returns:** `SS_OK` on success, `SS_ERR_NOT_FOUND` if signal doesn't exist.
+**Returns:** `SS_OK` on success, `SS_ERR_NOT_FOUND` if the signal doesn't exist on this bus.
 
 ### ss_emit_void
 
 ```c
-ss_error_t ss_emit_void(const char* signal_name);
+ss_error_t ss_emit_void(ss_bus_t* bus, const char* signal_name);
 ```
 
 Emit a signal with `SS_TYPE_VOID` data.
@@ -381,7 +424,7 @@ Emit a signal with `SS_TYPE_VOID` data.
 ### ss_emit_int
 
 ```c
-ss_error_t ss_emit_int(const char* signal_name, int value);
+ss_error_t ss_emit_int(ss_bus_t* bus, const char* signal_name, int value);
 ```
 
 Emit a signal with an integer value.
@@ -389,7 +432,7 @@ Emit a signal with an integer value.
 ### ss_emit_float
 
 ```c
-ss_error_t ss_emit_float(const char* signal_name, float value);
+ss_error_t ss_emit_float(ss_bus_t* bus, const char* signal_name, float value);
 ```
 
 Emit a signal with a float value.
@@ -397,7 +440,7 @@ Emit a signal with a float value.
 ### ss_emit_double
 
 ```c
-ss_error_t ss_emit_double(const char* signal_name, double value);
+ss_error_t ss_emit_double(ss_bus_t* bus, const char* signal_name, double value);
 ```
 
 Emit a signal with a double value.
@@ -405,7 +448,7 @@ Emit a signal with a double value.
 ### ss_emit_string
 
 ```c
-ss_error_t ss_emit_string(const char* signal_name, const char* value);
+ss_error_t ss_emit_string(ss_bus_t* bus, const char* signal_name, const char* value);
 ```
 
 Emit a signal with a string value. The string pointer is passed directly (not copied), so it must remain valid during emission. Slots receive a borrowed pointer and must not free it.
@@ -413,7 +456,7 @@ Emit a signal with a string value. The string pointer is passed directly (not co
 ### ss_emit_pointer
 
 ```c
-ss_error_t ss_emit_pointer(const char* signal_name, void* value);
+ss_error_t ss_emit_pointer(ss_bus_t* bus, const char* signal_name, void* value);
 ```
 
 Emit a signal with a pointer value.
@@ -424,7 +467,9 @@ Emit a signal with a pointer value.
 ss_error_t ss_emit_from_isr(const char* signal_name, int value);
 ```
 
-Queue an integer event from an interrupt handler. Requires `SS_ENABLE_ISR_SAFE=1`. No locks, no allocation, no slot calls: the name and value are stored in a fixed queue of `SS_ISR_QUEUE_SIZE` entries, claimed with atomic compare-and-swap, and delivered later by `ss_process_isr_queue()`. Safe with nested interrupts and from several threads. Usable before `ss_init()`.
+Queue an integer event from an interrupt handler. Requires `SS_ENABLE_ISR_SAFE=1`. No locks, no allocation, no slot calls: the name and value are stored in a fixed queue of `SS_ISR_QUEUE_SIZE` entries, claimed with atomic compare-and-swap, and delivered later by `ss_process_isr_queue()`. Safe with nested interrupts and from several threads.
+
+The ISR queue is global, shared by every bus, and takes no bus: it is usable before any bus exists, and an event goes to whichever bus next processes the queue.
 
 Atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins or MSVC Interlocked functions. On targets without compare-and-swap (Cortex-M0, AVR) define `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` (see [Configuration](configuration.md#isr-safe-emission)).
 
@@ -433,12 +478,12 @@ Atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins or MSVC Int
 ### ss_process_isr_queue
 
 ```c
-ss_error_t ss_process_isr_queue(void);
+ss_error_t ss_process_isr_queue(ss_bus_t* bus);
 ```
 
-Deliver queued ISR events, oldest first, from normal context. Requires `SS_ENABLE_ISR_SAFE=1`. Call it regularly from the main loop; slots run here. Names are resolved against the default namespace at delivery time. Events queued while it runs wait for the next call. `ss_cleanup()` discards queued events.
+Deliver the queued ISR events, oldest first, to `bus`, from normal context. Requires `SS_ENABLE_ISR_SAFE=1`. Call it regularly from the main loop; slots run here. Names are resolved against the bus's default namespace at delivery time. Events queued while it runs wait for the next call. If a slot destroys the bus, delivery stops and the remaining events stay queued. Destroying a bus leaves queued events in the shared queue for the next bus that processes it.
 
-**Returns:** `SS_OK`, `SS_ERR_NULL_PARAM` if not initialized, or the last emission error (e.g. `SS_ERR_NOT_FOUND` for an unregistered signal).
+**Returns:** `SS_OK`, `SS_ERR_NULL_PARAM` if the bus is NULL or being destroyed, or the last emission error (e.g. `SS_ERR_NOT_FOUND` for a signal not registered on the bus).
 
 ---
 
@@ -447,86 +492,88 @@ Deliver queued ISR events, oldest first, from normal context. Requires `SS_ENABL
 ### ss_set_namespace
 
 ```c
-ss_error_t ss_set_namespace(const char* ns);
+ss_error_t ss_set_namespace(ss_bus_t* bus, const char* ns);
 ```
 
-Set the default namespace. Pass NULL or `""` to clear. While it is set, every signal name without `"::"` is resolved as `"ns::name"` by all functions that take a signal name (register, unregister, exists, connect, disconnect, emit, deferred and batch emission, perf stats; ISR events at delivery). Names containing `"::"` are used as given. Deferred and batch entries are resolved when they are queued. No allocation.
+Set the bus's default namespace. Pass NULL or `""` to clear. While it is set, every signal name without `"::"` is resolved as `"ns::name"` by all functions that take a signal name on this bus (register, unregister, exists, connect, disconnect, emit, deferred and batch emission, perf stats; ISR events at delivery). Names containing `"::"` are used as given. Deferred and batch entries are resolved when they are queued. No allocation. Other buses keep their own namespace.
 
-**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if not initialized, `SS_ERR_WOULD_OVERFLOW` if even `"ns::x"` would not fit in `SS_MAX_SIGNAL_NAME_LENGTH`.
+**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if the bus is NULL, `SS_ERR_WOULD_OVERFLOW` if even `"ns::x"` would not fit in `SS_MAX_SIGNAL_NAME_LENGTH`.
 
 ### ss_get_namespace
 
 ```c
-const char* ss_get_namespace(void);
+const char* ss_get_namespace(ss_bus_t* bus);
 ```
 
-Get the current default namespace.
+Get the bus's current default namespace.
 
-**Returns:** Namespace string (valid until the next change), or NULL if not set or library not initialized. Passing it back to `ss_set_namespace()` is safe (no-op). The string is the library's own buffer and is read without the lock, so with several threads read it only while no other thread can call `ss_set_namespace()`, or copy it then.
+**Returns:** Namespace string (valid until the next change), or NULL if not set or the bus is NULL. Passing it back to `ss_set_namespace()` is safe (no-op). The string is the bus's own buffer and is read without the lock, so with several threads read it only while no other thread can call `ss_set_namespace()` on the bus, or copy it then.
 
 ### ss_emit_namespaced
 
 ```c
-ss_error_t ss_emit_namespaced(const char* ns, const char* signal_name,
-                               const ss_data_t* data);
+ss_error_t ss_emit_namespaced(ss_bus_t* bus, const char* ns, const char* signal_name,
+                              const ss_data_t* data);
 ```
 
 Emit `"ns::signal_name"`. Ignores the default namespace.
 
-**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if either parameter is NULL or the library is not initialized, `SS_ERR_WOULD_OVERFLOW` if the combined name does not fit in `SS_MAX_SIGNAL_NAME_LENGTH`, `SS_ERR_NOT_FOUND` if the signal doesn't exist.
+**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if the bus, `ns` or `signal_name` is NULL, `SS_ERR_WOULD_OVERFLOW` if the combined name does not fit in `SS_MAX_SIGNAL_NAME_LENGTH`, `SS_ERR_NOT_FOUND` if the signal doesn't exist.
 
 ---
 
 ## Deferred Emission
 
+Each bus has its own deferred queue.
+
 ### ss_emit_deferred
 
 ```c
-ss_error_t ss_emit_deferred(const char* signal_name, const ss_data_t* data);
+ss_error_t ss_emit_deferred(ss_bus_t* bus, const char* signal_name, const ss_data_t* data);
 ```
 
-Queue a signal for later emission in a FIFO of `SS_DEFERRED_QUEUE_SIZE` entries. The signal is not emitted until `ss_flush_deferred()` is called, and its existence is only checked then.
+Queue a signal for later emission in the bus's FIFO of `SS_DEFERRED_QUEUE_SIZE` entries. The signal is not emitted until `ss_flush_deferred()` is called on the same bus, and its existence is only checked then.
 
-The queue stores a copy of the payload: string and custom data are copied (the custom cleanup function is not called for the copy, which slots see as borrowed data), so the caller may free or clear its data right away. Pointer data is stored as the pointer value only. In static mode string and custom payloads must fit `SS_DEFERRED_PAYLOAD_SIZE` bytes (strings including the terminator); the copy is aligned like `malloc` memory (for any standard type, and `__int128` with GCC/Clang). Pending entries are released by `ss_cleanup()`.
+The queue stores a copy of the payload: string and custom data are copied (the custom cleanup function is not called for the copy, which slots see as borrowed data), so the caller may free or clear its data right away. Pointer data is stored as the pointer value only. In static mode string and custom payloads must fit `SS_DEFERRED_PAYLOAD_SIZE` bytes (strings including the terminator); the copy is aligned like `malloc` memory (for any standard type, and `__int128` with GCC/Clang). Pending entries are released by `ss_bus_destroy()` without being emitted.
 
-**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if the name is NULL or empty or the library is not initialized, `SS_ERR_MEMORY` if the payload copy cannot be allocated (dynamic mode), `SS_ERR_WOULD_OVERFLOW` if the queue is full or the name or payload is too long, `SS_ERR_INVALID_TYPE` for `SS_TYPE_CUSTOM` data in a library built without `SS_ENABLE_CUSTOM_DATA` (it cannot copy the payload).
+**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if the bus is NULL or the name is NULL or empty, `SS_ERR_MEMORY` if the payload copy cannot be allocated (dynamic mode), `SS_ERR_WOULD_OVERFLOW` if the queue is full or the name or payload is too long, `SS_ERR_INVALID_TYPE` for `SS_TYPE_CUSTOM` data in a library built without `SS_ENABLE_CUSTOM_DATA` (it cannot copy the payload).
 
 ### ss_flush_deferred
 
 ```c
-ss_error_t ss_flush_deferred(void);
+ss_error_t ss_flush_deferred(ss_bus_t* bus);
 ```
 
-Emit the deferred signals that were queued when the flush started, in FIFO order, and release their payload copies. Each entry is removed from the queue before it is emitted; entries queued later (for example by slots) wait for the next flush, also when a slot runs a nested `ss_flush_deferred()`.
+Emit the deferred signals that were queued on the bus when the flush started, in FIFO order, and release their payload copies. Each entry is removed from the queue before it is emitted; entries queued later (for example by slots) wait for the next flush, also when a slot runs a nested `ss_flush_deferred()`. If a slot destroys the bus, the flush stops.
 
-**Returns:** `SS_OK` if all emissions succeeded, or the last error code encountered (e.g. `SS_ERR_NOT_FOUND`).
+**Returns:** `SS_OK` if all emissions succeeded, the last error code encountered (e.g. `SS_ERR_NOT_FOUND`), or `SS_ERR_NULL_PARAM` if the bus is NULL.
 
 ---
 
 ## Batch Operations
 
-A batch stores copies of its payloads like the deferred queue (same rules, including `SS_DEFERRED_PAYLOAD_SIZE` in static mode) and holds up to `SS_BATCH_MAX_ENTRIES` entries. A batch is owned by the caller and must not be used from several threads at once.
+A batch belongs to the bus it was created for: that bus resolves names against its default namespace when entries are added, runs the emission, and reports errors to its handler. A batch stores copies of its payloads like the deferred queue (same rules, including `SS_DEFERRED_PAYLOAD_SIZE` in static mode) and holds up to `SS_BATCH_MAX_ENTRIES` entries. A batch is owned by the caller and must not be used from several threads at once.
 
 ### ss_batch_create
 
 ```c
-ss_batch_t* ss_batch_create(void);
+ss_batch_t* ss_batch_create(ss_bus_t* bus);
 ```
 
-Create a new batch for grouping emissions. Allocates from the heap in both memory modes.
+Create a new batch for `bus`. Allocates from the heap in both memory modes.
 
-**Returns:** Pointer to batch, or NULL if allocation fails.
+**Returns:** Pointer to batch, or NULL if the bus is NULL or being destroyed, or allocation fails (`SS_ERR_MEMORY` to the bus's error handler).
 
 ### ss_batch_add
 
 ```c
 ss_error_t ss_batch_add(ss_batch_t* batch, const char* signal_name,
-                         const ss_data_t* data);
+                        const ss_data_t* data);
 ```
 
-Add a signal emission to the batch. The name is resolved against the default namespace when added; the payload is copied.
+Add a signal emission to the batch. The name is resolved against the bus's default namespace when added; the payload is copied.
 
-**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if batch or name is NULL or the batch is being destroyed, `SS_ERR_MEMORY` if the payload copy cannot be allocated, `SS_ERR_WOULD_OVERFLOW` if the batch is full or the name or payload is too long, `SS_ERR_INVALID_TYPE` for `SS_TYPE_CUSTOM` data in a library built without `SS_ENABLE_CUSTOM_DATA`.
+**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if batch or name is NULL, the batch is being destroyed, or its bus is being destroyed, `SS_ERR_MEMORY` if the payload copy cannot be allocated, `SS_ERR_WOULD_OVERFLOW` if the batch is full or the name or payload is too long, `SS_ERR_INVALID_TYPE` for `SS_TYPE_CUSTOM` data in a library built without `SS_ENABLE_CUSTOM_DATA`.
 
 ### ss_batch_emit
 
@@ -534,9 +581,9 @@ Add a signal emission to the batch. The name is resolved against the default nam
 ss_error_t ss_batch_emit(ss_batch_t* batch);
 ```
 
-Emit all signals in the batch in the order they were added and release their payload copies; the batch is then empty and can be reused. Slots may add to the batch being emitted (delivered by the next `ss_batch_emit()`) or destroy it (it is freed when `ss_batch_emit()` returns and the remaining entries are dropped).
+Emit all signals in the batch on its bus, in the order they were added, and release their payload copies; the batch is then empty and can be reused. Slots may add to the batch being emitted (delivered by the next `ss_batch_emit()`) or destroy it (it is freed when `ss_batch_emit()` returns and the remaining entries are dropped). If a slot destroys the bus, the remaining entries stay in the batch.
 
-**Returns:** `SS_OK` if all emissions succeeded, the last error code, or `SS_ERR_NULL_PARAM` if batch is NULL or the library is not initialized.
+**Returns:** `SS_OK` if all emissions succeeded, the last error code, or `SS_ERR_NULL_PARAM` if batch is NULL or its bus is being destroyed.
 
 ### ss_batch_destroy
 
@@ -544,7 +591,7 @@ Emit all signals in the batch in the order they were added and release their pay
 void ss_batch_destroy(ss_batch_t* batch);
 ```
 
-Free a batch and any pending payload copies.
+Free a batch and any pending payload copies. NULL is a no-op. Destroy batches before their bus. `ss_batch_destroy()` itself never touches the bus, so a batch whose bus was destroyed from one of its slots can still be destroyed; no other batch call may follow.
 
 ---
 
@@ -588,7 +635,7 @@ Release the payload the object owns and make it an empty `SS_TYPE_VOID` object. 
 ```c
 ss_data_t d = SS_DATA_INIT;
 ss_data_set_string(&d, buffer);   /* copies; the caller may reuse buffer */
-ss_emit("status", &d);
+ss_emit(bus, "status", &d);
 ss_data_clear(&d);                /* frees the copy */
 ```
 
@@ -734,24 +781,25 @@ Requires `SS_ENABLE_INTROSPECTION=1`.
 ### ss_get_signal_count
 
 ```c
-size_t ss_get_signal_count(void);
+size_t ss_get_signal_count(ss_bus_t* bus);
 ```
 
-Get the number of registered signals.
+Get the number of signals registered on the bus (0 for a NULL bus).
 
 ### ss_get_signal_list
 
 ```c
-ss_error_t ss_get_signal_list(ss_signal_info_t** list, size_t* count);
+ss_error_t ss_get_signal_list(ss_bus_t* bus, ss_signal_info_t** list, size_t* count);
 ```
 
-Get a snapshot of all registered signals. The list and its `name` and `description` strings are copies owned by the caller and stay valid after the signals change; free everything with `ss_free_signal_list`. Allocates in both memory modes.
+Get a snapshot of all signals registered on the bus. The list and its `name` and `description` strings are copies owned by the caller and stay valid after the signals change, and after the bus is destroyed; free everything with `ss_free_signal_list`. Allocates in both memory modes.
 
 **Parameters:**
+- `bus` — The bus
 - `list` — Output pointer to signal info array
 - `count` — Output number of signals
 
-**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if an argument is NULL or the library is not initialized, `SS_ERR_MEMORY` if allocation fails.
+**Returns:** `SS_OK` on success, `SS_ERR_NULL_PARAM` if an argument is NULL, `SS_ERR_MEMORY` if allocation fails.
 
 ### ss_free_signal_list
 
@@ -765,32 +813,32 @@ Free a signal list allocated by `ss_get_signal_list`.
 
 ## Memory Statistics
 
-Requires `SS_ENABLE_MEMORY_STATS=1`.
+Requires `SS_ENABLE_MEMORY_STATS=1`. Statistics are per bus.
 
 ### ss_get_memory_stats
 
 ```c
-ss_error_t ss_get_memory_stats(ss_memory_stats_t* stats);
+ss_error_t ss_get_memory_stats(ss_bus_t* bus, ss_memory_stats_t* stats);
 ```
 
-Get current memory usage statistics.
+Get the bus's current memory usage statistics.
 
 | Field | Dynamic mode | Static mode |
 |-------|--------------|-------------|
 | `signals_used` / `slots_used` | Live signals / slots | Live signals / slots |
 | `signals_allocated` / `slots_allocated` | Signal / slot nodes held, including ones waiting to be freed after an emission | `SS_MAX_SIGNALS` / `SS_MAX_SLOTS` |
-| `total_bytes_allocated` | Heap bytes held by the library (context, signals, slots, name and description strings) | `sizeof` the context |
-| `peak_bytes_allocated` | Maximum of `total_bytes_allocated` | `sizeof` the context |
+| `total_bytes_allocated` | Heap bytes held by the bus (the bus itself when `ss_bus_create()` allocated it, signals, slots, name and description strings) | `sizeof` the bus |
+| `peak_bytes_allocated` | Maximum of `total_bytes_allocated` | `sizeof` the bus |
 | `string_bytes` | Bytes of name and description strings | 0 |
 
 Deferred payload copies, batches, data objects and signal lists are not counted.
 
-**Returns:** `SS_OK`, or `SS_ERR_NULL_PARAM` if stats is NULL or the library is not initialized.
+**Returns:** `SS_OK`, or `SS_ERR_NULL_PARAM` if the bus or stats is NULL.
 
 ### ss_reset_memory_stats
 
 ```c
-void ss_reset_memory_stats(void);
+void ss_reset_memory_stats(ss_bus_t* bus);
 ```
 
 Reset `peak_bytes_allocated` to the current `total_bytes_allocated`.
@@ -804,26 +852,27 @@ Requires `SS_ENABLE_PERFORMANCE_STATS=1`.
 ### ss_get_perf_stats
 
 ```c
-ss_error_t ss_get_perf_stats(const char* signal_name, ss_perf_stats_t* stats);
+ss_error_t ss_get_perf_stats(ss_bus_t* bus, const char* signal_name,
+                             ss_perf_stats_t* stats);
 ```
 
-Get performance statistics for a specific signal. Profiling must be enabled with `ss_enable_profiling(1)` for data to be collected.
+Get performance statistics for a signal of the bus. Profiling must be enabled on the bus with `ss_enable_profiling(bus, 1)` for data to be collected.
 
 ### ss_enable_profiling
 
 ```c
-ss_error_t ss_enable_profiling(int enabled);
+ss_error_t ss_enable_profiling(ss_bus_t* bus, int enabled);
 ```
 
-Enable or disable performance profiling. When disabled (default), no timing overhead is added to emission. Only declared when `SS_ENABLE_PERFORMANCE_STATS` is 1.
+Enable or disable performance profiling on the bus. When disabled (default), no timing overhead is added to emission. Only declared when `SS_ENABLE_PERFORMANCE_STATS` is 1.
 
 ### ss_reset_perf_stats
 
 ```c
-void ss_reset_perf_stats(void);
+void ss_reset_perf_stats(ss_bus_t* bus);
 ```
 
-Reset performance statistics for all signals.
+Reset performance statistics for all signals of the bus.
 
 ---
 
@@ -840,10 +889,10 @@ Convert an error code to a human-readable string.
 ### ss_set_error_handler
 
 ```c
-void ss_set_error_handler(void (*handler)(ss_error_t error, const char* msg));
+void ss_set_error_handler(ss_bus_t* bus, void (*handler)(ss_error_t error, const char* msg));
 ```
 
-Set a custom error handler. It is called for every failing call made while the library is initialized, including parameter errors (NULL arguments, handle 0, NULL or destroyed batch, over-long names), after the library's lock is released, so it may call library functions. `msg` is the signal name when the call has one, otherwise `ss_error_string(error)`. Requires an initialized library; reset by `ss_cleanup()`.
+Set the bus's error handler (NULL removes it). It is called for every failing call on this bus, including parameter errors (NULL arguments, handle 0, a batch being destroyed, over-long names), after the bus's lock is released, so it may call library functions. `msg` is the signal name when the call has one, otherwise `ss_error_string(error)`. Errors of calls that have no bus to report to reach no handler: a NULL bus, a NULL batch, and failed bus creation. Errors on one bus never reach another bus's handler. The handler is released with the bus.
 
 ---
 
@@ -852,34 +901,18 @@ Set a custom error handler. It is called for every failing call made while the l
 ### ss_set_max_slots_per_signal
 
 ```c
-void ss_set_max_slots_per_signal(size_t max_slots);
+void ss_set_max_slots_per_signal(ss_bus_t* bus, size_t max_slots);
 ```
 
-Set the maximum number of slots per signal. Default is `SS_DEFAULT_MAX_SLOTS_PER_SIGNAL` (100).
+Set the maximum number of live slots per signal on the bus. Default is `SS_DEFAULT_MAX_SLOTS_PER_SIGNAL` (100).
 
 ### ss_get_max_slots_per_signal
 
 ```c
-size_t ss_get_max_slots_per_signal(void);
+size_t ss_get_max_slots_per_signal(ss_bus_t* bus);
 ```
 
-Get the current maximum slots per signal.
-
-### ss_set_thread_safe
-
-```c
-void ss_set_thread_safe(int enabled);
-```
-
-Enable or disable locking at runtime. Requires `SS_ENABLE_THREAD_SAFETY=1` at compile time and an initialized library. The recursive mutex is created by `ss_init()`; this only switches its use. Thread safety is disabled by default even when compiled with `SS_ENABLE_THREAD_SAFETY=1`. Change the setting only while no other thread uses the library.
-
-### ss_is_thread_safe
-
-```c
-int ss_is_thread_safe(void);
-```
-
-Check whether thread safety is currently enabled.
+Get the bus's current maximum slots per signal (0 for a NULL bus).
 
 ---
 
@@ -890,18 +923,18 @@ Requires `SS_ENABLE_DEBUG_TRACE=1`.
 ### ss_enable_trace
 
 ```c
-void ss_enable_trace(FILE* output);
+void ss_enable_trace(ss_bus_t* bus, FILE* output);
 ```
 
-Start debug trace output (registration, connection, emission) to the given stream. Trace is off until this is called on an initialized library; `ss_cleanup()` turns it off. Passing NULL stops it.
+Start debug trace output (registration, connection, emission) of the bus to the given stream. A bus's trace is off until this is called. Passing NULL stops it.
 
 ### ss_disable_trace
 
 ```c
-void ss_disable_trace(void);
+void ss_disable_trace(ss_bus_t* bus);
 ```
 
-Disable debug trace output.
+Disable the bus's debug trace output.
 
 ---
 
@@ -910,12 +943,12 @@ Disable debug trace output.
 | Macro | Default | Description |
 |-------|---------|-------------|
 | `SS_USE_STATIC_MEMORY` | 0 | Use static memory allocation |
-| `SS_MAX_SIGNALS` | 32 | Maximum signals (static mode) |
-| `SS_MAX_SLOTS` | 128 | Maximum slots (static mode) |
+| `SS_MAX_SIGNALS` | 32 | Maximum signals per bus (static mode) |
+| `SS_MAX_SLOTS` | 128 | Maximum slots per bus (static mode) |
 | `SS_MAX_SIGNAL_NAME_LENGTH` | 256 (32 in static mode) | Name buffer size, including the terminator |
 | `SS_MAX_DESCRIPTION_LENGTH` | 32 | Description buffer size, including the terminator (static mode) |
-| `SS_STATIC_CONTEXT` | 1 | Static mode: 1 = `ss_init()` uses a context in `.bss`; 0 = no built-in context, `ss_init()` uses `SS_CALLOC` |
-| `SS_ENABLE_THREAD_SAFETY` | 1 | Enable mutex infrastructure |
+| `SS_STATIC_BUSES` | 1 | Static mode: built-in buses for `ss_bus_create()`, in `.bss`; 0 = none (buses only from `ss_bus_create_in()` pools) |
+| `SS_ENABLE_THREAD_SAFETY` | 1 | Compile in the mutex support that `SS_BUS_THREAD_SAFE` needs |
 | `SS_ENABLE_INTROSPECTION` | 1 | Enable signal listing |
 | `SS_ENABLE_CUSTOM_DATA` | 1 | Custom data functions and queuing of `SS_TYPE_CUSTOM` |
 | `SS_ENABLE_PERFORMANCE_STATS` | 0 | Enable timing statistics |
@@ -924,10 +957,10 @@ Disable debug trace output.
 | `SS_ENABLE_ISR_SAFE` | 0 | Enable ISR-safe operations |
 | `SS_ISR_QUEUE_SIZE` | 16 | ISR queue depth |
 | `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` | undefined | Disable/restore interrupts on targets without atomic compare-and-swap |
-| `SS_DEFERRED_QUEUE_SIZE` | 64 (16 with `SS_EMBEDDED_BUILD`) | Deferred emission queue depth |
+| `SS_DEFERRED_QUEUE_SIZE` | 64 (16 with `SS_EMBEDDED_BUILD`) | Deferred emission queue depth, per bus |
 | `SS_DEFERRED_PAYLOAD_SIZE` | 32 | String/custom bytes per deferred or batch entry (static mode) |
 | `SS_BATCH_MAX_ENTRIES` | `SS_DEFERRED_QUEUE_SIZE` | Entries per batch |
-| `SS_DEFAULT_MAX_SLOTS_PER_SIGNAL` | 100 | Default slot limit |
+| `SS_DEFAULT_MAX_SLOTS_PER_SIGNAL` | 100 | Default slot limit of a new bus |
 | `SS_CACHE_LINE_SIZE` | 64 | Cache line alignment hint |
 | `SS_MALLOC(size)` | `malloc(size)` | Custom allocator |
 | `SS_FREE(ptr)` | `free(ptr)` | Custom deallocator |
@@ -941,20 +974,25 @@ No macro changes a public type layout or enum value. Configuration must still be
 
 ## Thread Safety
 
-When `SS_ENABLE_THREAD_SAFETY` is enabled and `ss_set_thread_safe(1)` is called:
-- Every function that touches shared state (signals, slots, deferred queue, namespace, error handler, profiling flag, slot limit, trace stream) takes one recursive mutex
-- Signals can be emitted from multiple threads
-- Slots run with the mutex held and may call back into the library; a slot must not wait for another thread that is itself calling the library
-- Thread safety is disabled by default and must be enabled at runtime, after `ss_init()`, while no other thread uses the library
-- `ss_init()` and `ss_cleanup()` are not thread-safe
-- A batch must not be used from several threads at once
-- `ss_emit_from_isr()` needs no lock
+- Thread safety is chosen per bus, at creation: `ss_bus_create(&bus, SS_BUS_THREAD_SAFE)`. It needs `SS_ENABLE_THREAD_SAFETY=1` at compile time; without it the flag returns `SS_ERR_CONFIG_MISMATCH`.
+- A thread-safe bus has its own recursive mutex. Every function that touches the bus's state (signals, slots, deferred queue, namespace, error handler, profiling flag, slot limit, trace stream) takes it, so the bus can be used from several threads.
+- A bus created without the flag has no mutex: use it from one thread at a time. Buses share no state, so threads that each use their own bus need no lock at all.
+- Slots run with their bus's mutex held and may call back into the library; a slot must not wait for another thread that is itself calling the same bus.
+- **Cross-bus calls from slots go in one direction only.** A slot of bus A that calls bus B holds A's lock while it takes B's. If another thread's slot of B calls A at the same time, the two threads deadlock. Pick an order (for example "UI bus may call the model bus, never the reverse") and keep to it.
+- `ss_bus_destroy()` is not thread-safe with respect to other threads using the same bus. In static mode, creating and destroying built-in buses is not locked: do it from one thread. In dynamic mode, `ss_bus_create()` only calls `SS_CALLOC` and is safe from any thread; `ss_bus_create_in()` is safe from any thread for distinct pools.
+- A batch must not be used from several threads at once.
+- `ss_emit_from_isr()` needs no lock.
 
 ## Best Practices
 
-1. **Initialize early** — Call `ss_init()` before any other library calls
+1. **Create the bus first** — Call `ss_bus_create()` before any other call that takes the bus, and check its result
 2. **Check returns** — Always check `ss_error_t` return values
 3. **Use handles** — Prefer connection handles for dynamic connections
 4. **Set priorities** — Use priorities to ensure critical handlers run first
-5. **Clean up** — Always call `ss_cleanup()` before program exit
+5. **Destroy the bus** — Call `ss_bus_destroy()` when done, after destroying its batches; never use the pointer afterwards
 6. **Validate names** — Keep signal names shorter than `SS_MAX_SIGNAL_NAME_LENGTH`
+7. **One global bus?** — A program that wants one keeps it in its own global (`static ss_bus_t* bus;`); see the [migration guide](migration-3.0.md#the-bus-argument) for a small wrapper
+
+## Removed in 3.0
+
+The 2.x functions that initialized and cleaned up the global context, sized its pool and switched locking on and off, and the macro that kept the context in static storage, no longer exist. They are replaced by `ss_bus_create()`, `ss_bus_create_in()` (which returns an error for a NULL or too small pool instead of falling back), `ss_bus_pool_size()`, `ss_bus_destroy()`, the `SS_BUS_THREAD_SAFE` flag and `SS_STATIC_BUSES`. The [migration guide](migration-3.0.md#creating-and-destroying-a-bus) maps each old name to its replacement.

@@ -4,13 +4,13 @@ This document describes the internal design and data structures of SS_Lib 3.0.0.
 
 ## Overview
 
-SS_Lib is a signal-slot event system with two memory models (dynamic and static), optional thread safety, and a layered feature set controlled by compile-time flags.
+SS_Lib is a signal-slot event system with two memory models (dynamic and static), optional per-bus thread safety, and a layered feature set controlled by compile-time flags. All state lives in buses (`ss_bus_t`), which share nothing.
 
 ```
 +------------------+
 |  Public API      |  ss_emit, ss_connect, ss_signal_register, ...
 +------------------+
-|  Entry / Exit    |  ctx_enter / ctx_leave: lock, nesting depth, deferred cleanup, errors
+|  Entry / Exit    |  bus_enter / bus_leave: lock, nesting depth, deferred destroy, errors
 +------------------+
 |  Feature Layer   |  Namespaces, Deferred, Batch, ISR queue, Stats, Trace
 +------------------+
@@ -20,43 +20,53 @@ SS_Lib is a signal-slot event system with two memory models (dynamic and static)
 +------------------+
 ```
 
-## Library Context
+## Buses
 
-All state lives in one `ss_context_t`, except the ISR queue (below). The context holds the signal storage, the default namespace (`char ns[SS_MAX_SIGNAL_NAME_LENGTH]`, an inline buffer), the error handler, the handle counter, the mutex, the deferred queue entries, and the nesting counters `call_depth` and `closing`.
+All state lives in a bus, `struct ss_bus` (public as the opaque `ss_bus_t`). A bus holds the signal storage, the default namespace (`char ns[SS_MAX_SIGNAL_NAME_LENGTH]`, an inline buffer), the error handler, the handle counter, the slot limit, the mutex (when it has one), the deferred queue entries, the statistics and trace settings, and the nesting counters `call_depth` and `closing`. Every public function that uses state takes the bus as its first argument, and every internal function (name resolution, the storage interface, emission, sweep and retire, the entry queue, error reporting, trace) takes it as its `bus` parameter. Buses share nothing, so two buses with the same signal names are independent.
 
-Only the public entry points read the global pointer `g_context` that holds the live context: `ctx_enter()` (which every other public function goes through), the init functions, and `ss_set_thread_safe` / `ss_is_thread_safe`. `ctx_leave()` clears it when it finishes a deferred cleanup. Every internal function (name resolution, the storage interface, emission, sweep and retire, the entry queue, error reporting, trace) takes the context as its `ctx` parameter and never reads the global. The ISR queue is the one exception: it is global state of its own, outside the context.
+The library has no default bus and almost no global state. What remains:
 
-Where the context lives depends on how the library was initialized:
+- in static mode, the table of built-in buses `g_static_buses[SS_STATIC_BUSES]` in `.bss`;
+- with `SS_ENABLE_ISR_SAFE`, the ISR queue, which every bus shares for now (see [ISR Queue](#isr-queue)).
 
-| Initialization | Context location | Freed by `ss_cleanup()` |
-|----------------|------------------|-------------------------|
-| `ss_init()`, dynamic mode | Heap (`SS_CALLOC`) | Yes (`heap_owned`) |
-| `ss_init()`, `SS_USE_STATIC_MEMORY`, `SS_STATIC_CONTEXT=1` (default) | Static storage (`g_static_context`, in `.bss`) | No |
-| `ss_init()`, `SS_USE_STATIC_MEMORY`, `SS_STATIC_CONTEXT=0` | Heap (`SS_CALLOC`), as in 2.1 | Yes |
-| `ss_init_static(pool, size)`, either mode, pool large enough | Caller's pool, aligned inside it | No, the pool is never freed |
+### Where a bus lives
 
-`ss_get_required_pool_size()` returns `sizeof(ss_context_t)` plus alignment slack, so the pool needs no particular alignment. `ss_init_static` only places the context; signals and slots still follow the compiled memory model. For 2.1 compatibility, a NULL pool or one smaller than that size is ignored and the call behaves exactly like `ss_init()`; it never returns `SS_ERR_NULL_PARAM` or `SS_ERR_BUFFER_TOO_SMALL`. `SS_STATIC_CONTEXT=0` drops the built-in `.bss` context, which saves a whole context of RAM when the application always supplies its own pool.
+The bus's `storage` field records where its own memory came from, so `ss_bus_destroy()` knows how to release it:
 
-`ss_init()` and `ss_init_static()` are plain functions. The configuration check is opt-in: `ss_init_abi(SS_ABI_TAG)` / `ss_init_static_abi(pool, size, SS_ABI_TAG)` compare `SS_ABI_TAG` (`sizeof(ss_data_t) * 16 + SS_ABI_REVISION` as the caller's compilation sees it) with the library's value and return `SS_ERR_CONFIG_MISMATCH` on a difference, before initializing. New code should initialize through them; `ss_init()` and `ss_init_static()` simply pass the library's own tag.
+| Created by | `storage` | Bus memory | Released by `ss_bus_destroy()` |
+|------------|-----------|------------|--------------------------------|
+| `ss_bus_create()`, dynamic mode | `BUS_ON_HEAP` | Heap (`SS_CALLOC`) | `SS_FREE` |
+| `ss_bus_create()`, static mode | `BUS_BUILT_IN` | An entry of `g_static_buses` | Marked `BUS_FREE` for reuse |
+| `ss_bus_create_in(pool, size)`, either mode | `BUS_IN_POOL` | Caller's pool, aligned inside it | Nothing: the pool belongs to the caller |
+
+An unused built-in bus has `storage == BUS_FREE` (zero, as `.bss` starts). `ss_bus_create()` in static mode takes the first free entry and returns `SS_ERR_WOULD_OVERFLOW` when every one is in use; it never touches the heap. Claiming and releasing built-in buses is not locked, so they are created and destroyed from one thread. `SS_STATIC_BUSES=0` drops the table: buses then come only from pools. Dynamic-mode creation only calls `SS_CALLOC` and is safe from any thread.
+
+`ss_bus_pool_size()` returns `sizeof(struct ss_bus)` plus alignment slack, so a pool needs no particular alignment. A NULL pool is `SS_ERR_NULL_PARAM` and a pool that cannot hold the aligned bus is `SS_ERR_BUFFER_TOO_SMALL`; nothing is written to it then. A pool only places the bus; signals and slots still follow the compiled memory model.
+
+`bus_init()` makes any of these memories an empty bus (`memset`, defaults, queue setup, the mutex if requested) and sets `storage` last, so a built-in bus is only claimed once it is usable.
+
+### Configuration check
+
+`ss_bus_create(&bus, flags)` and `ss_bus_create_in(&bus, pool, size, flags)` are macros that pass the caller's `SS_ABI_TAG` (`sizeof(ss_data_t) * 16 + SS_ABI_REVISION` as the caller's compilation sees it) to `ss_bus_create_abi()` / `ss_bus_create_in_abi()`. Both start with `create_check()`: a NULL output pointer is `SS_ERR_NULL_PARAM`; a tag that differs from the library's, or a flag the library does not support (`SS_BUS_THREAD_SAFE` without `SS_ENABLE_THREAD_SAFETY`, or an unknown bit), is `SS_ERR_CONFIG_MISMATCH`. The check therefore runs on every creation without the caller asking for it.
 
 No configuration macro changes a public type: `ss_lib.h` has no `#if` inside a struct, union or enum body, and custom data lives in the value union (`value.custom`). Feature flags only gate function declarations, so a caller and library built with different flags fail to compile or link rather than disagree on a layout. The tag therefore guards against what flags cannot cause: a header from another version (`SS_ABI_REVISION` is bumped when a public layout changes) and layout-changing compiler options. `scripts/check_abi.sh` (`make check-abi`) enforces both rules: it rejects a conditional inside a public type body and compares struct sizes, member offsets and enum values printed by a probe compiled in every tested configuration.
 
-## Entry and Exit (`ctx_enter` / `ctx_leave`)
+## Entry and Exit (`bus_enter` / `bus_leave`)
 
-Every public function that touches shared state is wrapped in `ctx_enter()` / `ctx_leave()`. Locking, nesting, deferred cleanup and error reporting live only there.
+Every public function that touches a bus is wrapped in `bus_enter()` / `bus_leave()`. Locking, nesting, deferred destruction and error reporting live only there.
 
-`ctx_enter()`:
-1. Returns NULL if there is no context (the caller returns `SS_ERR_NULL_PARAM`, 0 or NULL)
-2. Locks the mutex if `thread_safe` is set, and records whether it did
-3. Returns NULL if `closing` is set (a deferred `ss_cleanup()` is pending)
-4. Increments `call_depth`
+`bus_enter(bus, &locked)`:
+1. Returns 0 for a NULL bus (the caller returns `SS_ERR_NULL_PARAM`, 0 or NULL)
+2. Locks the bus's mutex if the bus was created with `SS_BUS_THREAD_SAFE` (`thread_safe`, fixed at creation), and records whether it did
+3. Returns 0 if `closing` is set (a deferred `ss_bus_destroy()` is pending)
+4. Increments `call_depth` and returns 1
 
-`ctx_leave()`:
-1. Decrements `call_depth`; if it reached 0 and `closing` is set, the context must be destroyed
+`bus_leave()`:
+1. Decrements `call_depth`; if it reached 0 and `closing` is set, the bus must be destroyed
 2. Unlocks the mutex if this call locked it
-3. After unlocking: destroys the context (deferred cleanup) or, if the call failed, invokes the error handler with the signal name or `ss_error_string(err)`
+3. After unlocking: destroys the bus (deferred destroy) or, if the call failed, invokes the bus's error handler with the signal name or `ss_error_string(err)`
 
-The handler fires for every failing call while the library is initialized, including parameter errors (NULL arguments, handle 0, a NULL or destroyed batch, too-long names). Calling it after unlocking means a handler may itself call the library.
+The handler fires for every failing call on the bus, including parameter errors (NULL arguments, handle 0, a batch being destroyed, too-long names). Calls with no bus (a NULL bus or batch) and failed creation have no handler to report to. Calling it after unlocking means a handler may itself call the library.
 
 ## Name Resolution
 
@@ -77,12 +87,12 @@ There is no hash table. Lookup (`signal_find`) is a linear scan comparing names 
 Signals are a singly-linked list of heap nodes, each with a heap copy of its name (and description when `SS_ENABLE_INTROSPECTION` is on). New signals are prepended.
 
 ```
-ctx->signals -> [sig3] -> [sig2] -> [sig1] -> NULL
+bus->signals -> [sig3] -> [sig2] -> [sig1] -> NULL
 ```
 
 ### Static Mode
 
-Signals are a fixed array `signals[SS_MAX_SIGNALS]` inside the context. Names and descriptions are inline buffers (`name[SS_MAX_SIGNAL_NAME_LENGTH]`, `description[SS_MAX_DESCRIPTION_LENGTH]`). A free entry has `name[0] == '\0'`; registration takes the first free entry and returns `SS_ERR_WOULD_OVERFLOW` when none is left or the description is too long.
+Signals are a fixed array `signals[SS_MAX_SIGNALS]` inside the bus, so each bus has its own. Names and descriptions are inline buffers (`name[SS_MAX_SIGNAL_NAME_LENGTH]`, `description[SS_MAX_DESCRIPTION_LENGTH]`). A free entry has `name[0] == '\0'`; registration takes the first free entry and returns `SS_ERR_WOULD_OVERFLOW` when none is left or the description is too long.
 
 ```
 signals[0]: name="button_click"
@@ -105,13 +115,13 @@ sig->slots -> [CRITICAL] -> [HIGH] -> [NORMAL] -> [NORMAL] -> [LOW] -> NULL
 
 `ss_connect_ex` prepends when the list is empty or the new priority is higher than the head; otherwise it walks while `next->priority >= priority` and inserts there. Emission therefore never sorts.
 
-In dynamic mode each slot is a heap node; in static mode it comes from `slots[SS_MAX_SLOTS]` in the context, where a free entry has `func == NULL`.
+In dynamic mode each slot is a heap node; in static mode it comes from `slots[SS_MAX_SLOTS]` in the bus, where a free entry has `func == NULL`.
 
 `sig->slot_count` counts live slots only (removed ones are excluded), so the per-signal limit (`max_slots_per_signal`) applies to live slots.
 
 ### Connection Handles
 
-Each slot gets a handle from `ctx->next_handle`, starting at 1 and skipping 0 on wrap-around (0 means "no handle"). `ss_disconnect_handle` scans the slots of all live signals for it.
+Each slot gets a handle from `bus->next_handle`, starting at 1 and skipping 0 on wrap-around (0 means "no handle"). `ss_disconnect_handle` scans the slots of all live signals of the bus for it. Handles are per bus: two buses hand out the same values.
 
 ## Removal and Safe Emission
 
@@ -119,7 +129,7 @@ Slots and signals are never freed while their signal is emitting. They are marke
 
 - **Disconnect**: `slot->removed = 1`, `sig->slot_count--`, `sig->dirty = 1`. If the signal is not emitting, `sweep_removed_slots()` unlinks and frees the marked slots at once.
 - **Unregister**: all slots are marked removed and the signal leaves `signal_count`. If it is emitting, `sig->retired = 1`; retired signals are invisible to lookup (so the name can be registered again immediately) and are destroyed at the end of their outermost emission.
-- **Cleanup**: see below; it marks every slot of every signal removed.
+- **Bus destroy**: see below; it marks every slot of every signal of the bus removed.
 
 The emit loop (`emit_locked`):
 
@@ -132,14 +142,14 @@ for (slot = sig->slots; slot; ) {
 }
 sig->emitting--;
 if (sig->emitting == 0) {
-    if (sig->retired) signal_destroy(ctx, sig);
-    else if (sig->dirty) sweep_removed_slots(ctx, sig);
+    if (sig->retired) signal_destroy(bus, sig);
+    else if (sig->dirty) sweep_removed_slots(bus, sig);
 }
 ```
 
 Consequences:
 - A slot disconnected by an earlier slot is skipped; nothing is freed under the iterator.
-- Unregistering the signal or calling `ss_cleanup()` from a slot marks every slot removed, so the rest of that emission is skipped.
+- Unregistering the signal or calling `ss_bus_destroy()` from a slot marks every slot removed, so the rest of that emission is skipped.
 - A slot connected during an emission of the same signal is inserted into the live list. Whether that emission reaches it depends on where its priority places it relative to the iterator, so callers must not rely on either outcome.
 
 ## Data Ownership
@@ -148,11 +158,11 @@ An `ss_data_t` frees its string or custom payload only when its `owned` field is
 
 Slots always receive borrowed data. `ss_emit` and `ss_emit_namespaced` pass an object that owns its payload through `borrowed_view`, a stack copy with `owned` cleared that points to the same payload; borrowed data is passed as is. A slot that copies its data and reuses the copy with a setter therefore never frees the emitter's payload.
 
-## Deferred Cleanup
+## Deferred Destroy
 
-`ss_cleanup()` sets `closing = 1` and marks all slots removed. If no call is in progress, `ctx_leave()` destroys the context immediately. Called from inside a slot, `call_depth` is still above zero, so destruction waits until the outermost library call returns. Meanwhile `ctx_enter()` refuses every call (the library behaves as uninitialized), queue flushes and ISR drains stop early, and `ss_init()` returns `SS_ERR_ALREADY_EXISTS`.
+`ss_bus_destroy()` enters the bus, sets `closing = 1` and marks all its slots removed. If no other call on the bus is in progress, `bus_leave()` destroys the bus immediately. Called from inside a slot, `call_depth` is still above zero, so destruction waits until the bus's outermost call returns. Meanwhile `bus_enter()` refuses every call on the bus (`SS_ERR_NULL_PARAM`, 0 or NULL; a second `ss_bus_destroy()` is a no-op), and queue flushes and ISR drains on it stop early. The bus's memory stays valid until then, so the slots still running may keep passing the pointer. Other buses are not affected, also when the slot is running inside a call on another bus.
 
-`ctx_leave()` clears `g_context`, then `context_destroy()` releases pending deferred entries, destroys all signals, discards ready ISR events, destroys the mutex and frees the context only if it is heap-owned.
+`bus_leave()` unlocks, then `bus_free()` releases pending deferred entries, destroys all signals, destroys the mutex (if the bus has one), and frees the bus (heap), marks it `BUS_FREE` (built-in) or leaves it (pool). After that the pointer is dangling: a later call is undefined behavior, like memory after `free()`.
 
 ## Entry Queue (Deferred Emission and Batches)
 
@@ -169,13 +179,13 @@ typedef struct {
 
 - `queue_push` copies the resolved name and the data. String and custom payloads are copied (static mode: into the inline buffer, aligned like `long double`, from C11 `max_align_t` (not with MSVC, whose C headers lack it), and with GCC/Clang `__int128`, `SS_ERR_WOULD_OVERFLOW` if larger than `SS_DEFERRED_PAYLOAD_SIZE`; dynamic mode: `SS_MALLOC`). The entry, not its `ss_data_t`, owns the copy (`has_payload`, freed by `entry_release`): `owned` and `value.custom.cleanup` are cleared in the entry, so the cleanup belongs to the caller's object and is never called for the copy. A library built without `SS_ENABLE_CUSTOM_DATA` has no code to copy custom data, so `entry_fill` refuses an `SS_TYPE_CUSTOM` entry with `SS_ERR_INVALID_TYPE` before touching the ring slot.
 - Every entry gets a push sequence number from the queue's `pushed` counter. `queue_flush` records `pushed` when it starts and stops at the first entry pushed after that (wrap-safe comparison), so it emits only the entries queued before it started, oldest first, even when a slot runs a nested flush of the same queue. Each entry is **popped before it is emitted**, so slots may push to, or flush, the same queue; entries pushed meanwhile wait for the next flush. The slot sees an `ss_data_t` rebuilt by `entry_view` that points into the entry's payload copy, released right after the emission.
-- Flushing stops early if the context is closing (or, for batches, if the batch was destroyed by a slot).
+- Flushing stops early if the bus is closing (or, for batches, if the batch was destroyed by a slot).
 
-The deferred queue is `deferred_entries[SS_DEFERRED_QUEUE_SIZE]` inside the context. A batch (`struct ss_batch`) is a heap object with `entries[SS_BATCH_MAX_ENTRIES]`, its queue, and `emitting` / `destroy_pending` counters: `ss_batch_destroy` from a slot only sets `destroy_pending`, and `ss_batch_emit` frees the batch when it returns. Batches are not locked against concurrent use of the same batch.
+The deferred queue is `deferred_entries[SS_DEFERRED_QUEUE_SIZE]` inside the bus. A batch (`struct ss_batch`) is a heap object with `entries[SS_BATCH_MAX_ENTRIES]`, its queue, the `bus` it was created for (`ss_batch_create(bus)`), and `emitting` / `destroy_pending` counters. `ss_batch_add` and `ss_batch_emit` enter that bus, which resolves names, emits and reports errors. `ss_batch_destroy` from a slot only sets `destroy_pending`, and `ss_batch_emit` frees the batch when it returns (it reads `batch->bus` first, so it can still leave the bus). `ss_batch_destroy` never touches the bus, so it also works on a batch whose bus a slot destroyed. Batches are not locked against concurrent use of the same batch.
 
 ## ISR Queue
 
-With `SS_ENABLE_ISR_SAFE`, `ss_emit_from_isr` writes into a fixed global array `g_isr_queue[SS_ISR_QUEUE_SIZE]`, independent of the context (so it works before `ss_init`). Each entry has an atomic `state`, an atomic sequence number `seq`, the int value and the name.
+With `SS_ENABLE_ISR_SAFE`, `ss_emit_from_isr` writes into a fixed global array `g_isr_queue[SS_ISR_QUEUE_SIZE]`. It is shared by every bus and takes no bus, so it works before any bus exists; an event goes to whichever bus next processes the queue. Each entry has an atomic `state`, an atomic sequence number `seq`, the int value and the name.
 
 Entry states: `FREE -> WRITING -> READY -> READING -> FREE`.
 
@@ -187,51 +197,52 @@ Entry states: `FREE -> WRITING -> READY -> READING -> FREE`.
 
 No locks, no allocation, no slot calls. Because claiming is a CAS, nested interrupts and several threads may enqueue concurrently.
 
-`ss_process_isr_queue` (normal context, through `ctx_enter`):
+`ss_process_isr_queue(bus)` (normal context, through `bus_enter`):
 1. Snapshots the READY entries and sorts them by sequence number (wrap-around safe). An interrupt during the scan can queue one event in an entry already scanned and a newer one in an entry not yet scanned, so it scans again until a scan finds no new entry (at most `SS_ISR_QUEUE_SIZE` extra scans); READY entries stay READY until taken, so the snapshot then holds every event older than its newest
-2. For each, claims it `READY -> READING`, copies name and value, frees it (`-> FREE`), resolves the name against the default namespace and emits it
+2. For each, claims it `READY -> READING`, copies name and value, frees it (`-> FREE`), resolves the name against the bus's default namespace and emits it on the bus
 
-Events queued after the snapshot wait for the next call. `ss_cleanup` discards READY entries.
+Events queued after the snapshot wait for the next call. Several buses may drain the queue concurrently: the `READY -> READING` claim gives each event to exactly one. Destroying a bus leaves READY entries in the queue (a drain interrupted by the bus's destruction leaves the rest too); they go to the next bus that processes the queue.
 
 Atomics come from C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins, or MSVC `Interlocked*`. If `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` are defined, they take precedence and wrap plain accesses, for cores without compare-and-swap (Cortex-M0, AVR); they must also be compiler memory barriers. `tests/test_isr.c` compiles the implementation with hooked macros to interrupt `ss_process_isr_queue` at every point of its scan.
 
 ## Namespace Implementation
 
-Namespaces are syntactic: there is no namespace registry. `ss_set_namespace` copies the namespace into the context's inline `ns` buffer (`NULL` or `""` clears it; a namespace too long for even `"ns::x"` is `SS_ERR_WOULD_OVERFLOW`). Passing the pointer returned by `ss_get_namespace()` (the buffer itself) is detected and is a no-op. Name resolution (above) applies it to every name-taking function. `ss_emit_namespaced(ns, name, data)` builds `"ns::name"` itself and ignores the default namespace.
+Namespaces are syntactic: there is no namespace registry. `ss_set_namespace` copies the namespace into the bus's inline `ns` buffer (`NULL` or `""` clears it; a namespace too long for even `"ns::x"` is `SS_ERR_WOULD_OVERFLOW`). Passing the pointer returned by `ss_get_namespace()` (the buffer itself) is detected and is a no-op. Name resolution (above) applies it to every name-taking function. `ss_emit_namespaced(bus, ns, name, data)` builds `"ns::name"` itself and ignores the default namespace.
 
 ## Thread Safety
 
-With `SS_ENABLE_THREAD_SAFETY=1`, `ss_init` creates one **recursive** mutex in the context (pthread mutex with `PTHREAD_MUTEX_RECURSIVE`, or a Windows `CRITICAL_SECTION`). Locking is off until `ss_set_thread_safe(1)`, which only flips a flag; `ctx_enter` records per call whether it locked, so the setting can change without unbalancing an in-flight call (it still must only change while no other thread uses the library).
+Thread safety is chosen per bus at creation. With `SS_ENABLE_THREAD_SAFETY=1`, a bus created with `SS_BUS_THREAD_SAFE` gets its own **recursive** mutex (pthread mutex with `PTHREAD_MUTEX_RECURSIVE`, or a Windows `CRITICAL_SECTION`) and `thread_safe = 1`; `bus_enter` locks it on every call. A bus created without the flag has no mutex and is never locked. The flag cannot change later. Without `SS_ENABLE_THREAD_SAFETY` the flag is refused with `SS_ERR_CONFIG_MISMATCH`.
 
-- Every public function that reads or writes shared state locks, including the deferred queue, namespace, error handler, profiling flag and max-slots setting.
-- Slots run with the mutex held. Recursion lets a slot call back into the library on the same thread; a slot that waits for another thread that is itself calling the library deadlocks.
-- `ss_init` / `ss_cleanup` are not thread-safe with respect to other threads.
+- Every public function that reads or writes the bus's state locks, including the deferred queue, namespace, error handler, profiling flag and max-slots setting.
+- Slots run with their bus's mutex held. Recursion lets a slot call back into the same bus on the same thread; a slot that waits for another thread that is itself calling that bus deadlocks.
+- Different buses share no mutable state and never contend. A slot of bus A that calls bus B holds A's lock while it takes B's, so two threads making cross-bus calls in opposite directions (A to B and B to A) can deadlock: cross-bus calls from slots must go in one direction only.
+- `ss_bus_destroy` is not thread-safe with respect to other threads using the same bus. Creating and destroying built-in buses (static mode) is not locked.
 - The ISR enqueue path never locks.
 
-The single-mutex design was chosen over fine-grained locking for simplicity, small code size and the absence of lock-ordering issues. The trade-off is that concurrent emission of different signals contends on the same lock, which suits the target use cases (embedded, game loops) where emission is mostly single-threaded.
+One mutex per bus, rather than fine-grained locking inside a bus, keeps the code small and free of lock-ordering issues within a bus. The trade-off is that concurrent emission of different signals on the same bus contends on its lock; an application that needs parallelism splits its signals over several buses.
 
 ## Memory Modes and Allocation
 
 | Object | Dynamic mode | Static mode |
 |--------|--------------|-------------|
-| Context | Heap (or caller pool) | `.bss`, or heap with `SS_STATIC_CONTEXT=0` (or caller pool) |
-| Signals, names, descriptions | Heap | Context arrays |
-| Slots | Heap | Context array |
-| Namespace | Context buffer | Context buffer |
-| Deferred entries and payloads | Context array, heap payload copies | Context array, inline payloads |
+| Bus | Heap, or caller pool | Built-in bus in `.bss` (`SS_STATIC_BUSES`), or caller pool |
+| Signals, names, descriptions | Heap | Bus arrays |
+| Slots | Heap | Bus array |
+| Namespace | Bus buffer | Bus buffer |
+| Deferred entries and payloads | Bus array, heap payload copies | Bus array, inline payloads |
 | `ss_data_create` / `ss_data_set_string` / `ss_data_set_custom` | Heap | Heap |
 | `ss_data_set_string_ref` / `ss_data_set_custom_ref` | None | None |
 | `ss_get_signal_list` result, `ss_batch_create` | Heap | Heap |
 
-In static mode (with the default `SS_STATIC_CONTEXT=1` or a caller pool), register, connect, emit, deferred, namespace, disconnect, unregister and cleanup never touch the heap. Only functions whose purpose is to hand the caller an allocated object allocate.
+In static mode, bus creation, register, connect, emit, deferred, ISR, namespace, disconnect, unregister and bus destruction never touch the heap, on every bus. Only functions whose purpose is to hand the caller an allocated object allocate. `tests/test_memory.c` checks this with two built-in buses and one pool bus alive at once.
 
 ## Custom Allocators
 
-All allocation goes through `SS_MALLOC`, `SS_FREE` and `SS_CALLOC` from `ss_config.h`. Strings are copied with an internal `ss_strdup` that uses `SS_MALLOC`, so overriding `SS_MALLOC`/`SS_FREE` routes every allocation; `SS_STRDUP` can be defined to override string duplication specifically. With `SS_ENABLE_MEMORY_STATS` in dynamic mode, the library accounts the heap bytes it holds (context, signals, slots, strings).
+All allocation goes through `SS_MALLOC`, `SS_FREE` and `SS_CALLOC` from `ss_config.h`. Strings are copied with an internal `ss_strdup` that uses `SS_MALLOC`, so overriding `SS_MALLOC`/`SS_FREE` routes every allocation; `SS_STRDUP` can be defined to override string duplication specifically. With `SS_ENABLE_MEMORY_STATS` in dynamic mode, each bus accounts the heap bytes it holds (the bus itself when it is on the heap, signals, slots, strings).
 
 ## Error Reporting
 
-Public functions return `ss_error_t`. Failures of calls made while the library is initialized are also reported to the user error handler from `ctx_leave()`, after the mutex is released. Debug trace (`SS_ENABLE_DEBUG_TRACE`) writes to the stream set by `ss_enable_trace()` (stored in the context and changed under the lock) and is silent until then; the library uses an internal trace function. The public `SS_TRACE` macro in `ss_config.h` is kept only for source compatibility, deprecated and unused by the library.
+Public functions return `ss_error_t`. Failures of calls on a bus are also reported to that bus's error handler from `bus_leave()`, after the mutex is released. Debug trace (`SS_ENABLE_DEBUG_TRACE`) writes to the stream set by `ss_enable_trace(bus, stream)` (stored in the bus and changed under its lock) and is silent until then; the library uses an internal trace function. The public `SS_TRACE` macro in `ss_config.h` is kept only for source compatibility, deprecated and unused by the library.
 
 ## Build Variants
 
