@@ -76,7 +76,7 @@ target_link_libraries(your_app ss_lib::ss_lib)
 brew install dardevelin/ss-lib/ss-lib
 ```
 
-Use the full name: Homebrew 7 does not load a third-party tap's formula by its short name until the tap is trusted (`brew trust dardevelin/ss-lib`). The formula has no dependencies. On macOS 15 and 26 (Apple silicon) and Linux (x86_64 and arm64) it installs a prebuilt bottle; elsewhere, or with `--build-from-source`, it builds with `make`. It installs the static and shared library (thread safety and performance statistics enabled), `ss_lib.pc`, the CMake package and `ss_lib_single.h`. Compile with `pkg-config --cflags --libs ss_lib` or link `ss_lib::ss_lib` from `find_package` so your program uses the same configuration. Until 3.0.0 is released, Homebrew installs the latest 2.x: use `find_package(ss_lib 2)` with it.
+Use the full name: Homebrew 7 does not load a third-party tap's formula by its short name until the tap is trusted (`brew trust dardevelin/ss-lib`). The formula has no dependencies. On macOS 15 and 26 (Apple silicon) and Linux (x86_64 and arm64) it installs a prebuilt bottle; elsewhere, or with `--build-from-source`, it builds with `make`. It installs the static and shared library (thread safety and performance statistics enabled), `ss_lib.pc`, the CMake package and `ss_lib_single.h`. Compile with `pkg-config --cflags --libs ss_lib` or link `ss_lib::ss_lib` from `find_package` so your program uses the same configuration. Programs not yet migrated to 3.0 can install the latest 2.2.x with `brew install dardevelin/ss-lib/ss-lib@2`: it is keg-only, so point `PKG_CONFIG_PATH` or `CMAKE_PREFIX_PATH` at `$(brew --prefix dardevelin/ss-lib/ss-lib@2)` and use `find_package(ss_lib 2)`.
 
 ### Single Header
 

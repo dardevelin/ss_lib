@@ -32,11 +32,10 @@ Enhancement suggestions are welcome! Please include:
 
 | Branch | Holds | Pull requests |
 |---|---|---|
-| `v3` | SS_Lib 3.0 until 3.0.0 is released; pre-release tags `v3.0.0-rc.N` | Changes for 3.0 |
-| `main` | 2.2.x until 3.0.0 is merged into it, then 3.x | Fixes for 2.2.x now, all changes after 3.0.0 |
-| `release/2.x` | Created at the 3.0.0 release: 2.2.x security fixes (see [SECURITY.md](SECURITY.md)) | Security fixes for 2.2.x |
+| `main` | 3.x; release tags `vX.Y.Z` | All changes |
+| `release/2.x` | 2.2.x security fixes (see [SECURITY.md](SECURITY.md)); maintenance tags `v2.2.Z` | Security fixes for 2.2.x |
 
-Changes merged into `main` before 3.0.0 are merged into `v3` too. Until 3.0.0, a change for 3.0 that breaks 2.x code also updates [docs/migration-3.0.md](docs/migration-3.0.md).
+A security fix that also affects 2.2.x is made on `main` first and then applied to `release/2.x` in its own pull request, with the same regression test.
 
 ### Pull Requests
 

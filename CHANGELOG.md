@@ -5,10 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.0.0] - Unreleased
+## [Unreleased]
 
-In development on the `v3` branch; [docs/migration-3.0.md](docs/migration-3.0.md)
-lists what changes for programs written for 2.x.
+## [3.0.0] - 2026-11-05
+
+A major release: every stateful call takes an explicit bus.
+[docs/migration-3.0.md](docs/migration-3.0.md) lists what changes for programs
+written for 2.x. 2.2.x keeps receiving security fixes on the `release/2.x`
+branch (see [SECURITY.md](SECURITY.md)).
 
 ### Changed
 - Version 3.0.0: the shared library is `libss_lib.so.3` / `libss_lib.3.dylib`
@@ -457,7 +461,8 @@ public struct layouts are unchanged.
 - Signal introspection
 - Basic examples and tests
 
-[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v2.2.4...HEAD
+[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/dardevelin/ss_lib/compare/v2.2.4...v3.0.0
 [2.2.4]: https://github.com/dardevelin/ss_lib/compare/v2.2.3...v2.2.4
 [2.2.3]: https://github.com/dardevelin/ss_lib/compare/v2.2.2...v2.2.3
 [2.2.2]: https://github.com/dardevelin/ss_lib/compare/v2.2.1...v2.2.2
