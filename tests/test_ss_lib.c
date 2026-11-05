@@ -326,8 +326,8 @@ void test_input_validation(void) {
 #if SS_ENABLE_CUSTOM_DATA
 static int g_custom_cleanup_called = 0;
 
-void custom_cleanup_fn(void* data) {
-    (void)data;
+void custom_cleanup_fn(const void* data, size_t size) {
+    assert(data != NULL && size == sizeof(int) && *(const int*)data == 99);
     g_custom_cleanup_called++;
 }
 
@@ -646,8 +646,9 @@ static void slot_record_pair(const ss_data_t* data, void* user_data) {
     g_pair_seen = *p;
 }
 
-static void count_cleanup_on_copy(void* ptr) {
+static void count_cleanup_on_copy(const void* ptr, size_t size) {
     (void)ptr;
+    (void)size;
     g_custom_cleanup_on_copy++;
 }
 

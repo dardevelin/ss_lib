@@ -624,6 +624,16 @@ static ss_slot_t* slot_find(ss_signal_t* sig, ss_slot_func_t func, ss_connection
 /* Emission                                                            */
 /* ------------------------------------------------------------------ */
 
+/* Slots only see borrowed data: an object that owns its payload is passed
+ * as a copy with owned cleared, so a slot that copies its data and reuses
+ * it with a setter cannot free the emitter's payload. */
+SS_INLINE const ss_data_t* borrowed_view(const ss_data_t* data, ss_data_t* view) {
+    if (!data || !data->owned) return data;
+    *view = *data;
+    view->owned = 0;
+    return view;
+}
+
 /* Emit a fully qualified name. Caller holds the context. */
 SS_INLINE ss_error_t emit_locked(ss_context_t* ctx, const char* name, const ss_data_t* data) {
     ss_signal_t* sig = signal_find(ctx, name);
@@ -702,6 +712,7 @@ static ss_error_t entry_fill(ss_entry_t* e, const char* name, const ss_data_t* d
         return SS_OK;
     }
     e->data = *data;
+    e->data.owned = 0;     /* slots borrow the entry's copy (entry_view) */
     if (data->type == SS_TYPE_STRING && data->value.s_val) {
         src = data->value.s_val;
         len = strlen(data->value.s_val) + 1;
@@ -1260,12 +1271,13 @@ ss_error_t ss_emit(const char* signal_name, const ss_data_t* data) {
     char buf[SS_MAX_SIGNAL_NAME_LENGTH];
     ss_error_t err = SS_OK;
     const char* name;
+    ss_data_t view;
     int locked;
     ss_context_t* ctx = ctx_enter(&locked);
     if (!ctx) return SS_ERR_NULL_PARAM;
 
     name = lookup_name(ctx, signal_name, buf, &err);
-    if (name) err = emit_locked(ctx, name, data);
+    if (name) err = emit_locked(ctx, name, borrowed_view(data, &view));
     return ctx_leave(ctx, locked, err, signal_name);
 }
 
@@ -1329,12 +1341,13 @@ ss_error_t ss_emit_namespaced(const char* ns, const char* signal_name,
                               const ss_data_t* data) {
     char buf[SS_MAX_SIGNAL_NAME_LENGTH];
     ss_error_t err = SS_ERR_NULL_PARAM;
+    ss_data_t view;
     int locked;
     ss_context_t* ctx = ctx_enter(&locked);
     if (!ctx) return SS_ERR_NULL_PARAM;
 
     if (ns && signal_name) {
-        err = qualify(ns, signal_name, buf) ? emit_locked(ctx, buf, data)
+        err = qualify(ns, signal_name, buf) ? emit_locked(ctx, buf, borrowed_view(data, &view))
                                             : SS_ERR_WOULD_OVERFLOW;
     }
     return ctx_leave(ctx, locked, err, signal_name);
@@ -1444,32 +1457,39 @@ ss_data_t* ss_data_create(ss_data_type_t type) {
     return data;
 }
 
-/* Free the string or custom payload an ss_data_t owns (see ss_lib.h) */
-static void data_release(ss_data_t* data) {
-    if (data->type == SS_TYPE_STRING && data->value.s_val) {
-        SS_FREE((void*)data->value.s_val);
-        data->value.s_val = NULL;
-    }
+void ss_data_init(ss_data_t* data) {
+    static const ss_data_t empty = SS_DATA_INIT;
+    if (data) *data = empty;
+}
+
+/* Free the payload if the object owns it (only the copying setters set
+ * owned; see ss_lib.h), then make the object empty. A borrowed payload is
+ * never freed. */
+void ss_data_clear(ss_data_t* data) {
+    if (!data) return;
+    if (data->owned) {
+        if (data->type == SS_TYPE_STRING && data->value.s_val) {
+            SS_FREE((void*)data->value.s_val);
+        }
 #if SS_ENABLE_CUSTOM_DATA
-    if (data->type == SS_TYPE_CUSTOM && data->custom_data) {
-        if (data->custom_cleanup) data->custom_cleanup(data->custom_data);
-        SS_FREE(data->custom_data);
-        data->custom_data = NULL;
-        data->custom_cleanup = NULL;
-        data->size = 0;
-    }
+        if (data->type == SS_TYPE_CUSTOM && data->custom_data) {
+            if (data->custom_cleanup) data->custom_cleanup(data->custom_data, data->size);
+            SS_FREE(data->custom_data);
+        }
 #endif
+    }
+    ss_data_init(data);
 }
 
 void ss_data_destroy(ss_data_t* data) {
     if (!data) return;
-    data_release(data);
+    ss_data_clear(data);
     SS_FREE(data);
 }
 
 ss_error_t ss_data_set_int(ss_data_t* data, int value) {
     if (!data) return SS_ERR_NULL_PARAM;
-    data_release(data);
+    ss_data_clear(data);
     data->type = SS_TYPE_INT;
     data->value.i_val = value;
     return SS_OK;
@@ -1477,7 +1497,7 @@ ss_error_t ss_data_set_int(ss_data_t* data, int value) {
 
 ss_error_t ss_data_set_float(ss_data_t* data, float value) {
     if (!data) return SS_ERR_NULL_PARAM;
-    data_release(data);
+    ss_data_clear(data);
     data->type = SS_TYPE_FLOAT;
     data->value.f_val = value;
     return SS_OK;
@@ -1485,7 +1505,7 @@ ss_error_t ss_data_set_float(ss_data_t* data, float value) {
 
 ss_error_t ss_data_set_double(ss_data_t* data, double value) {
     if (!data) return SS_ERR_NULL_PARAM;
-    data_release(data);
+    ss_data_clear(data);
     data->type = SS_TYPE_DOUBLE;
     data->value.d_val = value;
     return SS_OK;
@@ -1498,32 +1518,51 @@ ss_error_t ss_data_set_string(ss_data_t* data, const char* value) {
         copy = ss_strdup(value);
         if (!copy) return SS_ERR_MEMORY;   /* previous value left intact */
     }
-    data_release(data);
+    ss_data_clear(data);
     data->type = SS_TYPE_STRING;
     data->value.s_val = copy;
+    data->owned = (unsigned char)(copy != NULL);
+    return SS_OK;
+}
+
+ss_error_t ss_data_set_string_ref(ss_data_t* data, const char* value) {
+    if (!data) return SS_ERR_NULL_PARAM;
+    ss_data_clear(data);
+    data->type = SS_TYPE_STRING;
+    data->value.s_val = value;
     return SS_OK;
 }
 
 ss_error_t ss_data_set_pointer(ss_data_t* data, void* value) {
     if (!data) return SS_ERR_NULL_PARAM;
-    data_release(data);
+    ss_data_clear(data);
     data->type = SS_TYPE_POINTER;
     data->value.p_val = value;
     return SS_OK;
 }
 
 #if SS_ENABLE_CUSTOM_DATA
-ss_error_t ss_data_set_custom(ss_data_t* data, void* value, size_t size,
-                             ss_cleanup_func_t cleanup) {
+ss_error_t ss_data_set_custom(ss_data_t* data, const void* value, size_t size,
+                              ss_cleanup_func_t cleanup) {
     void* copy;
     if (!data || !value || size == 0) return SS_ERR_NULL_PARAM;
     copy = SS_MALLOC(size);
     if (!copy) return SS_ERR_MEMORY;       /* previous value left intact */
     memcpy(copy, value, size);
-    data_release(data);
+    ss_data_clear(data);
     data->type = SS_TYPE_CUSTOM;
     data->custom_data = copy;
     data->custom_cleanup = cleanup;
+    data->size = size;
+    data->owned = 1;
+    return SS_OK;
+}
+
+ss_error_t ss_data_set_custom_ref(ss_data_t* data, void* value, size_t size) {
+    if (!data || !value || size == 0) return SS_ERR_NULL_PARAM;
+    ss_data_clear(data);
+    data->type = SS_TYPE_CUSTOM;
+    data->custom_data = value;
     data->size = size;
     return SS_OK;
 }
