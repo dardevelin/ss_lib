@@ -20,12 +20,10 @@ Welcome to the SS_Lib documentation. This directory contains detailed informatio
 - [Security policy](../SECURITY.md)
 - [License](../LICENSE)
 
-## Building Documentation
+## HTML API Documentation (optional)
 
-To build HTML documentation (requires Doxygen), from the repository root:
+The documentation here is Markdown and needs no tool. If [Doxygen](https://www.doxygen.nl) is installed, `make docs` also generates HTML API documentation from the headers and these pages into `docs/api/html/` (not tracked by git). Nothing else needs Doxygen: building, testing and installing SS_Lib do not, and without it `make docs` prints a note and stops.
 
 ```bash
 make docs
 ```
-
-The generated documentation will be in `docs/api/html/`.

@@ -307,9 +307,13 @@ uninstall:
 	@rm -f $(INSTALL_PC_DIR)/ss_lib.pc
 	@rm -rf $(INSTALL_CMAKE_DIR)
 
+# Optional HTML API docs; the Markdown docs need no tool. Skipped, not an
+# error, when Doxygen is not installed: nothing else depends on it.
 docs:
-	@mkdir -p docs/api
-	@SS_VERSION=$(VERSION) doxygen Doxyfile || echo "Doxygen not found, skipping"
+	@if command -v doxygen > /dev/null 2>&1; then \
+	    mkdir -p docs/api && SS_VERSION=$(VERSION) doxygen Doxyfile && \
+	    echo "HTML API docs in docs/api/html/"; \
+	else echo "Doxygen is not installed: skipping the optional HTML API docs"; fi
 
 info:
 	@echo "SS_Lib $(VERSION): CC=$(CC) IMPL=$(IMPL) FEATURES=$(FEATURES)"
