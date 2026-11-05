@@ -240,6 +240,15 @@ static void run_owning_paths(void) {
     ss_data_clear(&d);
     assert(g_total_frees == frees + 3);
 
+    /* A _ref setter given the object's own payload leaves it owned */
+    assert(ss_data_set_string(&d, "self") == SS_OK);
+    copy = ss_data_get_string(&d);
+    frees = g_total_frees;
+    assert(ss_data_set_string_ref(&d, copy) == SS_OK);
+    assert(g_total_frees == frees && d.owned != 0 && is_live(copy));
+    ss_data_clear(&d);
+    assert(g_total_frees == frees + 1 && !is_live(copy));
+
     /* ss_data_destroy is ss_data_clear plus freeing the object */
     created = ss_data_create(SS_TYPE_VOID);
     assert(created != NULL && created->owned == 0);
@@ -287,6 +296,20 @@ static void run_owning_paths(void) {
         ss_data_destroy(created);
         assert(g_cleanups == 4 && g_total_frees == frees + 2);
 
+        /* Own payload through the _ref setter: kept, cleaned up once later */
+        assert(ss_data_set_custom(&d, &pair, sizeof(pair), record_cleanup) == SS_OK);
+        custom = ss_data_get_custom(&d, &size);
+        frees = g_total_frees;
+        assert(ss_data_set_custom_ref(&d, custom, size) == SS_OK);
+        assert(g_cleanups == 4 && g_total_frees == frees && d.owned != 0);
+        assert(ss_data_get_custom(&d, NULL) == custom && is_live(custom));
+        /* Another size is another payload: the copy is released as usual,
+         * leaving a borrowed (dangling, never read) pointer */
+        assert(ss_data_set_custom_ref(&d, custom, size - 1) == SS_OK);
+        assert(g_cleanups == 5 && g_total_frees == frees + 1 && d.owned == 0);
+        ss_data_clear(&d);
+        assert(g_total_frees == frees + 1);
+
         /* Slots and queued copies borrow; the cleanup is never called on them */
         assert(ss_init() == SS_OK);
         assert(ss_signal_register("own") == SS_OK);
@@ -298,9 +321,9 @@ static void run_owning_paths(void) {
         assert(ss_flush_deferred() == SS_OK);
         assert(ss_emit_deferred("own", &d) == SS_OK);    /* left pending */
         ss_cleanup();
-        assert(g_borrowed_seen == 2 && g_cleanups == 4);
+        assert(g_borrowed_seen == 2 && g_cleanups == 5);
         ss_data_clear(&d);
-        assert(g_cleanups == 5);
+        assert(g_cleanups == 6);
     }
 #endif
 

@@ -784,6 +784,45 @@ void test_data_ownership(void) {
     printf("Data ownership tests passed!\n");
 }
 
+/* S12: a borrowing setter given the object's own owned payload keeps it */
+void test_data_ref_self_assign(void) {
+    ss_data_t d = SS_DATA_INIT;
+    ss_data_t* created;
+    const char* copy;
+    printf("\n=== Testing _ref Setters With the Object's Own Payload ===\n");
+
+    assert(ss_data_set_string(&d, "mine") == SS_OK);
+    copy = ss_data_get_string(&d);
+    assert(ss_data_set_string_ref(&d, copy) == SS_OK);
+    assert(strcmp(ss_data_get_string(&d), "mine") == 0);
+    assert(d.type == SS_TYPE_STRING && d.owned != 0 && ss_data_get_string(&d) == copy);
+    ss_data_clear(&d);                       /* still owned: freed here, once */
+
+    created = ss_data_create(SS_TYPE_STRING);
+    assert(created != NULL);
+    assert(ss_data_set_string(created, "created") == SS_OK);
+    assert(ss_data_set_string_ref(created, ss_data_get_string(created)) == SS_OK);
+    assert(strcmp(ss_data_get_string(created), "created") == 0);
+    ss_data_destroy(created);
+
+#if SS_ENABLE_CUSTOM_DATA
+    {
+        test_pair_t pair = {8, 9};
+        size_t size = 0;
+        test_pair_t* held;
+        assert(ss_data_set_custom(&d, &pair, sizeof(pair), NULL) == SS_OK);
+        held = (test_pair_t*)ss_data_get_custom(&d, &size);
+        assert(ss_data_set_custom_ref(&d, held, size) == SS_OK);
+        held = (test_pair_t*)ss_data_get_custom(&d, &size);
+        assert(held->a == 8 && held->b == 9);
+        assert(d.type == SS_TYPE_CUSTOM && d.owned != 0);
+        assert(held != &pair && size == sizeof(pair));
+        ss_data_clear(&d);
+    }
+#endif
+    printf("_ref self-assignment tests passed!\n");
+}
+
 #if SS_ENABLE_CUSTOM_DATA
 /* Queued custom payloads are aligned for any standard type, like malloc
  * memory: in static mode they live in the library's own queue storage */
@@ -1343,6 +1382,7 @@ int main(void) {
     test_cleanup_during_emit();
     test_deferred_requeue_during_flush();
     test_data_ownership();
+    test_data_ref_self_assign();
 #if SS_ENABLE_CUSTOM_DATA
     test_deferred_custom_copy();
     test_queued_payload_alignment();
