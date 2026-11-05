@@ -8,14 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `ss_process_isr_queue()` could deliver a newer ISR event before an older
+  one when an interrupt queued events while it scanned the queue. It now
+  scans until a scan finds no new event, so events are always delivered
+  oldest first. `tests/test_isr.c` interrupts the scan at every point.
+- The docs for `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` say that
+  both must also be compiler memory barriers.
+- `make -j test-all` could fail with "Library not loaded" (macOS) or a
+  missing shared library (Linux): tests, examples and the benchmark linked
+  with `-lss_lib`, which picks the shared library once `check-install` has
+  built it. They now link the static archive by path.
 - Static mode: a custom payload queued with `ss_emit_deferred()` or
   `ss_batch_add()` was only 8-byte aligned, so a slot reading a type that
   needs more (such as `long double` on x86-64 and AArch64 Linux, or
   `__int128`) read it through a misaligned pointer. The copy is now aligned
-  like `malloc` memory: for any standard type, and `__int128` with GCC/Clang. Where that needs 16 bytes, each deferred
-  queue entry gains padding: the static context grows by about 3% on 64-bit
-  Linux (`ss_get_required_pool_size()` reports it); 32-bit microcontrollers
-  are unaffected.
+  like `malloc` memory: for any standard type, and `__int128` with
+  GCC/Clang. Where that needs 16 bytes, each deferred queue entry gains
+  padding: the static context grows by about 3% on 64-bit Linux
+  (`ss_get_required_pool_size()` reports it); 32-bit microcontrollers are
+  unaffected.
 
 ## [2.2.1] - 2026-11-04
 

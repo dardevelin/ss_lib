@@ -105,7 +105,7 @@ Enables `ss_emit_from_isr()`, which queues an integer event from an interrupt se
 #define SS_ISR_QUEUE_SIZE 16  /* default */
 ```
 
-Queue entries are claimed with C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins or MSVC Interlocked functions. On targets without atomic compare-and-swap (Cortex-M0, AVR), define both of these to disable and restore interrupts, for example in `ss_config.h` (the CMSIS functions must be declared where `src/ss_lib.c` sees them):
+Queue entries are claimed with C11 `<stdatomic.h>`, GCC/Clang `__atomic` builtins or MSVC Interlocked functions. On targets without atomic compare-and-swap (Cortex-M0, AVR), define both of these to disable and restore interrupts, for example in `ss_config.h` (the CMSIS functions must be declared where `src/ss_lib.c` sees them). Both must also be compiler memory barriers, as the CMSIS functions are, so the compiler cannot move the queue's reads and writes out of the critical section:
 
 ```c
 #define SS_ISR_CRITICAL_ENTER() uint32_t ss_irq_ = __get_PRIMASK(); __disable_irq()
