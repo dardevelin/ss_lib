@@ -1,4 +1,6 @@
 #include "ss_lib.h"
+#include <stddef.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -683,6 +685,67 @@ void test_deferred_custom_copy(void) {
     ss_cleanup();
     printf("Deferred custom data copy tests passed!\n");
 }
+
+/* Queued custom payloads are aligned for any standard type, like malloc
+ * memory: in static mode they live in the library's own queue storage */
+typedef struct { char c; long double x; } test_align_ld_t;
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+typedef struct { char c; max_align_t x; } test_align_max_t;
+#define TEST_PAYLOAD_ALIGN (offsetof(test_align_max_t, x) > offsetof(test_align_ld_t, x) \
+                            ? offsetof(test_align_max_t, x) : offsetof(test_align_ld_t, x))
+#else
+#define TEST_PAYLOAD_ALIGN offsetof(test_align_ld_t, x)
+#endif
+#ifdef __SIZEOF_INT128__   /* GCC/Clang: malloc memory suits __int128 too */
+__extension__ typedef struct { char c; __int128 x; } test_align_i128_t;
+#define TEST_ALIGN (offsetof(test_align_i128_t, x) > TEST_PAYLOAD_ALIGN \
+                    ? offsetof(test_align_i128_t, x) : TEST_PAYLOAD_ALIGN)
+#else
+#define TEST_ALIGN TEST_PAYLOAD_ALIGN
+#endif
+
+static size_t g_payload_misalignment = 0;
+static int g_payload_calls = 0;
+
+static void slot_check_payload_alignment(const ss_data_t* data, void* user_data) {
+    size_t size = 0;
+    const long double* value = (const long double*)ss_data_get_custom(data, &size);
+    (void)user_data;
+    assert(value != NULL && size == sizeof(long double));
+    g_payload_misalignment += (size_t)((uintptr_t)value % TEST_ALIGN);
+    g_payload_calls++;
+}
+
+void test_queued_payload_alignment(void) {
+    long double value = 1.5L;
+    ss_data_t d = {0};
+    ss_batch_t* batch;
+    printf("\n=== Testing Queued Payload Alignment ===\n");
+
+    assert(ss_init() == SS_OK);
+    assert(ss_signal_register("aligned") == SS_OK);
+    assert(ss_connect("aligned", slot_check_payload_alignment, NULL) == SS_OK);
+    d.type = SS_TYPE_CUSTOM;
+    d.custom_data = &value;
+    d.size = sizeof(value);
+
+    g_payload_misalignment = 0;
+    g_payload_calls = 0;
+    assert(ss_emit_deferred("aligned", &d) == SS_OK);
+    assert(ss_flush_deferred() == SS_OK);
+    batch = ss_batch_create();
+    assert(batch != NULL);
+    assert(ss_batch_add(batch, "aligned", &d) == SS_OK);
+    assert(ss_batch_emit(batch) == SS_OK);
+    ss_batch_destroy(batch);
+    assert(g_payload_calls == 2);
+    if (g_payload_misalignment != 0) {
+        printf("payload not aligned to %u bytes\n", (unsigned)TEST_ALIGN);
+    }
+    assert(g_payload_misalignment == 0);
+    ss_cleanup();
+    printf("Queued payload alignment tests passed!\n");
+}
 #endif
 
 /* S7: ISR queue is drained in order by ss_process_isr_queue() */
@@ -1182,6 +1245,7 @@ int main(void) {
     test_deferred_requeue_during_flush();
 #if SS_ENABLE_CUSTOM_DATA
     test_deferred_custom_copy();
+    test_queued_payload_alignment();
 #endif
 #if SS_ENABLE_ISR_SAFE
     test_isr_queue_processing();

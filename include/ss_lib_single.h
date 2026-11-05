@@ -840,11 +840,17 @@ typedef struct {
     unsigned long seq;     /* push order, bounds a flush */
     int has_payload;
 #if SS_USE_STATIC_MEMORY
-    union {
+    union {   /* aligned for any standard type, like malloc memory */
         unsigned char bytes[SS_DEFERRED_PAYLOAD_SIZE];
-        double align_d;
+        long double align_ld;
         void* align_p;
         long align_l;
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+        max_align_t align_max;
+#endif
+#ifdef __SIZEOF_INT128__   /* GCC/Clang malloc memory suits __int128 too */
+        __extension__ __int128 align_i128;
+#endif
     } payload;
 #else
     void* payload;         /* heap copy of the string or custom data */
