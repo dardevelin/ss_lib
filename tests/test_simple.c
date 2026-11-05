@@ -7,22 +7,23 @@ void on_test(const ss_data_t* data, void* user_data) {
 }
 
 int main(void) {
+    ss_bus_t* bus = NULL;
     printf("Testing SS_Lib\n");
-    
-    if (ss_init() != SS_OK) {
-        printf("Failed to init\n");
+
+    if (ss_bus_create(&bus, 0) != SS_OK) {
+        printf("Failed to create the bus\n");
         return 1;
     }
-    
-    ss_signal_register("test");
-    ss_connect("test", on_test, NULL);
-    
+
+    ss_signal_register(bus, "test");
+    ss_connect(bus, "test", on_test, NULL);
+
     for (int i = 0; i < 5; i++) {
-        ss_emit_int("test", i);
+        ss_emit_int(bus, "test", i);
     }
-    
-    ss_cleanup();
+
+    ss_bus_destroy(bus);
     printf("Done!\n");
-    
+
     return 0;
 }

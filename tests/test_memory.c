@@ -6,7 +6,8 @@
  *   - every allocation is released by the matching free (no leaks),
  *   - every pointer the library frees came from SS_MALLOC/SS_CALLOC
  *     (the default SS_STRDUP must not bypass a custom allocator),
- *   - with SS_USE_STATIC_MEMORY the core paths never touch the heap,
+ *   - with SS_USE_STATIC_MEMORY the core paths never touch the heap, also
+ *     with two built-in buses and one in a caller pool alive at once,
  *   - an ss_data_t frees only the payload it owns, exactly once.
  *
  * Build: cc -Iinclude tests/test_memory.c [-DSS_USE_STATIC_MEMORY=1]
@@ -26,6 +27,12 @@ void test_free(void* ptr);
 #define SS_CALLOC(count, size) test_calloc((count), (size))
 #define SS_FREE(ptr) test_free(ptr)
 
+/* This file is the library and its only caller, so the configuration can
+ * be set here: two built-in buses in static mode, both heap-free */
+#ifndef SS_STATIC_BUSES
+#define SS_STATIC_BUSES 2
+#endif
+
 #ifndef SS_TEST_IMPL
 #define SS_TEST_IMPL "../src/ss_lib.c"
 #endif
@@ -37,6 +44,8 @@ void test_free(void* ptr);
 #include <assert.h>
 
 #define MAX_LIVE 4096
+
+static ss_bus_t* bus = NULL;
 
 static void* g_live[MAX_LIVE];
 static size_t g_live_count = 0;
@@ -85,8 +94,8 @@ static void count_slot(const ss_data_t* data, void* user_data) {
 }
 
 /* Exercise every path that registers, connects, emits, defers or tears
- * down, leaving deferred entries pending at cleanup. */
-static void run_core_paths(void) {
+ * down on one bus, leaving deferred entries pending for ss_bus_destroy(). */
+static void run_core_paths_on(ss_bus_t* bus) {
     ss_data_t s;
     ss_connection_t handle = 0;
 
@@ -94,16 +103,15 @@ static void run_core_paths(void) {
     s.type = SS_TYPE_STRING;
     s.value.s_val = "payload";
 
-    assert(ss_init() == SS_OK);
-    assert(ss_set_namespace("mem") == SS_OK);
-    assert(ss_signal_register_ex("a", "first signal", SS_PRIORITY_HIGH) == SS_OK);
-    assert(ss_signal_register("b") == SS_OK);
-    assert(ss_connect("a", count_slot, NULL) == SS_OK);
-    assert(ss_connect_ex("a", count_slot, NULL, SS_PRIORITY_LOW, &handle) == SS_OK);
-    assert(ss_connect("b", count_slot, NULL) == SS_OK);
-    assert(ss_emit_string("a", "hello") == SS_OK);
-    assert(ss_emit_deferred("a", &s) == SS_OK);
-    assert(ss_flush_deferred() == SS_OK);
+    assert(ss_set_namespace(bus, "mem") == SS_OK);
+    assert(ss_signal_register_ex(bus, "a", "first signal", SS_PRIORITY_HIGH) == SS_OK);
+    assert(ss_signal_register(bus, "b") == SS_OK);
+    assert(ss_connect(bus, "a", count_slot, NULL) == SS_OK);
+    assert(ss_connect_ex(bus, "a", count_slot, NULL, SS_PRIORITY_LOW, &handle) == SS_OK);
+    assert(ss_connect(bus, "b", count_slot, NULL) == SS_OK);
+    assert(ss_emit_string(bus, "a", "hello") == SS_OK);
+    assert(ss_emit_deferred(bus, "a", &s) == SS_OK);
+    assert(ss_flush_deferred(bus) == SS_OK);
 #if SS_ENABLE_CUSTOM_DATA
     {
         int value = 7;
@@ -112,15 +120,60 @@ static void run_core_paths(void) {
         c.type = SS_TYPE_CUSTOM;
         c.value.custom.ptr = &value;
         c.value.custom.size = sizeof(value);
-        assert(ss_emit_deferred("b", &c) == SS_OK);
+        assert(ss_emit_deferred(bus, "b", &c) == SS_OK);
     }
 #endif
-    assert(ss_emit_deferred("b", &s) == SS_OK);       /* left pending */
-    assert(ss_disconnect_handle(handle) == SS_OK);
-    assert(ss_disconnect("a", count_slot) == SS_OK);
-    assert(ss_signal_unregister("a") == SS_OK);
-    assert(ss_set_namespace(NULL) == SS_OK);
-    ss_cleanup();
+    assert(ss_emit_deferred(bus, "b", &s) == SS_OK);       /* left pending */
+    assert(ss_disconnect_handle(bus, handle) == SS_OK);
+    assert(ss_disconnect(bus, "a", count_slot) == SS_OK);
+    assert(ss_signal_unregister(bus, "a") == SS_OK);
+    assert(ss_set_namespace(bus, NULL) == SS_OK);
+}
+
+/* Caller memory for a bus, so a third bus needs no heap either */
+static union {
+    unsigned char bytes[sizeof(ss_bus_t) + 64];
+    long double align;
+} g_pool;
+
+/* Two buses from ss_bus_create (the built-in ones in static mode) and one
+ * in a caller pool, alive at the same time with the same signal names */
+static void run_core_paths(void) {
+    ss_bus_t* first = NULL;
+    ss_bus_t* second = NULL;
+    ss_bus_t* pooled = NULL;
+    int calls;
+
+    assert(ss_bus_pool_size() <= sizeof(g_pool.bytes));
+    assert(ss_bus_create(&first, 0) == SS_OK);
+    assert(ss_bus_create(&second, 0) == SS_OK);
+    assert(ss_bus_create_in(&pooled, g_pool.bytes + 1, sizeof(g_pool.bytes) - 1, 0) == SS_OK);
+    assert(first != second && first != pooled && second != pooled);
+#if SS_USE_STATIC_MEMORY
+    assert(SS_STATIC_BUSES == 2);
+    {
+        ss_bus_t* third = NULL;
+        assert(ss_bus_create(&third, 0) == SS_ERR_WOULD_OVERFLOW && third == NULL);
+    }
+#endif
+    run_core_paths_on(first);
+    run_core_paths_on(second);
+    run_core_paths_on(pooled);
+
+    /* Each bus only reaches its own slots */
+    calls = g_calls;
+    assert(ss_emit_void(second, "mem::b") == SS_OK);
+    assert(g_calls == calls + 1);
+
+    ss_bus_destroy(first);
+    assert(ss_emit_void(second, "mem::b") == SS_OK);
+    ss_bus_destroy(second);
+    ss_bus_destroy(pooled);
+
+    /* A destroyed built-in bus can be created again */
+    assert(ss_bus_create(&first, 0) == SS_OK);
+    assert(ss_signal_exists(first, "mem::b") == 0);
+    ss_bus_destroy(first);
 }
 
 static int is_live(const void* ptr) {
@@ -311,16 +364,16 @@ static void run_owning_paths(void) {
         assert(g_total_frees == frees + 1);
 
         /* Slots and queued copies borrow; the cleanup is never called on them */
-        assert(ss_init() == SS_OK);
-        assert(ss_signal_register("own") == SS_OK);
-        assert(ss_connect("own", slot_check_borrowed, NULL) == SS_OK);
+        assert(ss_bus_create(&bus, 0) == SS_OK);
+        assert(ss_signal_register(bus, "own") == SS_OK);
+        assert(ss_connect(bus, "own", slot_check_borrowed, NULL) == SS_OK);
         assert(ss_data_set_custom(&d, &pair, sizeof(pair), record_cleanup) == SS_OK);
         g_borrowed_seen = 0;
-        assert(ss_emit("own", &d) == SS_OK);
-        assert(ss_emit_deferred("own", &d) == SS_OK);
-        assert(ss_flush_deferred() == SS_OK);
-        assert(ss_emit_deferred("own", &d) == SS_OK);    /* left pending */
-        ss_cleanup();
+        assert(ss_emit(bus, "own", &d) == SS_OK);
+        assert(ss_emit_deferred(bus, "own", &d) == SS_OK);
+        assert(ss_flush_deferred(bus) == SS_OK);
+        assert(ss_emit_deferred(bus, "own", &d) == SS_OK);    /* left pending */
+        ss_bus_destroy(bus);
         assert(g_borrowed_seen == 2 && g_cleanups == 5);
         ss_data_clear(&d);
         assert(g_cleanups == 6);
@@ -328,16 +381,16 @@ static void run_owning_paths(void) {
 #endif
 
     /* Slots see an owned string as borrowed */
-    assert(ss_init() == SS_OK);
-    assert(ss_signal_register("own") == SS_OK);
-    assert(ss_connect("own", slot_check_borrowed, NULL) == SS_OK);
+    assert(ss_bus_create(&bus, 0) == SS_OK);
+    assert(ss_signal_register(bus, "own") == SS_OK);
+    assert(ss_connect(bus, "own", slot_check_borrowed, NULL) == SS_OK);
     assert(ss_data_set_string(&d, "seen") == SS_OK);
     g_borrowed_seen = 0;
-    assert(ss_emit("own", &d) == SS_OK);
-    assert(ss_emit_deferred("own", &d) == SS_OK);
-    assert(ss_flush_deferred() == SS_OK);
+    assert(ss_emit(bus, "own", &d) == SS_OK);
+    assert(ss_emit_deferred(bus, "own", &d) == SS_OK);
+    assert(ss_flush_deferred(bus) == SS_OK);
     assert(g_borrowed_seen == 2);
-    ss_cleanup();
+    ss_bus_destroy(bus);
     ss_data_clear(&d);
 }
 
@@ -352,21 +405,21 @@ static void run_allocating_paths(void) {
     s.type = SS_TYPE_STRING;
     s.value.s_val = "batched";
 
-    assert(ss_init() == SS_OK);
-    assert(ss_signal_register_ex("c", "described", SS_PRIORITY_NORMAL) == SS_OK);
-    assert(ss_connect("c", count_slot, NULL) == SS_OK);
+    assert(ss_bus_create(&bus, 0) == SS_OK);
+    assert(ss_signal_register_ex(bus, "c", "described", SS_PRIORITY_NORMAL) == SS_OK);
+    assert(ss_connect(bus, "c", count_slot, NULL) == SS_OK);
 
 #if SS_ENABLE_INTROSPECTION
     {
         ss_signal_info_t* list = NULL;
         size_t count = 0;
-        assert(ss_get_signal_list(&list, &count) == SS_OK);
+        assert(ss_get_signal_list(bus, &list, &count) == SS_OK);
         assert(count == 1);
         ss_free_signal_list(list, count);
     }
 #endif
 
-    batch = ss_batch_create();
+    batch = ss_batch_create(bus);
     assert(batch != NULL);
     assert(ss_batch_add(batch, "c", &s) == SS_OK);
     assert(ss_batch_emit(batch) == SS_OK);
@@ -383,7 +436,7 @@ static void run_allocating_paths(void) {
     (void)value;
     ss_data_destroy(data);
 
-    ss_cleanup();
+    ss_bus_destroy(bus);
 }
 
 int main(void) {
@@ -394,7 +447,7 @@ int main(void) {
     run_core_paths();
     assert(g_calls > 0);
     assert(g_live_count == 0);
-#if SS_USE_STATIC_MEMORY && SS_STATIC_CONTEXT
+#if SS_USE_STATIC_MEMORY
     /* README/configuration.md promise: no heap use in static mode */
     assert(g_total_allocs == 0);
 
@@ -403,18 +456,18 @@ int main(void) {
         char long_text[SS_MAX_DESCRIPTION_LENGTH + 8];
         memset(long_text, 'd', sizeof(long_text) - 1);
         long_text[sizeof(long_text) - 1] = '\0';
-        assert(ss_init() == SS_OK);
-        assert(ss_signal_register_ex("d", long_text, SS_PRIORITY_NORMAL)
+        assert(ss_bus_create(&bus, 0) == SS_OK);
+        assert(ss_signal_register_ex(bus, "d", long_text, SS_PRIORITY_NORMAL)
                == SS_ERR_WOULD_OVERFLOW);
-        assert(ss_signal_exists("d") == 0);
-        ss_cleanup();
+        assert(ss_signal_exists(bus, "d") == 0);
+        ss_bus_destroy(bus);
         assert(g_total_allocs == 0);
     }
 #endif
 
     run_borrowing_paths();
     assert(g_live_count == 0);
-#if SS_USE_STATIC_MEMORY && SS_STATIC_CONTEXT
+#if SS_USE_STATIC_MEMORY
     assert(g_total_allocs == 0);
 #endif
 
