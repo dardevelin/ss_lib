@@ -1,6 +1,6 @@
 # SS_Lib Documentation
 
-Welcome to the SS_Lib documentation. This directory contains detailed information about using and extending the signal-slot library. It describes version 2.2.1; see the [Changelog](../CHANGELOG.md) for changes from earlier versions.
+Welcome to the SS_Lib documentation. This directory contains detailed information about using and extending the signal-slot library. It describes version 2.2.2; see the [Changelog](../CHANGELOG.md) for changes from earlier versions.
 
 ## Documentation Structure
 
