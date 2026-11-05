@@ -7,7 +7,9 @@
  * and must receive every change made here.
  *
  * Internal structure:
- *   - one context (g_context) guarded by one recursive mutex;
+ *   - one context guarded by one recursive mutex. Only the public entry
+ *     points use the global g_context; every internal function, trace
+ *     included, takes the context as a parameter;
  *   - ctx_enter()/ctx_leave() wrap every public call: locking, nesting
  *     depth, deferred cleanup and error reporting live only there;
  *   - signal/slot storage has one interface with a static-array and a
@@ -19,6 +21,8 @@
  *   - the deferred queue and batches share one entry queue that stores
  *     payload copies and pops each entry before dispatching it;
  *   - the ISR queue is a fixed array claimed with atomic compare-and-swap.
+ *     It is global state outside the context (so it works before
+ *     ss_init()), the one piece of state internal code reaches directly.
  */
 
 /* SS_FEATURE_MACROS_BEGIN (hoisted to the top by create_single_header.sh) */
@@ -204,6 +208,10 @@ typedef struct {
 } ss_context_align_probe_t;
 #define SS_CONTEXT_ALIGN offsetof(ss_context_align_probe_t, ctx)
 
+/* The live context. Read only by the public entry points: ctx_enter(), the
+ * init functions and ss_set/is_thread_safe(). ctx_leave() clears it when it
+ * finishes a deferred cleanup. Internal functions get the context as a
+ * parameter and never read this. */
 static ss_context_t* g_context = NULL;
 #if SS_USE_STATIC_MEMORY && SS_STATIC_CONTEXT
 static ss_context_t g_static_context;   /* ss_init() storage in static mode */
@@ -246,13 +254,14 @@ static void account(ss_context_t* ctx, size_t add, size_t sub) {
 #define SS_ACCOUNT(ctx, add, sub) ((void)0)
 #endif
 
-/* SS_TRACE((fmt, args...)): double parentheses keep it valid C89. Replaces
- * the deprecated public SS_TRACE from ss_config.h inside the library. */
+/* SS_TRACE((ctx, fmt, args...)): double parentheses keep it valid C89.
+ * Writes to ctx's trace stream. Replaces the deprecated public SS_TRACE
+ * from ss_config.h inside the library. */
 #undef SS_TRACE
 #if SS_ENABLE_DEBUG_TRACE
-static void ss_trace(const char* fmt, ...) {
+static void ss_trace(const ss_context_t* ctx, const char* fmt, ...) {
     va_list args;
-    FILE* out = g_context ? g_context->trace_output : NULL;
+    FILE* out = ctx->trace_output;
     if (!out) return;
     va_start(args, fmt);
     fputs("[SS_TRACE] ", out);
@@ -326,6 +335,7 @@ static ss_error_t ctx_leave_slow(ss_context_t* ctx, int destroy, ss_error_t err,
                                  const char* detail,
                                  void (*handler)(ss_error_t, const char*)) {
     if (destroy) {
+        g_context = NULL;                  /* uninitialized from here on */
         context_destroy(ctx);
     } else if (handler) {
         handler(err, detail ? detail : ss_error_string(err));
@@ -643,7 +653,7 @@ SS_INLINE ss_error_t emit_locked(ss_context_t* ctx, const char* name, const ss_d
 #endif
 
     if (!sig) return SS_ERR_NOT_FOUND;
-    SS_TRACE(("Emitting signal: %s to %lu slots", name, (unsigned long)sig->slot_count));
+    SS_TRACE((ctx, "Emitting signal: %s to %lu slots", name, (unsigned long)sig->slot_count));
 
     sig->emitting++;
     for (slot = sig->slots; slot; ) {
@@ -905,6 +915,9 @@ typedef struct {
     char signal_name[SS_MAX_SIGNAL_NAME_LENGTH];
 } ss_isr_entry_t;
 
+/* The ISR queue stays global, outside the context: ss_emit_from_isr() works
+ * before ss_init() and takes no context. It is the only library state that
+ * internal functions (isr_queue_drop_ready) reach without a parameter. */
 static ss_isr_entry_t g_isr_queue[SS_ISR_QUEUE_SIZE];
 static ss_atomic_int g_isr_seq;
 
@@ -1009,18 +1022,18 @@ static ss_error_t context_init(ss_context_t* ctx, int heap_owned) {
     ctx->bytes_in_use = heap_owned ? sizeof(ss_context_t) : 0;
     ctx->peak_bytes = ctx->bytes_in_use;
 #endif
-    g_context = ctx;
     return SS_OK;
 }
 
-/* Common checks; returns 1 when initialization should proceed */
-static int init_precheck(size_t abi_tag, ss_error_t* err) {
+/* Common checks against the current context (NULL if none); returns 1 when
+ * initialization should proceed */
+static int init_precheck(const ss_context_t* current, size_t abi_tag, ss_error_t* err) {
     if (abi_tag != SS_ABI_TAG) {
         *err = SS_ERR_CONFIG_MISMATCH;
         return 0;
     }
-    if (g_context) {
-        *err = g_context->closing ? SS_ERR_ALREADY_EXISTS : SS_OK;
+    if (current) {
+        *err = current->closing ? SS_ERR_ALREADY_EXISTS : SS_OK;
         return 0;
     }
     return 1;
@@ -1028,18 +1041,19 @@ static int init_precheck(size_t abi_tag, ss_error_t* err) {
 
 ss_error_t ss_init_abi(size_t abi_tag) {
     ss_error_t err = SS_OK;
-    if (!init_precheck(abi_tag, &err)) return err;
+    ss_context_t* ctx;
+    if (!init_precheck(g_context, abi_tag, &err)) return err;
 #if SS_USE_STATIC_MEMORY && SS_STATIC_CONTEXT
-    return context_init(&g_static_context, 0);
+    ctx = &g_static_context;
+    err = context_init(ctx, 0);
 #else
-    {
-        ss_context_t* ctx = (ss_context_t*)SS_CALLOC(1, sizeof(ss_context_t));
-        if (!ctx) return SS_ERR_MEMORY;
-        err = context_init(ctx, 1);
-        if (err != SS_OK) SS_FREE(ctx);
-        return err;
-    }
+    ctx = (ss_context_t*)SS_CALLOC(1, sizeof(ss_context_t));
+    if (!ctx) return SS_ERR_MEMORY;
+    err = context_init(ctx, 1);
+    if (err != SS_OK) SS_FREE(ctx);
 #endif
+    if (err == SS_OK) g_context = ctx;
+    return err;
 }
 
 ss_error_t ss_init(void) {
@@ -1052,6 +1066,7 @@ size_t ss_get_required_pool_size(void) {
 
 ss_error_t ss_init_static_abi(void* memory_pool, size_t pool_size, size_t abi_tag) {
     ss_error_t err = SS_OK;
+    ss_context_t* ctx;
     size_t pad = 0;
     if (memory_pool) {
         pad = (SS_CONTEXT_ALIGN - (size_t)((uintptr_t)memory_pool % SS_CONTEXT_ALIGN)) %
@@ -1061,17 +1076,20 @@ ss_error_t ss_init_static_abi(void* memory_pool, size_t pool_size, size_t abi_ta
     if (!memory_pool || pool_size < pad || pool_size - pad < sizeof(ss_context_t)) {
         return ss_init_abi(abi_tag);
     }
-    if (!init_precheck(abi_tag, &err)) return err;
-    return context_init((ss_context_t*)((unsigned char*)memory_pool + pad), 0);
+    if (!init_precheck(g_context, abi_tag, &err)) return err;
+    ctx = (ss_context_t*)((unsigned char*)memory_pool + pad);
+    err = context_init(ctx, 0);
+    if (err == SS_OK) g_context = ctx;
+    return err;
 }
 
 ss_error_t ss_init_static(void* memory_pool, size_t pool_size) {
     return ss_init_static_abi(memory_pool, pool_size, SS_ABI_TAG);
 }
 
+/* Release everything ctx holds. The caller has already detached it. */
 static void context_destroy(ss_context_t* ctx) {
     ss_signal_t* sig;
-    g_context = NULL;
     queue_clear(&ctx->deferred);
     while ((sig = signal_next(ctx, NULL)) != NULL) {
         signal_destroy(ctx, sig);
@@ -1129,7 +1147,7 @@ ss_error_t ss_signal_register_ex(const char* signal_name,
         if (sig) {
             sig->priority = priority;
             ctx->signal_count++;
-            SS_TRACE(("Registered signal: %s", name));
+            SS_TRACE((ctx, "Registered signal: %s", name));
         }
     }
     return ctx_leave(ctx, locked, err, signal_name);
@@ -1213,7 +1231,7 @@ ss_error_t ss_connect_ex(const char* signal_name, ss_slot_func_t slot,
                 s->next = node;
             }
             sig->slot_count++;
-            SS_TRACE(("Connected slot to signal: %s (handle: %lu)", sig->name,
+            SS_TRACE((ctx, "Connected slot to signal: %s (handle: %lu)", sig->name,
                      (unsigned long)node->handle));
         }
     }
