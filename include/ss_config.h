@@ -112,7 +112,8 @@
 /* The ISR queue claims entries with C11 atomics, GCC/Clang __atomic
  * builtins or MSVC Interlocked functions. On targets without atomic
  * compare-and-swap (e.g. Cortex-M0, AVR), define both of these to disable
- * and restore interrupts, e.g.:
+ * and restore interrupts. Both must also be compiler memory barriers (the
+ * CMSIS functions are), e.g.:
  *   #define SS_ISR_CRITICAL_ENTER() uint32_t ss_irq_ = __get_PRIMASK(); __disable_irq()
  *   #define SS_ISR_CRITICAL_EXIT()  __set_PRIMASK(ss_irq_)
  */

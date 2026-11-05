@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `ss_process_isr_queue()` could deliver a newer ISR event before an older
+  one when an interrupt queued events while it scanned the queue. It now
+  scans until a scan finds no new event, so events are always delivered
+  oldest first. `tests/test_isr.c` interrupts the scan at every point.
+- The docs for `SS_ISR_CRITICAL_ENTER()` / `SS_ISR_CRITICAL_EXIT()` say that
+  both must also be compiler memory barriers.
+
 ## [2.2.1] - 2026-11-04
 
 ### Fixed

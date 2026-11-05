@@ -162,6 +162,13 @@ if(SS_BUILD_TESTS)
     add_test(NAME test_basic COMMAND test_ss_lib)
     add_test(NAME test_simple COMMAND test_simple)
     add_test(NAME test_memory COMMAND test_memory)
+    # Also compiles the implementation, with a hookable ISR critical section
+    add_executable(test_isr tests/test_isr.c)
+    target_compile_definitions(test_isr PRIVATE ${SS_FEATURE_DEFINITIONS})
+    if(SS_ENABLE_THREAD_SAFETY)
+        target_link_libraries(test_isr Threads::Threads)
+    endif()
+    add_test(NAME test_isr COMMAND test_isr)
 
     if(SS_ENABLE_THREAD_SAFETY AND NOT WIN32)
         add_executable(test_threads tests/test_threads.c)
