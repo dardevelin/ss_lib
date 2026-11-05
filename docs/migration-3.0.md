@@ -176,10 +176,47 @@ ss_bus_create(&bus, SS_BUS_THREAD_SAFE);
 
 ## Error handler
 
-Not landed yet: the handler receives the bus and a user pointer. For now
-`ss_set_error_handler(bus, handler)` sets a handler per bus, with the 2.x
-handler signature. Errors of calls given no bus (a NULL bus or batch, or a
-failed `ss_bus_create()`) reach no handler.
+Each bus has its own error handler, and the handler receives the failing
+bus and a `user_data` pointer that you pass when setting it:
+
+```c
+/* 2.x */
+static void on_error(ss_error_t error, const char* msg) {
+    fprintf(stderr, "%s: %s\n", ss_error_string(error), msg);
+}
+ss_set_error_handler(on_error);
+
+/* 3.0 */
+static void on_error(ss_bus_t* bus, ss_error_t error, const char* msg, void* user_data) {
+    (void)bus;
+    fprintf(stderr, "%s: %s: %s\n", (const char*)user_data, ss_error_string(error), msg);
+}
+ss_set_error_handler(bus, on_error, "ui bus");
+```
+
+- The type is `ss_error_handler_t`. A 2.x handler passed to
+  `ss_set_error_handler()` is an incompatible pointer type; do not cast it,
+  change its parameters. Compile with `-Werror=incompatible-pointer-types`
+  (clang: `-Werror=incompatible-function-pointer-types`) while migrating,
+  because older compilers only warn.
+- The `sed` command [above](#the-bus-argument) adds the bus argument; add
+  the `user_data` argument by hand (`NULL` if the handler needs none).
+- `ss_set_error_handler(bus, NULL, NULL)` removes the handler, as
+  `ss_set_error_handler(NULL)` did.
+- **State the handler used from globals can move into `user_data`**, and
+  one function can serve several buses: `bus` says which one failed.
+- **Errors stay on their bus.** A handler set on bus A never sees errors of
+  bus B. Errors of calls given no bus (a NULL bus or batch, or a failed
+  `ss_bus_create()`) reach no handler.
+- As in 2.x, the handler runs after the failing call releases the lock, so
+  it may call the library, also on its own bus. It may call
+  `ss_bus_destroy(bus)`; when the failing call was the outermost one the
+  bus is freed at once, so the handler must not use it afterwards.
+- **A bus being destroyed reports nothing.** Once `ss_bus_destroy(bus)` has
+  been called, also from a slot, calls still running on the bus return
+  their errors without calling the handler, so `user_data` may be released
+  right after `ss_bus_destroy()`. In 2.x a call failing after
+  `ss_cleanup()` was requested from a slot could still reach the handler.
 
 ## Batches
 

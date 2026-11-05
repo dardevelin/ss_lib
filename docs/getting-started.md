@@ -215,15 +215,26 @@ if (err != SS_OK) {
 }
 ```
 
-You can also set an error handler per bus. It is called for every failing call on that bus, including parameter errors, outside the bus's lock; `msg` is the signal name when there is one, otherwise the error string. Calls given no bus (a NULL bus or batch) reach no handler:
+You can also set an error handler per bus. It is called for every failing call on that bus, including parameter errors, outside the bus's lock, with the failing bus, the error, a message and the `user_data` you gave when setting it; `msg` is the signal name when there is one, otherwise the error string. Calls given no bus (a NULL bus or batch) reach no handler, and a bus reports nothing once `ss_bus_destroy()` has been called on it:
 
 ```c
-void my_error_handler(ss_error_t error, const char* msg) {
-    fprintf(stderr, "SS_Lib error %s: %s\n", ss_error_string(error), msg);
+typedef struct {
+    const char* name;
+    int errors;
+} error_log_t;
+
+void my_error_handler(ss_bus_t* bus, ss_error_t error, const char* msg, void* user_data) {
+    error_log_t* log = (error_log_t*)user_data;
+    (void)bus;
+    log->errors++;
+    fprintf(stderr, "%s: %s: %s\n", log->name, ss_error_string(error), msg);
 }
 
-ss_set_error_handler(bus, my_error_handler);
+static error_log_t ui_log = { "ui", 0 };
+ss_set_error_handler(bus, my_error_handler, &ui_log);
 ```
+
+The handler may call the library, also on its bus, so it can for example emit an `"error"` signal; `ss_set_error_handler(bus, NULL, NULL)` removes it.
 
 ## Coming from 2.x
 

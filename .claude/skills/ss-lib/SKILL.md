@@ -205,10 +205,15 @@ void       ss_reset_perf_stats(ss_bus_t* bus);
 
 ```c
 const char* ss_error_string(ss_error_t error);
-void        ss_set_error_handler(ss_bus_t* bus, void (*handler)(ss_error_t error, const char* msg));
+typedef void (*ss_error_handler_t)(ss_bus_t* bus, ss_error_t error, const char* msg,
+                                   void* user_data);
+void        ss_set_error_handler(ss_bus_t* bus, ss_error_handler_t handler, void* user_data);
 ```
 
-- The handler is per bus. It is called, after the bus is unlocked, for every failing call on that bus, including parameter errors (NULL arguments, handle 0, a batch already being destroyed, too-long names). `msg` is the signal name when there is one, else `ss_error_string(err)`. Calls given no usable bus (a NULL bus, a NULL batch, a bus being destroyed) reach no handler. Errors on one bus never reach another bus's handler.
+- The handler is per bus. It is called, after the failing call releases the bus's lock, for every failing call on that bus, including parameter errors (NULL arguments, handle 0, a batch already being destroyed, too-long names), with the failing bus, the error, `msg` (the signal name when there is one, else `ss_error_string(err)`; valid only during the call) and the `user_data` given to `ss_set_error_handler()`. A NULL handler removes it. Calls given no usable bus (a NULL bus, a NULL batch) reach no handler. Errors on one bus never reach another bus's handler.
+- The handler may call the library, also on its bus (a failing call there is reported to it again), and may call `ss_bus_destroy(bus)`. When the failing call was the outermost one, this frees the bus at once, so do not touch `bus` afterwards; from a call made in a slot, destruction waits for the outermost call. A call made from a slot reports while the slot's emission still holds the lock.
+- Once `ss_bus_destroy(bus)` has been called (from anywhere, including a slot), the bus reports no more errors, so the handler never sees a bus being destroyed and `user_data` may be released right after `ss_bus_destroy()`.
+- Keep `user_data` valid while the handler is set. On a thread-safe bus, a call failing on another thread while the handler is replaced may still report to the previous one.
 
 ### Configuration (2 functions)
 
