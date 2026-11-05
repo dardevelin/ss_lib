@@ -616,13 +616,23 @@ void ss_reset_perf_stats(ss_bus_t* bus);
 const char* ss_error_string(ss_error_t error);
 
 /**
- * @brief Set the bus's error handler (NULL removes it)
- *
- * Called, after the bus is unlocked, with every error a call on this bus
- * returns. Errors of calls given no bus (a NULL bus or batch) reach no
- * handler.
+ * @brief Error handler: the failing bus, the error, the signal name (or
+ * ss_error_string(error)) and the user_data given to ss_set_error_handler
  */
-void ss_set_error_handler(ss_bus_t* bus, void (*handler)(ss_error_t error, const char* msg));
+typedef void (*ss_error_handler_t)(ss_bus_t* bus, ss_error_t error, const char* msg,
+                                   void* user_data);
+
+/**
+ * @brief Set the bus's error handler and its user_data (a NULL handler
+ * removes it)
+ *
+ * Called, after the call releases the bus's lock, with every error a call
+ * on this bus returns; it may call the library, also on this bus, and may
+ * destroy it. Errors of calls given no bus (a NULL bus or batch) reach no
+ * handler, and once ss_bus_destroy(bus) has been called the bus reports
+ * no more errors.
+ */
+void ss_set_error_handler(ss_bus_t* bus, ss_error_handler_t handler, void* user_data);
 
 /* Configuration: limit of live slots per signal on this bus */
 void ss_set_max_slots_per_signal(ss_bus_t* bus, size_t max_slots);

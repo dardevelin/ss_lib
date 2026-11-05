@@ -792,13 +792,23 @@ void ss_reset_perf_stats(ss_bus_t* bus);
 const char* ss_error_string(ss_error_t error);
 
 /**
- * @brief Set the bus's error handler (NULL removes it)
- *
- * Called, after the bus is unlocked, with every error a call on this bus
- * returns. Errors of calls given no bus (a NULL bus or batch) reach no
- * handler.
+ * @brief Error handler: the failing bus, the error, the signal name (or
+ * ss_error_string(error)) and the user_data given to ss_set_error_handler
  */
-void ss_set_error_handler(ss_bus_t* bus, void (*handler)(ss_error_t error, const char* msg));
+typedef void (*ss_error_handler_t)(ss_bus_t* bus, ss_error_t error, const char* msg,
+                                   void* user_data);
+
+/**
+ * @brief Set the bus's error handler and its user_data (a NULL handler
+ * removes it)
+ *
+ * Called, after the call releases the bus's lock, with every error a call
+ * on this bus returns; it may call the library, also on this bus, and may
+ * destroy it. Errors of calls given no bus (a NULL bus or batch) reach no
+ * handler, and once ss_bus_destroy(bus) has been called the bus reports
+ * no more errors.
+ */
+void ss_set_error_handler(ss_bus_t* bus, ss_error_handler_t handler, void* user_data);
 
 /* Configuration: limit of live slots per signal on this bus */
 void ss_set_max_slots_per_signal(ss_bus_t* bus, size_t max_slots);
@@ -1133,8 +1143,9 @@ struct ss_bus {
     size_t max_slots_per_signal;
     ss_connection_t next_handle;
     char ns[SS_MAX_SIGNAL_NAME_LENGTH];
-    void (*error_handler)(ss_error_t, const char*);
-    int call_depth;        /* public calls in progress (nested via slots) */
+    ss_error_handler_t error_handler;
+    void* error_user_data;
+    int call_depth;       /* public calls in progress (nested via slots) */
     int closing;           /* ss_bus_destroy() requested from inside a call */
     int storage;           /* BUS_*; BUS_FREE marks an unused built-in bus */
 #if SS_ENABLE_THREAD_SAFETY
@@ -1280,14 +1291,22 @@ SS_INLINE int bus_enter(ss_bus_t* bus, int* locked) {
     return 1;
 }
 
-/* After unlocking: finish a deferred destroy or report err */
-static ss_error_t bus_leave_slow(ss_bus_t* bus, int destroy, ss_error_t err,
-                                 const char* detail,
-                                 void (*handler)(ss_error_t, const char*)) {
+/* Unlock, then finish a deferred destroy or report err. The handler and
+ * its user_data are read under the lock; ss_bus_destroy() clears them, so
+ * a bus being destroyed reports nothing. */
+static ss_error_t bus_leave_slow(ss_bus_t* bus, int locked, int destroy, ss_error_t err,
+                                 const char* detail) {
+    ss_error_handler_t handler = bus->error_handler;
+    void* user_data = bus->error_user_data;
+#if SS_ENABLE_THREAD_SAFETY
+    if (locked) SS_MUTEX_UNLOCK(&bus->mutex);
+#else
+    (void)locked;
+#endif
     if (destroy) {
         bus_free(bus);                     /* the bus is gone from here on */
     } else if (handler) {
-        handler(err, detail ? detail : ss_error_string(err));
+        handler(bus, err, detail ? detail : ss_error_string(err), user_data);
     }
     return err;
 }
@@ -1295,14 +1314,13 @@ static ss_error_t bus_leave_slow(ss_bus_t* bus, int destroy, ss_error_t err,
 /* Unlock, finish a deferred destroy, report err to the error handler. */
 SS_INLINE ss_error_t bus_leave(ss_bus_t* bus, int locked, ss_error_t err,
                                const char* detail) {
-    void (*handler)(ss_error_t, const char*) = bus->error_handler;
     int destroy = (--bus->call_depth == 0 && bus->closing);
+    if (destroy || err != SS_OK) return bus_leave_slow(bus, locked, destroy, err, detail);
 #if SS_ENABLE_THREAD_SAFETY
     if (locked) SS_MUTEX_UNLOCK(&bus->mutex);
 #else
     (void)locked;
 #endif
-    if (destroy || err != SS_OK) return bus_leave_slow(bus, destroy, err, detail, handler);
     return SS_OK;
 }
 
@@ -1974,6 +1992,8 @@ void ss_bus_destroy(ss_bus_t* bus) {
     /* Called from a slot, this ends every emission in progress on the bus;
      * the bus is freed when its outermost call returns (bus_leave). */
     bus->closing = 1;
+    bus->error_handler = NULL;             /* nothing is reported from here on */
+    bus->error_user_data = NULL;
     for (sig = signal_next(bus, NULL); sig; sig = signal_next(bus, sig)) {
         slots_remove_all(bus, sig);
     }
@@ -2657,10 +2677,11 @@ const char* ss_error_string(ss_error_t error) {
     }
 }
 
-void ss_set_error_handler(ss_bus_t* bus, void (*handler)(ss_error_t error, const char* msg)) {
+void ss_set_error_handler(ss_bus_t* bus, ss_error_handler_t handler, void* user_data) {
     int locked;
     if (!bus_enter(bus, &locked)) return;
     bus->error_handler = handler;
+    bus->error_user_data = handler ? user_data : NULL;
     (void)bus_leave(bus, locked, SS_OK, NULL);
 }
 

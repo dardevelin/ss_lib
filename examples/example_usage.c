@@ -182,6 +182,33 @@ void two_buses_example(ss_bus_t* bus) {
     ss_signal_unregister(bus, "status");
 }
 
+/* The error handler gets the failing bus and the user_data it was set with */
+typedef struct {
+    const char* bus_name;
+    int errors;
+} ErrorLog;
+
+void on_error(ss_bus_t* bus, ss_error_t error, const char* msg, void* user_data) {
+    ErrorLog* log = (ErrorLog*)user_data;
+    (void)bus;
+    log->errors++;
+    printf("[%s] %s: %s\n", log->bus_name, ss_error_string(error), msg);
+}
+
+void error_handler_example(ss_bus_t* bus) {
+    ErrorLog log = {"main bus", 0};
+    printf("\n=== Error Handler Example ===\n");
+
+    ss_set_error_handler(bus, on_error, &log);
+    ss_emit_void(bus, "no_such_signal");      /* Signal not found: no_such_signal */
+    ss_signal_register(bus, "once");
+    ss_signal_register(bus, "once");          /* Signal already exists: once */
+    ss_signal_unregister(bus, "once");
+    printf("%d errors reported\n", log.errors);
+
+    ss_set_error_handler(bus, NULL, NULL);    /* log goes out of scope */
+}
+
 int main(void) {
     ss_bus_t* bus = NULL;
     printf("Signal-Slot Library Examples\n");
@@ -197,6 +224,7 @@ int main(void) {
     custom_data_example(bus);
     introspection_example(bus);
     two_buses_example(bus);
+    error_handler_example(bus);
 
     ss_bus_destroy(bus);
     
