@@ -118,8 +118,8 @@ typedef struct {
         long double align_ld;
         void* align_p;
         long align_l;
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
-        max_align_t align_max;
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(_MSC_VER)
+        max_align_t align_max;   /* MSVC's C headers have no max_align_t */
 #endif
 #ifdef __SIZEOF_INT128__   /* GCC/Clang malloc memory suits __int128 too */
         __extension__ __int128 align_i128;

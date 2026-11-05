@@ -689,7 +689,7 @@ void test_deferred_custom_copy(void) {
 /* Queued custom payloads are aligned for any standard type, like malloc
  * memory: in static mode they live in the library's own queue storage */
 typedef struct { char c; long double x; } test_align_ld_t;
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(_MSC_VER)
 typedef struct { char c; max_align_t x; } test_align_max_t;
 #define TEST_PAYLOAD_ALIGN (offsetof(test_align_max_t, x) > offsetof(test_align_ld_t, x) \
                             ? offsetof(test_align_max_t, x) : offsetof(test_align_ld_t, x))

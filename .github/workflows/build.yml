@@ -128,6 +128,12 @@ jobs:
         run: cmake --build build --config Release
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+      - name: Configure (static memory)
+        run: cmake -S . -B build-static -DSS_USE_STATIC_MEMORY=ON -DSS_ENABLE_ISR_SAFE=ON
+      - name: Build (static memory)
+        run: cmake --build build-static --config Release
+      - name: Test (static memory)
+        run: ctest --test-dir build-static -C Release --output-on-failure
 
   cmake:
     name: CMake (Linux, ${{ matrix.config }})
