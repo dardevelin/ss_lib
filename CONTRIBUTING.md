@@ -129,6 +129,7 @@ In a minor or patch release, deprecate instead of removing, and append new enum 
    ```
    `.github/workflows/release.yml` checks that the tag matches the header and is on `main`, runs `make test-all`, and publishes the notes with the source `.tar.gz`/`.zip`, `ss_lib_single.h` and `SHA256SUMS`. A tag with a pre-release suffix (`vX.Y.Z-rc.1`) publishes a pre-release and may be on a release branch.
 6. Rerunning the workflow for an existing release replaces its assets.
+7. Update the Homebrew formula in [dardevelin/homebrew-ss-lib](https://github.com/dardevelin/homebrew-ss-lib): a pull request that sets `url` and `sha256` in `Formula/ss-lib.rb` to the new release's `.tar.gz` (its checksum is in `SHA256SUMS`). The tap's CI builds bottles for macOS and Linux and tests the source and `--HEAD` builds. When it is green, run the tap's publish workflow, `gh workflow run publish.yml -R dardevelin/homebrew-ss-lib -f pull_request=N`: it uploads the bottles to the tap's releases and commits the formula with the `bottle do` block.
 
 ## Testing
 
