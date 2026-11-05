@@ -1275,9 +1275,12 @@ void test_default_namespace(void) {
 /* A9: two buses share nothing, not even signal names */
 static int g_errors_a = 0;
 
-static void count_errors_a(ss_error_t error, const char* msg) {
+static void count_errors_a(ss_bus_t* failing, ss_error_t error, const char* msg,
+                           void* user_data) {
+    (void)failing;
     (void)error;
     (void)msg;
+    (void)user_data;
     g_errors_a++;
 }
 
@@ -1335,7 +1338,7 @@ void test_two_buses_independent(void) {
     assert(ss_get_max_slots_per_signal(b) == SS_DEFAULT_MAX_SLOTS_PER_SIGNAL);
     assert(ss_connect(b, "same", slot_add_int, &sum_b) == SS_OK);
     assert(ss_connect(a, "same", slot_add_int, &sum_a) == SS_ERR_MAX_SLOTS);
-    ss_set_error_handler(a, count_errors_a);
+    ss_set_error_handler(a, count_errors_a, NULL);
     g_errors_a = 0;
     assert(ss_emit_void(b, "missing") == SS_ERR_NOT_FOUND);
     assert(g_errors_a == 0);
@@ -1629,9 +1632,12 @@ void test_nested_flush(void) {
 /* Review R3: parameter errors reach the error handler */
 static int g_handler_calls = 0;
 
-static void count_errors(ss_error_t error, const char* msg) {
+static void count_errors(ss_bus_t* failing, ss_error_t error, const char* msg,
+                         void* user_data) {
     (void)error;
+    assert(failing == bus);
     assert(msg != NULL);
+    assert(user_data == &g_handler_calls);
     g_handler_calls++;
 }
 
@@ -1639,7 +1645,7 @@ void test_error_handler_coverage(void) {
     ss_batch_t* batch;
     printf("\n=== Testing Error Handler Coverage ===\n");
     bus = new_bus();
-    ss_set_error_handler(bus, count_errors);
+    ss_set_error_handler(bus, count_errors, &g_handler_calls);
     g_handler_calls = 0;
     assert(ss_emit_namespaced(bus, NULL, "x", NULL) == SS_ERR_NULL_PARAM);
     assert(ss_disconnect_handle(bus, 0) == SS_ERR_NULL_PARAM);
@@ -1655,6 +1661,238 @@ void test_error_handler_coverage(void) {
     assert(g_handler_calls == 4);
     ss_bus_destroy(bus);
     printf("Error handler coverage tests passed!\n");
+}
+
+/* A9 (3.0 plan PR 7): the handler receives the failing bus and the
+ * user_data it was set with; errors on one bus never reach another bus's
+ * handler */
+typedef struct {
+    ss_bus_t* bus;              /* the bus this log's handler is set on */
+    int calls;
+    ss_error_t last_error;
+    char last_msg[96];
+} error_log_t;
+
+static void log_error(ss_bus_t* failing, ss_error_t error, const char* msg, void* user_data) {
+    error_log_t* log = (error_log_t*)user_data;
+    assert(log != NULL);
+    assert(failing == log->bus);
+    assert(msg != NULL && strlen(msg) < sizeof(log->last_msg));
+    log->calls++;
+    log->last_error = error;
+    strcpy(log->last_msg, msg);
+}
+
+static void expect_null_user_data(ss_bus_t* failing, ss_error_t error, const char* msg,
+                                  void* user_data) {
+    (void)error;
+    (void)msg;
+    assert(failing != NULL);
+    assert(user_data == NULL);
+    g_handler_calls++;
+}
+
+static void error_log_init(error_log_t* log, ss_bus_t* owner) {
+    memset(log, 0, sizeof(*log));
+    log->bus = owner;
+}
+
+void test_error_handler_bus_and_user_data(void) {
+    error_log_t log_a, log_a2, log_b;
+    ss_batch_t* batch;
+    void* pool;
+    ss_bus_t* a = new_bus();
+    ss_bus_t* b = new_pool_bus(&pool, 0);
+    printf("\n=== Testing Error Handler Bus and User Data (A9) ===\n");
+    error_log_init(&log_a, a);
+    error_log_init(&log_a2, a);
+    error_log_init(&log_b, b);
+    ss_set_error_handler(a, log_error, &log_a);
+    ss_set_error_handler(b, log_error, &log_b);
+
+    /* An error on b reaches b's handler with b and b's user_data */
+    assert(ss_emit_void(b, "missing_b") == SS_ERR_NOT_FOUND);
+    assert(log_b.calls == 1 && log_b.last_error == SS_ERR_NOT_FOUND);
+    assert(strcmp(log_b.last_msg, "missing_b") == 0);
+    assert(ss_disconnect_handle(b, 0) == SS_ERR_NULL_PARAM);    /* no signal name */
+    assert(log_b.calls == 2 && log_b.last_error == SS_ERR_NULL_PARAM);
+    assert(strcmp(log_b.last_msg, ss_error_string(SS_ERR_NULL_PARAM)) == 0);
+    assert(log_a.calls == 0);                                   /* never a's */
+
+    /* And the other way round */
+    assert(ss_signal_register(a, "dup") == SS_OK);
+    assert(ss_signal_register(a, "dup") == SS_ERR_ALREADY_EXISTS);
+    assert(log_a.calls == 1 && log_a.last_error == SS_ERR_ALREADY_EXISTS);
+    assert(strcmp(log_a.last_msg, "dup") == 0);
+    assert(log_b.calls == 2);
+
+    /* A batch reports to the bus it belongs to */
+    batch = ss_batch_create(b);
+    assert(batch != NULL);
+    assert(ss_batch_add(batch, "missing_batch", NULL) == SS_OK);
+    assert(ss_batch_emit(batch) == SS_ERR_NOT_FOUND);
+    assert(log_b.calls == 3 && log_b.last_error == SS_ERR_NOT_FOUND);
+    assert(log_a.calls == 1);
+    ss_batch_destroy(batch);
+
+    /* Setting the handler again replaces the user_data too */
+    ss_set_error_handler(a, log_error, &log_a2);
+    assert(ss_emit_void(a, "missing_a") == SS_ERR_NOT_FOUND);
+    assert(log_a2.calls == 1 && strcmp(log_a2.last_msg, "missing_a") == 0);
+    assert(log_a.calls == 1);
+
+    /* NULL user_data is passed as NULL */
+    g_handler_calls = 0;
+    ss_set_error_handler(a, expect_null_user_data, NULL);
+    assert(ss_emit_void(a, "missing_a") == SS_ERR_NOT_FOUND);
+    assert(g_handler_calls == 1);
+
+    /* A NULL handler clears it, whatever the user_data */
+    ss_set_error_handler(a, NULL, &log_a);
+    assert(ss_emit_void(a, "missing_a") == SS_ERR_NOT_FOUND);
+    assert(g_handler_calls == 1 && log_a.calls == 1 && log_a2.calls == 1);
+    assert(log_b.calls == 3);
+
+    /* Without a bus there is nothing to set */
+    ss_set_error_handler(NULL, log_error, &log_a);
+    assert(log_a.calls == 1);
+
+    ss_bus_destroy(b);
+    free(pool);
+    ss_bus_destroy(a);
+    printf("Error handler bus and user data tests passed!\n");
+}
+
+/* The handler runs after the bus is unlocked, so it may call back into
+ * its bus (also making a failing call, reported to it again) and even
+ * destroy the bus */
+static void handler_reenter(ss_bus_t* failing, ss_error_t error, const char* msg,
+                            void* user_data) {
+    int* calls = (int*)user_data;
+    (void)error;
+    (void)msg;
+    (*calls)++;
+    if (*calls == 1) {
+        assert(ss_signal_register(failing, "from_handler") == SS_OK);
+        assert(ss_emit_void(failing, "still_missing") == SS_ERR_NOT_FOUND);
+        assert(*calls == 2);                    /* reported to this handler */
+    }
+}
+
+static void handler_destroy_bus(ss_bus_t* failing, ss_error_t error, const char* msg,
+                                void* user_data) {
+    (void)error;
+    (void)msg;
+    (*(int*)user_data)++;
+    ss_bus_destroy(failing);
+}
+
+/* user_data: the slot's bus; makes a failing call from inside the slot */
+static void slot_fail_nested(const ss_data_t* data, void* user_data) {
+    ss_bus_t* own = (ss_bus_t*)user_data;
+    (void)data;
+    assert(ss_emit_void(own, "missing_nested") == SS_ERR_NOT_FOUND);
+    /* The handler destroyed the bus: it refuses every call from now on */
+    assert(ss_signal_exists(own, "outer") == 0);
+    assert(ss_emit_void(own, "outer") == SS_ERR_NULL_PARAM);
+}
+
+/* Once ss_bus_destroy() is requested, the bus reports no more errors */
+typedef struct {
+    ss_bus_t* bus;
+    int destroyed;
+    int handler_calls;
+} closing_ctx_t;
+
+static void handler_not_after_destroy(ss_bus_t* failing, ss_error_t error, const char* msg,
+                                      void* user_data) {
+    closing_ctx_t* ctx = (closing_ctx_t*)user_data;
+    (void)error;
+    (void)msg;
+    assert(failing == ctx->bus);
+    assert(!ctx->destroyed);
+    ctx->handler_calls++;
+}
+
+static void slot_destroy_marked(const ss_data_t* data, void* user_data) {
+    closing_ctx_t* ctx = (closing_ctx_t*)user_data;
+    (void)data;
+    ctx->destroyed = 1;
+    ss_bus_destroy(ctx->bus);
+}
+
+static void slot_flush_then_destroyed(const ss_data_t* data, void* user_data) {
+    closing_ctx_t* ctx = (closing_ctx_t*)user_data;
+    (void)data;
+    assert(ss_emit_deferred(ctx->bus, "not_registered", NULL) == SS_OK);
+    assert(ss_emit_deferred(ctx->bus, "kill", NULL) == SS_OK);
+    /* The first entry fails, the second destroys the bus: the nested
+     * flush returns the error but reports it to no handler */
+    assert(ss_flush_deferred(ctx->bus) == SS_ERR_NOT_FOUND);
+    assert(ss_emit_void(ctx->bus, "kill") == SS_ERR_NULL_PARAM);
+}
+
+void test_error_handler_reentry_and_destroy(void) {
+    unsigned int flags = 0;
+    closing_ctx_t ctx;
+    int calls = 0;
+    printf("\n=== Testing Error Handler Re-entry and Destroy ===\n");
+#if SS_ENABLE_THREAD_SAFETY
+    flags = SS_BUS_THREAD_SAFE;     /* the handler runs with the lock released */
+#endif
+    TEST_WATCHDOG(10);
+
+    /* Calls back into its bus, including a failing call */
+    assert(ss_bus_create(&bus, flags) == SS_OK);
+    ss_set_error_handler(bus, handler_reenter, &calls);
+    assert(ss_emit_void(bus, "missing") == SS_ERR_NOT_FOUND);
+    assert(calls == 2);
+    assert(ss_signal_exists(bus, "from_handler") == 1);
+    ss_bus_destroy(bus);
+
+    /* Destroys its bus after the outermost call: freed at once */
+    calls = 0;
+    assert(ss_bus_create(&bus, flags) == SS_OK);
+    ss_set_error_handler(bus, handler_destroy_bus, &calls);
+    assert(ss_emit_void(bus, "missing") == SS_ERR_NOT_FOUND);
+    assert(calls == 1);                     /* the bus is gone now */
+
+    /* Destroys its bus after a call nested in a slot: freed when the
+     * outermost call returns */
+    calls = 0;
+    assert(ss_bus_create(&bus, flags) == SS_OK);
+    ss_set_error_handler(bus, handler_destroy_bus, &calls);
+    assert(ss_signal_register(bus, "outer") == SS_OK);
+    assert(ss_connect(bus, "outer", slot_fail_nested, bus) == SS_OK);
+    assert(ss_emit_void(bus, "outer") == SS_OK);
+    assert(calls == 1);                     /* the bus is gone now */
+
+    /* Once a slot requests destroy, no error reaches the handler: neither
+     * a nested call that fails afterwards nor the outermost call */
+    memset(&ctx, 0, sizeof(ctx));
+    assert(ss_bus_create(&ctx.bus, flags) == SS_OK);
+    ss_set_error_handler(ctx.bus, handler_not_after_destroy, &ctx);
+    assert(ss_emit_void(ctx.bus, "not_registered") == SS_ERR_NOT_FOUND);
+    assert(ctx.handler_calls == 1);
+    assert(ss_signal_register(ctx.bus, "kill") == SS_OK);
+    assert(ss_signal_register(ctx.bus, "outer") == SS_OK);
+    assert(ss_connect(ctx.bus, "kill", slot_destroy_marked, &ctx) == SS_OK);
+    assert(ss_connect(ctx.bus, "outer", slot_flush_then_destroyed, &ctx) == SS_OK);
+    assert(ss_emit_void(ctx.bus, "outer") == SS_OK);
+    assert(ctx.destroyed && ctx.handler_calls == 1);
+
+    memset(&ctx, 0, sizeof(ctx));
+    assert(ss_bus_create(&ctx.bus, flags) == SS_OK);
+    ss_set_error_handler(ctx.bus, handler_not_after_destroy, &ctx);
+    assert(ss_signal_register(ctx.bus, "kill") == SS_OK);
+    assert(ss_connect(ctx.bus, "kill", slot_destroy_marked, &ctx) == SS_OK);
+    assert(ss_emit_deferred(ctx.bus, "not_registered", NULL) == SS_OK);
+    assert(ss_emit_deferred(ctx.bus, "kill", NULL) == SS_OK);
+    assert(ss_flush_deferred(ctx.bus) == SS_ERR_NOT_FOUND);  /* the bus is gone now */
+    assert(ctx.destroyed && ctx.handler_calls == 0);
+
+    TEST_WATCHDOG(0);
+    printf("Error handler re-entry and destroy tests passed!\n");
 }
 
 /* Review R7: restoring the namespace from ss_get_namespace() is safe */
@@ -1684,7 +1922,7 @@ void test_get_namespace_buffer(void) {
     char small[4];
     printf("\n=== Testing ss_get_namespace Buffer ===\n");
     bus = new_bus();
-    ss_set_error_handler(bus, count_errors);
+    ss_set_error_handler(bus, count_errors, &g_handler_calls);
     g_handler_calls = 0;
 
     /* None set: the empty string, which also fits in one byte */
@@ -1824,6 +2062,8 @@ int main(void) {
     test_queue_wraparound();
     test_nested_flush();
     test_error_handler_coverage();
+    test_error_handler_bus_and_user_data();
+    test_error_handler_reentry_and_destroy();
     test_namespace_self_assign();
     test_get_namespace_buffer();
     test_error_code_values();

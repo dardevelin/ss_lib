@@ -76,7 +76,15 @@ void logger(const ss_data_t* d, void* ud) { log_append(strdup(ss_data_get_string
 
 **Consequence:** Silent failures. A failed `ss_bus_create()` means everything else fails. `ss_connect()` failure on static memory means slot limit hit.
 
-**Fix:** Always check at minimum `ss_bus_create()` and `ss_connect()`. Use `ss_error_string()` for human-readable messages, or set a per-bus handler with `ss_set_error_handler(bus, handler)`.
+**Fix:** Always check at minimum `ss_bus_create()` and `ss_connect()`. Use `ss_error_string()` for human-readable messages, or set a per-bus handler with `ss_set_error_handler(bus, handler, user_data)`.
+
+### 4b. Error Handler Misuse
+
+**Look for:** An error handler with the 2.x signature `(ss_error_t, const char*)`, often cast to `ss_error_handler_t` to compile; a handler that keeps the `msg` pointer; `user_data` freed or out of scope while the handler is still set (e.g. a stack struct in a function that returns without `ss_set_error_handler(bus, NULL, NULL)`); a handler that destroys its bus and then uses `bus`; a handler that waits for another thread to use the same bus.
+
+**Consequence:** Calling the cast handler through `ss_error_handler_t` is undefined behavior; in practice it reads the wrong arguments. `msg` may be the caller's signal name, valid only during the handler call. A dangling `user_data` is used on the next error. After the outermost failing call, `ss_bus_destroy(bus)` in the handler frees the bus at once. A failing call made from a slot reports while the slot's emission still holds the bus's lock, so a handler that waits for another thread using the bus deadlocks there.
+
+**Fix:** Use `void handler(ss_bus_t* bus, ss_error_t error, const char* msg, void* user_data)` without casts. Copy `msg` if it must be kept. Clear the handler (or destroy the bus) before releasing `user_data`. Return right after destroying the bus. Hand work that needs another thread to a queue instead of waiting in the handler.
 
 ### 5. Thread Safety Not Requested at Creation
 
@@ -257,11 +265,11 @@ ss_connect_ex(bus, "sig", slot, user_data, SS_PRIORITY_HIGH, &handle);
 
 ### 19. Migrating 2.x Code
 
-**Look for:** 2.x calls that 3.0 no longer has (the global init and cleanup functions, the pool-size query, the runtime thread-safety toggle, the static-context macro, the trace macro and the two error codes 2.x never returned; `docs/migration-3.0.md` lists them by name), stateful calls without a bus argument, and `ss_get_namespace` used as returning a pointer (it now copies into a caller buffer and returns `ss_error_t`).
+**Look for:** 2.x calls that 3.0 no longer has (the global init and cleanup functions, the pool-size query, the runtime thread-safety toggle, the static-context macro, the trace macro and the two error codes 2.x never returned; `docs/migration-3.0.md` lists them by name), stateful calls without a bus argument, `ss_get_namespace` used as returning a pointer (it now copies into a caller buffer and returns `ss_error_t`), and error handlers with the 2.x signature `(ss_error_t, const char*)`.
 
 **Consequence:** They fail to compile or link; none silently changes meaning.
 
-**Fix:** Follow `docs/migration-3.0.md`: create a bus (`ss_bus_create(&bus, flags)`, or `ss_bus_create_in(&bus, pool, size, flags)` for a pool, sized with `ss_bus_pool_size()`), pass it first to every stateful call, choose thread safety with `SS_BUS_THREAD_SAFE`, destroy it with `ss_bus_destroy(bus)`, and use `SS_STATIC_BUSES` in static mode. Note that a too-small pool is now an error (`SS_ERR_BUFFER_TOO_SMALL`), not a silent fallback. Replace `const char* ns = ss_get_namespace()` with `char ns[SS_MAX_SIGNAL_NAME_LENGTH]; ss_get_namespace(bus, ns, sizeof(ns))`, and a NULL check on it with `ns[0] == '\0'`.
+**Fix:** Follow `docs/migration-3.0.md`: create a bus (`ss_bus_create(&bus, flags)`, or `ss_bus_create_in(&bus, pool, size, flags)` for a pool, sized with `ss_bus_pool_size()`), pass it first to every stateful call, choose thread safety with `SS_BUS_THREAD_SAFE`, destroy it with `ss_bus_destroy(bus)`, and use `SS_STATIC_BUSES` in static mode. Note that a too-small pool is now an error (`SS_ERR_BUFFER_TOO_SMALL`), not a silent fallback. Replace `const char* ns = ss_get_namespace()` with `char ns[SS_MAX_SIGNAL_NAME_LENGTH]; ss_get_namespace(bus, ns, sizeof(ns))`, and a NULL check on it with `ns[0] == '\0'`. Give error handlers the bus and `user_data` parameters (`ss_error_handler_t`) and pass a third argument to `ss_set_error_handler(bus, handler, user_data)`.
 
 ### No Longer Issues
 
@@ -273,6 +281,8 @@ Do not report these as bugs:
 - Calling several `ss_data_set_*` on the same created object (previous payload is released).
 - Overriding only `SS_MALLOC`/`SS_FREE`/`SS_CALLOC` (strings and dynamic-mode buses are allocated with them).
 - Using the same signal names on several buses (they are independent signals).
+- Calling the library from an error handler, including on the failing bus and `ss_bus_destroy()` of that bus (the handler runs after the call released the lock).
+- Releasing an error handler's `user_data` right after `ss_bus_destroy(bus)`, also when that is called from a slot: once destroy is requested the bus reports no more errors.
 
 ## Anti-Patterns with Corrections
 

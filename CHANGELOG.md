@@ -30,9 +30,18 @@ lists what changes for programs written for 2.x.
 - **Breaking:** `ss_batch_create(bus)`: a batch belongs to the bus it was
   created for, which supplies the namespace, runs the emission and reports
   errors.
-- **Breaking:** the error handler is per bus (`ss_set_error_handler(bus,
-  handler)`); its signature is unchanged for now. Errors of calls given no
-  bus (a NULL bus or batch, a failed creation) reach no handler.
+- **Breaking:** the error handler is per bus and receives the failing bus
+  and a user pointer (A9): `ss_error_handler_t` is
+  `void (*)(ss_bus_t* bus, ss_error_t error, const char* msg, void* user_data)`,
+  set with `ss_set_error_handler(bus, handler, user_data)`; a NULL handler
+  removes it. Errors on one bus never reach another bus's handler, and
+  calls given no bus (a NULL bus or batch, a failed creation) reach none.
+  The handler still runs after the failing call releases the lock and may
+  call the library, also on its bus, and destroy that bus. Once
+  `ss_bus_destroy()` has been called, also from a slot, the bus reports no
+  more errors (2.x could still report a call that failed after
+  `ss_cleanup()` was requested from a slot), so `user_data` may be released
+  right after it. A successful call no longer reads the handler.
 - **Breaking:** in static mode `ss_bus_create()` takes one of
   `SS_STATIC_BUSES` built-in buses (default 1, in `.bss`), which replaces
   `SS_STATIC_CONTEXT`, and returns `SS_ERR_WOULD_OVERFLOW` when all are in

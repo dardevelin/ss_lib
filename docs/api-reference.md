@@ -904,10 +904,28 @@ Convert an error code to a human-readable string.
 ### ss_set_error_handler
 
 ```c
-void ss_set_error_handler(ss_bus_t* bus, void (*handler)(ss_error_t error, const char* msg));
+typedef void (*ss_error_handler_t)(ss_bus_t* bus, ss_error_t error, const char* msg,
+                                   void* user_data);
+
+void ss_set_error_handler(ss_bus_t* bus, ss_error_handler_t handler, void* user_data);
 ```
 
-Set the bus's error handler (NULL removes it). It is called for every failing call on this bus, including parameter errors (NULL arguments, handle 0, a batch being destroyed, over-long names), after the bus's lock is released, so it may call library functions. `msg` is the signal name when the call has one, otherwise `ss_error_string(error)`. Errors of calls that have no bus to report to reach no handler: a NULL bus, a NULL batch, and failed bus creation. Errors on one bus never reach another bus's handler. The handler is released with the bus.
+Set the bus's error handler and the `user_data` passed to it. A NULL handler removes it (`user_data` is then ignored); setting a handler again replaces both. The library never dereferences or frees `user_data`.
+
+The handler is called for every failing call on this bus, including parameter errors (NULL arguments, handle 0, a batch being destroyed, over-long names), with:
+
+- `bus`: the bus the call failed on, which is the bus the handler was set on. One function can serve several buses and tell them apart by `bus` or `user_data`.
+- `error`: the code the call returns.
+- `msg`: the signal name when the call has one, otherwise `ss_error_string(error)`. It is valid only during the handler call.
+- `user_data`: as given to `ss_set_error_handler()`.
+
+Errors of calls that have no bus to report to reach no handler: a NULL bus, a NULL batch, and failed bus creation. Errors on one bus never reach another bus's handler.
+
+The handler runs after the failing call has released the bus's lock, so it may call library functions, also on its own bus; a failing call it makes is reported to it again. A call made from inside a slot is nested in the emission that runs the slot, which keeps holding the lock while that call's handler runs. The handler may destroy its bus: after the outermost call, `ss_bus_destroy(bus)` frees it at once, so the handler must not use `bus` afterwards; after a call made from a slot, destruction waits for the outermost call, as it does when a slot destroys the bus.
+
+**Destroying the bus.** Once `ss_bus_destroy(bus)` has been called, from a slot, from the handler or anywhere else, the bus reports no more errors: calls still in progress on it (the emission that ran the slot, a flush) return their codes but call no handler, and the calls it refuses (`SS_ERR_NULL_PARAM`) reach none either. A handler is therefore never called with a bus that is being destroyed, and `user_data` may be released as soon as `ss_bus_destroy()` has been called.
+
+On a thread-safe bus, the handler and `user_data` are read under the lock when the failing call ends and called after it is released. A call failing on another thread while the handler is replaced may still report to the previous handler and `user_data`, so keep the previous `user_data` valid until such calls have returned.
 
 ---
 

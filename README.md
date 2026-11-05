@@ -288,7 +288,18 @@ Both create macros pass `SS_ABI_TAG` to `ss_bus_create_abi()` / `ss_bus_create_i
 | Function | Description |
 |----------|-------------|
 | `ss_error_string(error)` | Error code to string |
-| `ss_set_error_handler(handler)` | Set the bus's error callback |
+| `ss_set_error_handler(handler, user_data)` | Set the bus's error callback, called with the failing bus, the error, the signal name and `user_data` |
+
+The handler runs after the failing call releases the bus's lock, so it may call the library, and is never called once `ss_bus_destroy()` has been called on the bus:
+
+```c
+static void on_error(ss_bus_t* bus, ss_error_t error, const char* msg, void* user_data) {
+    (void)bus;
+    fprintf(stderr, "%s: %s: %s\n", (const char*)user_data, ss_error_string(error), msg);
+}
+
+ss_set_error_handler(bus, on_error, "audio bus");
+```
 
 ### Configuration
 

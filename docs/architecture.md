@@ -22,7 +22,7 @@ SS_Lib is a signal-slot event system with two memory models (dynamic and static)
 
 ## Buses
 
-All state lives in a bus, `struct ss_bus` (public as the opaque `ss_bus_t`). A bus holds the signal storage, the default namespace (`char ns[SS_MAX_SIGNAL_NAME_LENGTH]`, an inline buffer), the error handler, the handle counter, the slot limit, the mutex (when it has one), the deferred queue entries, the ISR queue (with `SS_ENABLE_ISR_SAFE`), the statistics and trace settings, and the nesting counters `call_depth` and `closing`. Every public function that uses state takes the bus as its first argument, and every internal function (name resolution, the storage interface, emission, sweep and retire, the entry queue, error reporting, trace) takes it as its `bus` parameter. Buses share nothing, so two buses with the same signal names are independent.
+All state lives in a bus, `struct ss_bus` (public as the opaque `ss_bus_t`). A bus holds the signal storage, the default namespace (`char ns[SS_MAX_SIGNAL_NAME_LENGTH]`, an inline buffer), the error handler and its `user_data`, the handle counter, the slot limit, the mutex (when it has one), the deferred queue entries, the ISR queue (with `SS_ENABLE_ISR_SAFE`), the statistics and trace settings, and the nesting counters `call_depth` and `closing`. Every public function that uses state takes the bus as its first argument, and every internal function (name resolution, the storage interface, emission, sweep and retire, the entry queue, error reporting, trace) takes it as its `bus` parameter. Buses share nothing, so two buses with the same signal names are independent.
 
 The library has no default bus and almost no global state. What remains is, in static mode, the table of built-in buses `g_static_buses[SS_STATIC_BUSES]` in `.bss`.
 
@@ -60,10 +60,10 @@ Every public function that touches a bus is wrapped in `bus_enter()` / `bus_leav
 
 `bus_leave()`:
 1. Decrements `call_depth`; if it reached 0 and `closing` is set, the bus must be destroyed
-2. Unlocks the mutex if this call locked it
-3. After unlocking: destroys the bus (deferred destroy) or, if the call failed, invokes the bus's error handler with the signal name or `ss_error_string(err)`
+2. On success with nothing to destroy, unlocks the mutex if this call locked it and returns (the fast path reads nothing else)
+3. Otherwise (`bus_leave_slow()`): reads the error handler and its `user_data` while still locked, unlocks, then destroys the bus (deferred destroy) or, if the call failed, calls `handler(bus, err, msg, user_data)` with the signal name or `ss_error_string(err)` as `msg`
 
-The handler fires for every failing call on the bus, including parameter errors (NULL arguments, handle 0, a batch being destroyed, too-long names). Calls with no bus (a NULL bus or batch) and failed creation have no handler to report to. Calling it after unlocking means a handler may itself call the library.
+The handler fires for every failing call on the bus, including parameter errors (NULL arguments, handle 0, a batch being destroyed, too-long names). Calls with no bus (a NULL bus or batch) and failed creation have no handler to report to. Calling it after unlocking means a handler may itself call the library, also on its bus; a call nested in a slot reports while the emission that ran the slot still holds the lock. `ss_bus_destroy()` clears the handler and `user_data` when it sets `closing`, so a bus being destroyed reports nothing: neither the calls still running on it nor the outermost call that frees it. A handler that destroys its bus after the outermost call frees it at once; `bus_leave_slow()` touches the bus no more after the handler returns.
 
 ## Name Resolution
 
@@ -241,7 +241,7 @@ All allocation goes through `SS_MALLOC`, `SS_FREE` and `SS_CALLOC` from `ss_conf
 
 ## Error Reporting
 
-Public functions return `ss_error_t`. Failures of calls on a bus are also reported to that bus's error handler from `bus_leave()`, after the mutex is released. Debug trace (`SS_ENABLE_DEBUG_TRACE`) writes to the stream set by `ss_enable_trace(bus, stream)` (stored in the bus and changed under its lock) and is silent until then; the library uses an internal trace function, and no public trace macro exists.
+Public functions return `ss_error_t`. Failures of calls on a bus are also reported to that bus's error handler (`ss_error_handler_t`, called with the bus and the `user_data` given to `ss_set_error_handler()`) from `bus_leave()`, after the mutex is released, until `ss_bus_destroy()` is called on the bus. Debug trace (`SS_ENABLE_DEBUG_TRACE`) writes to the stream set by `ss_enable_trace(bus, stream)` (stored in the bus and changed under its lock) and is silent until then; the library uses an internal trace function, and no public trace macro exists.
 
 ## Build Variants
 
