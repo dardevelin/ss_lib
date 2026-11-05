@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SS_Lib is a signal-slot library for C (v2.2.3) targeting embedded systems, game engines, and resource-constrained environments. Pure C with zero external dependencies. Supports dynamic and static memory allocation, optional thread safety, and ISR-safe signal emission. Versioning is semver: a minor release must keep every existing call compiling and every public struct layout unchanged.
+SS_Lib is a signal-slot library for C (v3.0.0) targeting embedded systems, game engines, and resource-constrained environments. Pure C with zero external dependencies. Supports dynamic and static memory allocation, optional thread safety, and ISR-safe signal emission. Versioning is semver: a minor release must keep every existing call compiling and every public struct layout unchanged.
 
 ## Build Commands
 

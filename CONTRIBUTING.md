@@ -30,6 +30,8 @@ Enhancement suggestions are welcome! Please include:
 
 ### Pull Requests
 
+SS_Lib 3.0 is developed on the `v3` branch: changes for 3.0 target `v3`, fixes for 2.x target `main`. A change that breaks 2.x code also adds its section to [docs/migration-3.0.md](docs/migration-3.0.md).
+
 1. Fork the repository
 2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Make your changes (for a bug fix, first write a test that fails without the fix)

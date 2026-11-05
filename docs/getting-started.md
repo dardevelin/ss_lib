@@ -49,7 +49,7 @@ gcc myapp.c $(pkg-config --cflags --libs ss_lib)
 Or, from CMake:
 
 ```cmake
-find_package(ss_lib 2 REQUIRED)
+find_package(ss_lib 3 REQUIRED)
 target_link_libraries(myapp ss_lib::ss_lib)
 ```
 

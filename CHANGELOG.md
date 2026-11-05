@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - Unreleased
+
+In development on the `v3` branch; [docs/migration-3.0.md](docs/migration-3.0.md)
+lists what changes for programs written for 2.x.
+
+### Changed
+- Version 3.0.0: the shared library is `libss_lib.so.3` / `libss_lib.3.dylib`
+  and `find_package(ss_lib 3)` finds it. 2.x and 3.x shared libraries can be
+  installed side by side.
+
 ## [Unreleased]
 
 ### Changed
