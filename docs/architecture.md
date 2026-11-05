@@ -22,7 +22,9 @@ SS_Lib is a signal-slot event system with two memory models (dynamic and static)
 
 ## Library Context
 
-All state lives in one `ss_context_t`, reached through the global pointer `g_context`. The context holds the signal storage, the default namespace (`char ns[SS_MAX_SIGNAL_NAME_LENGTH]`, an inline buffer), the error handler, the handle counter, the mutex, the deferred queue entries, and the nesting counters `call_depth` and `closing`.
+All state lives in one `ss_context_t`, except the ISR queue (below). The context holds the signal storage, the default namespace (`char ns[SS_MAX_SIGNAL_NAME_LENGTH]`, an inline buffer), the error handler, the handle counter, the mutex, the deferred queue entries, and the nesting counters `call_depth` and `closing`.
+
+Only the public entry points read the global pointer `g_context` that holds the live context: `ctx_enter()` (which every other public function goes through), the init functions, and `ss_set_thread_safe` / `ss_is_thread_safe`. `ctx_leave()` clears it when it finishes a deferred cleanup. Every internal function (name resolution, the storage interface, emission, sweep and retire, the entry queue, error reporting, trace) takes the context as its `ctx` parameter and never reads the global. The ISR queue is the one exception: it is global state of its own, outside the context.
 
 Where the context lives depends on how the library was initialized:
 
@@ -75,7 +77,7 @@ There is no hash table. Lookup (`signal_find`) is a linear scan comparing names 
 Signals are a singly-linked list of heap nodes, each with a heap copy of its name (and description when `SS_ENABLE_INTROSPECTION` is on). New signals are prepended.
 
 ```
-g_context->signals -> [sig3] -> [sig2] -> [sig1] -> NULL
+ctx->signals -> [sig3] -> [sig2] -> [sig1] -> NULL
 ```
 
 ### Static Mode
@@ -109,7 +111,7 @@ In dynamic mode each slot is a heap node; in static mode it comes from `slots[SS
 
 ### Connection Handles
 
-Each slot gets a handle from `g_context->next_handle`, starting at 1 and skipping 0 on wrap-around (0 means "no handle"). `ss_disconnect_handle` scans the slots of all live signals for it.
+Each slot gets a handle from `ctx->next_handle`, starting at 1 and skipping 0 on wrap-around (0 means "no handle"). `ss_disconnect_handle` scans the slots of all live signals for it.
 
 ## Removal and Safe Emission
 
@@ -150,7 +152,7 @@ Slots always receive borrowed data. `ss_emit` and `ss_emit_namespaced` pass an o
 
 `ss_cleanup()` sets `closing = 1` and marks all slots removed. If no call is in progress, `ctx_leave()` destroys the context immediately. Called from inside a slot, `call_depth` is still above zero, so destruction waits until the outermost library call returns. Meanwhile `ctx_enter()` refuses every call (the library behaves as uninitialized), queue flushes and ISR drains stop early, and `ss_init()` returns `SS_ERR_ALREADY_EXISTS`.
 
-`context_destroy()` clears `g_context`, releases pending deferred entries, destroys all signals, discards ready ISR events, destroys the mutex and frees the context only if it is heap-owned.
+`ctx_leave()` clears `g_context`, then `context_destroy()` releases pending deferred entries, destroys all signals, discards ready ISR events, destroys the mutex and frees the context only if it is heap-owned.
 
 ## Entry Queue (Deferred Emission and Batches)
 
