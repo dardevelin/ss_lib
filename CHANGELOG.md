@@ -10,6 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.2.4] - 2026-11-05
 
 ### Changed
+- README: Homebrew installs a prebuilt bottle on macOS 15 and 26 (Apple
+  silicon) and Linux (x86_64 and arm64). CONTRIBUTING's release steps include
+  updating the tap and publishing its bottles.
+
+### Changed
 - `scripts/check_install.sh` (`make check-install` and CI's CMake jobs) no
   longer hard-codes major version 2: it reads the installed version from
   `ss_lib.pc` and checks that the shared library name, the CMake package's
