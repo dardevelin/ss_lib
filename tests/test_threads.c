@@ -12,6 +12,9 @@
 #include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
+/* The asserts are the test: keep them in every build type (CMake's Release
+ * configuration defines NDEBUG) */
+#undef NDEBUG
 #include <assert.h>
 #include <unistd.h>
 

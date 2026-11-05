@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- The tests checked nothing in CMake Release builds, which CI's Windows MSVC
+  job uses: Release defines `NDEBUG`, which removes every `assert()`. Each
+  test program now undefines `NDEBUG` before `<assert.h>`, and `make test`
+  fails if a test program that uses `assert()` does not.
+
+### Fixed
 - `docs/api-reference.md` showed `SS_VERSION_PATCH 1` next to version 2.2.4.
   `make check-version` (in `test-all`, CI and the release workflow) now also
   checks the version copies written by hand in the API reference, the docs

@@ -128,6 +128,9 @@ $(BENCH_BIN): benchmarks/benchmark_ss_lib.c $(LIB_NAME)
 # ---------------------------------------------------------------- tests
 
 test: $(TEST_BINS)
+	@for f in tests/test_*.c; do grep -q '^#include <assert.h>' $$f || continue; \
+	    awk '/^#undef NDEBUG/ { u = 1 } /^#include <assert.h>/ { exit !u }' $$f || \
+	    { echo "$$f: #undef NDEBUG must come before <assert.h> (asserts are the test)"; exit 1; }; done
 	@for t in $(TEST_BINS); do echo "== $$t"; $$t > $$t.log 2>&1 || { cat $$t.log; exit 1; }; tail -1 $$t.log; done
 
 EMBEDDED_FEATURES = -DSS_EMBEDDED_BUILD -DSS_MAX_SIGNALS=16 -DSS_MAX_SLOTS=32 \
