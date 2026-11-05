@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+/* The asserts are the test: keep them in every build type (CMake's Release
+ * configuration defines NDEBUG) */
+#undef NDEBUG
 #include <assert.h>
 
 #if defined(__unix__) || defined(__APPLE__)

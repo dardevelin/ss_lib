@@ -18,6 +18,9 @@
  * ./test_reentrancy <seed>.
  */
 #include "ss_lib.h"
+/* The asserts are the test: keep them in every build type (CMake's Release
+ * configuration defines NDEBUG) */
+#undef NDEBUG
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
