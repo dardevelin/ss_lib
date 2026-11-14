@@ -12,6 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without the recommended C++ libraries, 114 MB to download instead of 602 MB,
   so a slow package mirror no longer runs it past its timeout.
 
+### Fixed
+- Make: a `BUILD_DIR` reused with other flags (`make`, then
+  `make test FEATURES=...`) kept the library built with the old flags and
+  linked it into programs built with the new ones, so the tests could check
+  another configuration than the one asked for. The Makefile records the
+  flags in `BUILD_DIR/.build-config` and, when they change, deletes the
+  outputs built from them so they are rebuilt. `make check-build-config` (in
+  `test-all`) switches `SS_ENABLE_THREAD_SAFETY` in one directory and checks
+  that the library is rebuilt and that an unchanged configuration rebuilds
+  nothing.
+
 ## [3.0.0] - 2026-11-05
 
 A major release: every stateful call takes an explicit bus.

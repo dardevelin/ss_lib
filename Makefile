@@ -94,6 +94,24 @@ examples: $(EXAMPLE_BINS)
 $(BUILD_DIR):
 	@mkdir -p $@
 
+# A BUILD_DIR reused with other flags (FEATURES, CC, SANITIZER...) must not
+# link a library built with the old ones: the tests would check another
+# configuration than the one asked for. BUILD_DIR/.build-config records the flags; when they differ,
+# the outputs built from them are deleted here, while the Makefile is read,
+# so they are rebuilt. Comparing timestamps instead fails within one second
+# under GNU make 3.81 (macOS). Add every new output built from CFLAGS or
+# LIB_CFLAGS to CONFIG_OUTPUTS.
+config_quote = '$(subst ','"'"',$(1))'
+CONFIG_VARS = CC CFLAGS LIB_CFLAGS LDFLAGS IMPL SHARED_FLAGS SHARED_BUILD_ID
+CONFIG_STAMP = $(BUILD_DIR)/.build-config
+CONFIG_OUTPUTS = $(LIB_OBJ) $(LIB_NAME) $(BUILD_DIR)/libss_lib.* $(TEST_BINS) $(EXAMPLE_BINS) \
+    $(BENCH_BIN) $(BUILD_DIR)/build_config_probe
+CONFIG_NOW := $(foreach var,$(CONFIG_VARS),$(var)=[$($(var))])
+ifneq ($(CONFIG_NOW),$(shell cat '$(CONFIG_STAMP)' 2>/dev/null))
+    CONFIG_RESET := $(shell rm -f $(CONFIG_OUTPUTS); mkdir -p '$(BUILD_DIR)' && \
+        printf '%s\n' $(call config_quote,$(CONFIG_NOW)) > '$(CONFIG_STAMP)')
+endif
+
 $(LIB_OBJ): $(IMPL) $(IMPL_HEADERS) | $(BUILD_DIR)
 	$(CC) $(LIB_CFLAGS) -c $< -o $@
 
@@ -122,6 +140,13 @@ $(BUILD_DIR)/test_isr: tests/test_isr.c $(IMPL) $(IMPL_HEADERS) | $(BUILD_DIR)
 
 $(BUILD_DIR)/example_%: examples/example_%.c $(LIB_NAME)
 	$(CC) $(CFLAGS) $< $(LIB_NAME) $(LDFLAGS) -o $@
+
+$(BUILD_DIR)/build_config_probe: tests/build_config_probe.c $(LIB_NAME)
+	$(CC) $(CFLAGS) $< $(LIB_NAME) $(LDFLAGS) -o $@
+
+.PHONY: check-build-config
+check-build-config:
+	+@MAKE="$(MAKE)" sh scripts/check_build_config.sh "$(abspath $(BUILD_DIR))"
 
 $(BENCH_BIN): benchmarks/benchmark_ss_lib.c $(LIB_NAME)
 	$(CC) $(CFLAGS) -O3 $< $(LIB_NAME) $(LDFLAGS) -lm -o $@
@@ -189,7 +214,8 @@ check-docs:
 	@CC="$(CC)" BUILD_DIR="$(BUILD_DIR)" scripts/check_docs.sh
 
 test-all: test test-static test-minimal test-c89 test-newest test-single \
-          check-standards check-abi check-docs check-single-header check-version check-install
+          check-standards check-abi check-docs check-single-header check-version check-install \
+          check-build-config
 
 # The test suite against include/ss_lib_single.h, the file users copy into
 # their projects, instead of src/ss_lib.c (GHSA-f5pm-2465-f895)
@@ -346,6 +372,7 @@ help:
 	@echo "  check-standards     compile as C89 ... newest standard with -Werror"
 	@echo "  check-abi           fail if a public layout depends on the configuration"
 	@echo "  check-docs          compile every C code block of the documentation"
+	@echo "  check-build-config  flags changed in one BUILD_DIR rebuild library and callers"
 	@echo "  test-all            all of the above plus consistency checks"
 	@echo "  test-asan/-tsan/-ubsan/-msan/-valgrind   sanitizer runs"
 	@echo "  coverage            lcov report"
