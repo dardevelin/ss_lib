@@ -17,12 +17,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   release.
 
 ### Fixed
+- `ss_set_namespace()` given a pointer into the current namespace other than
+  its start, such as `ss_get_namespace() + 4`, copied it with `strcpy` between
+  overlapping buffers, which is undefined behaviour (AddressSanitizer reports
+  `strcpy-param-overlap`). It now uses `memmove`. 3.0 is not affected: its
+  `ss_get_namespace()` returns a copy.
+- Make: a `BUILD_DIR` reused with other flags (`make`, then
+  `make test FEATURES=...`) kept the library built with the old flags and
+  linked it into programs built with the new ones, so the library and its
+  callers could disagree on the layout of `ss_data_t`. The Makefile records
+  the flags in `BUILD_DIR/.build-config` and, when they change, deletes the
+  outputs built from them so they are rebuilt. `make check-build-config` (in
+  `test-all`, and under AddressSanitizer in `test-asan`) switches
+  `SS_ENABLE_CUSTOM_DATA` in one directory and checks that the library is
+  rebuilt and that an unchanged configuration rebuilds nothing.
 - The tests checked nothing in CMake Release builds, which CI's Windows MSVC
   job uses: Release defines `NDEBUG`, which removes every `assert()`. Each
   test program now undefines `NDEBUG` before `<assert.h>`, and `make test`
   fails if a test program that uses `assert()` does not.
-
-### Fixed
 - `docs/api-reference.md` showed `SS_VERSION_PATCH 1` next to version 2.2.4.
   `make check-version` (in `test-all`, CI and the release workflow) now also
   checks the version copies written by hand in the API reference, the docs

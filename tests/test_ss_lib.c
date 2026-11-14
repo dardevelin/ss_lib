@@ -1204,6 +1204,14 @@ void test_namespace_self_assign(void) {
     assert(ss_set_namespace("keep") == SS_OK);
     assert(ss_set_namespace(ss_get_namespace()) == SS_OK);
     assert(strcmp(ss_get_namespace(), "keep") == 0);
+    /* A substring of the borrowed buffer may overlap the destination. */
+    assert(ss_set_namespace("prefix_suffix") == SS_OK);
+    assert(ss_set_namespace(ss_get_namespace() + 7) == SS_OK);
+    assert(strcmp(ss_get_namespace(), "suffix") == 0);
+    assert(ss_set_namespace(ss_get_namespace() + 1) == SS_OK);
+    assert(strcmp(ss_get_namespace(), "uffix") == 0);
+    assert(ss_set_namespace(ss_get_namespace() + 5) == SS_OK);
+    assert(ss_get_namespace() == NULL);
     ss_cleanup();
     printf("Namespace self-assignment tests passed!\n");
 }

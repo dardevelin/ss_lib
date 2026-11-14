@@ -1347,7 +1347,8 @@ ss_error_t ss_set_namespace(const char* ns) {
     } else if (!qualify(ns, "x", probe)) {
         err = SS_ERR_WOULD_OVERFLOW;       /* not even "ns::x" would fit */
     } else if (ns != ctx->ns) {            /* ss_get_namespace() result: no-op */
-        strcpy(ctx->ns, ns);
+        /* ns may be a substring of the buffer returned by the getter. */
+        memmove(ctx->ns, ns, strlen(ns) + 1);
     }
     return ctx_leave(ctx, locked, err, ns);
 }
