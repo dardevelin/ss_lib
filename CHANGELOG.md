@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- 2.x is no longer maintained: 2.2.5 was its last release, and fixes are
+  released only as the next 3.x version. `SECURITY.md` lists 3.x as the only
+  supported version, the `ss-lib@2` Homebrew formula is deprecated, and the
+  release workflow accepts final tags only on `main`. Programs still on 2.x
+  can migrate with [docs/migration-3.0.md](docs/migration-3.0.md).
 - CI: the Embedded (ARM Cortex-M) job installs the ARM compiler and newlib
   without the recommended C++ libraries, 114 MB to download instead of 602 MB,
   so a slow package mirror no longer runs it past its timeout.
