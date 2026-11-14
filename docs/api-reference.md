@@ -239,10 +239,11 @@ free(pool);
 
 ```c
 #define SS_ABI_REVISION 1   /* bumped when a public layout changes (1 to 15) */
-#define SS_ABI_TAG ((size_t)(sizeof(ss_data_t) * 16u + SS_ABI_REVISION))
+#define SS_ABI_TAG ((size_t)(sizeof(ss_data_t) * 16u + SS_ABI_REVISION + \
+    (sizeof(ss_data_type_t) == sizeof(int) ? 0u : sizeof(ss_data_type_t) * 4096u)))
 ```
 
-The create macros pass the caller's `SS_ABI_TAG`, and creation returns `SS_ERR_CONFIG_MISMATCH` when it differs from the library's. The tag combines `SS_ABI_REVISION` with `sizeof(ss_data_t)` as the caller's compilation sees it, and fits a 16-bit `size_t`. Configuration macros do not change public layouts, so the tag catches what they cannot: a header from another version, and compiler options that change layouts, such as `-fshort-enums` or structure packing. Feature flags must still be the same for the library and every caller, because they decide which functions are declared: a difference shows up as a compile or link error.
+The create macros pass the caller's `SS_ABI_TAG`, and creation returns `SS_ERR_CONFIG_MISMATCH` when it differs from the library's. The tag combines `SS_ABI_REVISION` with `sizeof(ss_data_t)` as the caller's compilation sees it, plus the enum size when enums are not int-sized, and fits a 16-bit `size_t`. Configuration macros do not change public layouts, so the tag catches what they cannot: a header from another version, and compiler options that change layouts, such as structure packing (a different `sizeof(ss_data_t)`) or `-fshort-enums` (the same size, but `owned` at another offset, hence the enum size). With int-sized enums the tag is the same as in 3.0.0. Feature flags must still be the same for the library and every caller, because they decide which functions are declared: a difference shows up as a compile or link error.
 
 ### ss_bus_destroy
 
@@ -871,7 +872,7 @@ ss_error_t ss_get_perf_stats(ss_bus_t* bus, const char* signal_name,
                              ss_perf_stats_t* stats);
 ```
 
-Get performance statistics for a signal of the bus. Profiling must be enabled on the bus with `ss_enable_profiling(bus, 1)` for data to be collected.
+Get performance statistics for a signal of the bus. Profiling must be enabled on the bus with `ss_enable_profiling(bus, 1)` for data to be collected. An emission's time runs from after its signal is found (lookup is not included) until its last slot returns, so it includes everything the slots do.
 
 ### ss_enable_profiling
 
@@ -879,7 +880,7 @@ Get performance statistics for a signal of the bus. Profiling must be enabled on
 ss_error_t ss_enable_profiling(ss_bus_t* bus, int enabled);
 ```
 
-Enable or disable performance profiling on the bus. When disabled (default), no timing overhead is added to emission. Only declared when `SS_ENABLE_PERFORMANCE_STATS` is 1.
+Enable or disable performance profiling on the bus. When disabled (default), no timing overhead is added to emission. An emission is recorded if profiling was enabled when it started: one that a slot enables profiling in is not, and one that a slot disables it in still is. Only declared when `SS_ENABLE_PERFORMANCE_STATS` is 1.
 
 ### ss_reset_perf_stats
 

@@ -176,16 +176,20 @@ typedef struct ss_bus ss_bus_t;
 #define SS_ABI_REVISION 1
 
 /**
- * @brief Tag describing the ABI as the caller sees it: SS_ABI_REVISION and
- * sizeof(ss_data_t)
+ * @brief Tag describing the ABI as the caller sees it: SS_ABI_REVISION,
+ * sizeof(ss_data_t) and, when enums are not int-sized, the enum size
  *
  * No configuration macro changes a public layout, so the tag differs only
  * when the caller and the library come from different versions or were
- * compiled with options that change layouts (such as -fshort-enums or
- * structure packing). It fits a 16-bit size_t. The ss_bus_create macros
- * pass it, so every bus creation checks it.
+ * compiled with options that change layouts, such as structure packing
+ * (which changes sizeof(ss_data_t)) or -fshort-enums (which moves
+ * ss_data_t's members without changing its size, hence the enum size).
+ * With int-sized enums the tag is the same as in 3.0.0. It fits a 16-bit
+ * size_t. The ss_bus_create macros pass it, so every bus creation checks
+ * it.
  */
-#define SS_ABI_TAG ((size_t)(sizeof(ss_data_t) * 16u + SS_ABI_REVISION))
+#define SS_ABI_TAG ((size_t)(sizeof(ss_data_t) * 16u + SS_ABI_REVISION + \
+    (sizeof(ss_data_type_t) == sizeof(int) ? 0u : sizeof(ss_data_type_t) * 4096u)))
 
 /**
  * @brief Create a bus: call as ss_bus_create(&bus, flags)

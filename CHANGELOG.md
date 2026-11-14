@@ -18,15 +18,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   so a slow package mirror no longer runs it past its timeout.
 
 ### Fixed
+- The ABI check missed a library and a caller built with different enum
+  sizes (`-fshort-enums` on one side only, which some embedded toolchains
+  use by default): `ss_data_t` keeps its size, so `SS_ABI_TAG` matched, but
+  `owned` moves, and the caller read `type` 260 for a string. `SS_ABI_TAG`
+  now also carries the enum size when enums are not int-sized, so such a
+  mix gets `SS_ERR_CONFIG_MISMATCH`. With int-sized enums the tag is
+  unchanged, so programs built with 3.0.0 keep working. `make check-abi`
+  links each mix and checks the result.
+- `ss_process_isr_queue()` could deliver ISR events out of order when a slot
+  drained the queue itself and then queued more: the outer drain took an
+  entry from its snapshot that now held a newer event, and delivered it
+  before older ones. It now checks the entry's sequence number and leaves a
+  newer event for the next call.
+- Profiling enabled by a slot recorded the emission in progress, which had
+  no start time, as lasting since boot. An emission is now recorded only if
+  profiling was enabled when it started. The API reference says what is
+  timed: from after the signal is found until the last slot returns.
+- Benchmarks: all of them shared one bus, so in static mode the registration
+  benchmark used up the signals and later benchmarks timed
+  `SS_ERR_NOT_FOUND`; the "thread safety" configurations created an unlocked
+  bus; and the int benchmark overflowed an `int` counter. Each benchmark now
+  runs on a new bus, registration stops at `SS_MAX_SIGNALS` in static mode,
+  every timed call and the number of slot calls are checked, the counters
+  are 64-bit, and with thread safety compiled in the emission benchmarks
+  also run on an `SS_BUS_THREAD_SAFE` bus, marked `[locked bus]`.
 - Make: a `BUILD_DIR` reused with other flags (`make`, then
   `make test FEATURES=...`) kept the library built with the old flags and
   linked it into programs built with the new ones, so the tests could check
   another configuration than the one asked for. The Makefile records the
-  flags in `BUILD_DIR/.build-config` and, when they change, deletes the
-  outputs built from them so they are rebuilt. `make check-build-config` (in
-  `test-all`) switches `SS_ENABLE_THREAD_SAFETY` in one directory and checks
-  that the library is rebuilt and that an unchanged configuration rebuilds
-  nothing.
+  flags in `BUILD_DIR/.build-config` and, when they change, rebuilds every
+  output built from them. A dry run (`make -n`) and targets that build
+  nothing leave `BUILD_DIR` alone. `make check-build-config` (in `test-all`)
+  switches `SS_ENABLE_THREAD_SAFETY` in one directory and checks that the
+  library is rebuilt, that an unchanged configuration rebuilds nothing, and
+  that `make -n` deletes nothing.
 
 ## [3.0.0] - 2026-11-05
 

@@ -96,59 +96,76 @@ $(BUILD_DIR):
 
 # A BUILD_DIR reused with other flags (FEATURES, CC, SANITIZER...) must not
 # link a library built with the old ones: the tests would check another
-# configuration than the one asked for. BUILD_DIR/.build-config records the flags; when they differ,
-# the outputs built from them are deleted here, while the Makefile is read,
-# so they are rebuilt. Comparing timestamps instead fails within one second
-# under GNU make 3.81 (macOS). Add every new output built from CFLAGS or
-# LIB_CFLAGS to CONFIG_OUTPUTS.
+# configuration than the one asked for. BUILD_DIR/.build-config records the
+# flags. When they differ, every output built from them depends on the phony
+# target config-changed, so it is rebuilt whatever the timestamps say (GNU
+# make 3.81 on macOS compares whole seconds), and config-changed deletes the
+# old outputs and records the new flags first, so an interrupted build
+# leaves nothing stale. Reading the stamp here changes nothing: make -n and
+# targets that build nothing leave BUILD_DIR alone. Give every new output
+# built from CFLAGS or LIB_CFLAGS the prerequisite $(CONFIG_CHANGED) and add
+# it to CONFIG_OUTPUTS.
 config_quote = '$(subst ','"'"',$(1))'
 CONFIG_VARS = CC CFLAGS LIB_CFLAGS LDFLAGS IMPL SHARED_FLAGS SHARED_BUILD_ID
 CONFIG_STAMP = $(BUILD_DIR)/.build-config
 CONFIG_OUTPUTS = $(LIB_OBJ) $(LIB_NAME) $(BUILD_DIR)/libss_lib.* $(TEST_BINS) $(EXAMPLE_BINS) \
     $(BENCH_BIN) $(BUILD_DIR)/build_config_probe
 CONFIG_NOW := $(foreach var,$(CONFIG_VARS),$(var)=[$($(var))])
+CONFIG_CHANGED :=
 ifneq ($(CONFIG_NOW),$(shell cat '$(CONFIG_STAMP)' 2>/dev/null))
-    CONFIG_RESET := $(shell rm -f $(CONFIG_OUTPUTS); mkdir -p '$(BUILD_DIR)' && \
-        printf '%s\n' $(call config_quote,$(CONFIG_NOW)) > '$(CONFIG_STAMP)')
+    CONFIG_CHANGED := config-changed
 endif
 
-$(LIB_OBJ): $(IMPL) $(IMPL_HEADERS) | $(BUILD_DIR)
+.PHONY: config-changed
+config-changed: | $(BUILD_DIR)
+	@rm -f $(CONFIG_OUTPUTS)
+	@printf '%s\n' $(call config_quote,$(CONFIG_NOW)) > '$(CONFIG_STAMP)'
+
+$(LIB_OBJ): $(IMPL) $(IMPL_HEADERS) $(CONFIG_CHANGED) | $(BUILD_DIR)
 	$(CC) $(LIB_CFLAGS) -c $< -o $@
 
-$(LIB_NAME): $(LIB_OBJ)
-	ar rcs $@ $^
+$(LIB_NAME): $(LIB_OBJ) $(CONFIG_CHANGED)
+	ar rcs $@ $(LIB_OBJ)
 
-$(BUILD_DIR)/$(SHARED_REAL): $(LIB_OBJ)
-	$(CC) $(SHARED_FLAGS) $(SHARED_BUILD_ID) -o $@ $^ $(LDFLAGS)
+$(BUILD_DIR)/$(SHARED_REAL): $(LIB_OBJ) $(CONFIG_CHANGED)
+	$(CC) $(SHARED_FLAGS) $(SHARED_BUILD_ID) -o $@ $(LIB_OBJ) $(LDFLAGS)
 
 ifneq ($(SHARED_SONAME),)
-$(LIB_SO): $(BUILD_DIR)/$(SHARED_REAL)
+$(LIB_SO): $(BUILD_DIR)/$(SHARED_REAL) $(CONFIG_CHANGED)
 	ln -sf $(SHARED_REAL) $(BUILD_DIR)/$(SHARED_SONAME)
 	ln -sf $(SHARED_SONAME) $@
 endif
 
-$(BUILD_DIR)/test_%: tests/test_%.c $(LIB_NAME)
+$(BUILD_DIR)/test_%: tests/test_%.c $(LIB_NAME) $(CONFIG_CHANGED)
 	$(CC) $(CFLAGS) $< $(LIB_NAME) $(LDFLAGS) -o $@
 
 # Compiles the implementation into the test with a tracking allocator
-$(BUILD_DIR)/test_memory: tests/test_memory.c $(IMPL) $(IMPL_HEADERS) | $(BUILD_DIR)
+$(BUILD_DIR)/test_memory: tests/test_memory.c $(IMPL) $(IMPL_HEADERS) $(CONFIG_CHANGED) \
+    | $(BUILD_DIR)
 	$(CC) $(LIB_CFLAGS) -DSS_TEST_IMPL='"../$(IMPL)"' $< $(LDFLAGS) -o $@
 
 # Compiles the implementation into the test with a hookable ISR critical section
-$(BUILD_DIR)/test_isr: tests/test_isr.c $(IMPL) $(IMPL_HEADERS) | $(BUILD_DIR)
+$(BUILD_DIR)/test_isr: tests/test_isr.c $(IMPL) $(IMPL_HEADERS) $(CONFIG_CHANGED) | $(BUILD_DIR)
 	$(CC) $(LIB_CFLAGS) -DSS_TEST_IMPL='"../$(IMPL)"' $< $(LDFLAGS) -o $@
 
-$(BUILD_DIR)/example_%: examples/example_%.c $(LIB_NAME)
+$(BUILD_DIR)/example_%: examples/example_%.c $(LIB_NAME) $(CONFIG_CHANGED)
 	$(CC) $(CFLAGS) $< $(LIB_NAME) $(LDFLAGS) -o $@
 
-$(BUILD_DIR)/build_config_probe: tests/build_config_probe.c $(LIB_NAME)
+$(BUILD_DIR)/build_config_probe: tests/build_config_probe.c $(LIB_NAME) $(CONFIG_CHANGED)
 	$(CC) $(CFLAGS) $< $(LIB_NAME) $(LDFLAGS) -o $@
 
+# The script runs make itself, so make -n (which would run a recipe naming
+# $(MAKE)) skips it
 .PHONY: check-build-config
+ifeq ($(findstring n,$(firstword -$(MAKEFLAGS))),)
 check-build-config:
 	+@MAKE="$(MAKE)" sh scripts/check_build_config.sh "$(abspath $(BUILD_DIR))"
+else
+check-build-config:
+	@echo "check-build-config: runs make itself, so make -n skips it"
+endif
 
-$(BENCH_BIN): benchmarks/benchmark_ss_lib.c $(LIB_NAME)
+$(BENCH_BIN): benchmarks/benchmark_ss_lib.c $(LIB_NAME) $(CONFIG_CHANGED)
 	$(CC) $(CFLAGS) -O3 $< $(LIB_NAME) $(LDFLAGS) -lm -o $@
 
 # ---------------------------------------------------------------- tests

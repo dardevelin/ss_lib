@@ -129,15 +129,14 @@ In static mode each bus is a single object: one of the `SS_STATIC_BUSES` built-i
 
 ## Benchmark Methodology
 
-The project includes a benchmark suite in `benchmarks/benchmark_ss_lib.c`. It measures:
+The project includes a benchmark suite in `benchmarks/benchmark_ss_lib.c` (`make benchmark`; `make benchmark-all` runs it in several configurations). Each benchmark runs on a new bus, so in static mode one benchmark's signals do not use up another's capacity (registration stops at `SS_MAX_SIGNALS`). Every timed call is checked, and the emission benchmarks check the number of slot calls delivered and the values received, so a benchmark that measures failures stops instead of printing a number. It measures:
 
 - Signal registration time
 - Slot connection time
-- Signal lookup time
+- Signal existence check (lookup among 100 signals)
 - Disconnect by handle time
-- Emission time with no slots and with 5 slots
-- Priority slot emission time (10 slots)
-- Signal existence check
+- Emission time with no slots and with 1, 5 and 10 slots, with an int value (5 slots), and to 10 slots of mixed priorities
+- With `SS_ENABLE_THREAD_SAFETY`, the emission benchmarks again on a bus created with `SS_BUS_THREAD_SAFE`, marked `[locked bus]`; the others use an unlocked bus
 - ISR enqueue time (`ss_emit_from_isr`, with `SS_ENABLE_ISR_SAFE`): only the enqueue is timed; the queue is drained with `ss_process_isr_queue()` outside the timed region
 
 ### Reference Numbers

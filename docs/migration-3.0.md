@@ -43,7 +43,7 @@ Changed:
 | `ss_emit_from_isr(name, v)`, `ss_process_isr_queue(void)` | `ss_emit_from_isr(bus, name, v)`, `ss_process_isr_queue(bus)` ([ISR queue](#isr-queue)) |
 | `ss_cleanup_func_t`: `void (*)(void* data)` | `void (*)(const void* data, size_t size)` ([data](#data-ownership)) |
 | `ss_data_set_custom(data, void* value, ...)` | `const void* value`; callers need no change |
-| `SS_ABI_TAG`: `sizeof(ss_data_t)` | `sizeof(ss_data_t) * 16 + SS_ABI_REVISION`, passed by the create macros |
+| `SS_ABI_TAG`: `sizeof(ss_data_t)` | `sizeof(ss_data_t) * 16 + SS_ABI_REVISION` (plus the enum size when enums are not int-sized, since 3.0.1), passed by the create macros |
 
 New: `ss_bus_t`, `ss_bus_create()`, `ss_bus_create_in()` (macros over
 `ss_bus_create_abi()` / `ss_bus_create_in_abi()`), `ss_bus_pool_size()`,
@@ -428,7 +428,7 @@ What to change:
   `ss_emit_deferred()` and `ss_batch_add()` return `SS_ERR_INVALID_TYPE` for
   `SS_TYPE_CUSTOM` data (2.x had no such type there). `ss_emit()` passes it
   to the slots as given.
-- **`SS_ABI_TAG` changes** to `sizeof(ss_data_t) * 16 + SS_ABI_REVISION`.
+- **`SS_ABI_TAG` changes** to `sizeof(ss_data_t) * 16 + SS_ABI_REVISION` (plus the enum size when enums are not int-sized, since 3.0.1).
   The `ss_bus_create()` and `ss_bus_create_in()` macros pass it; a program
   that passed a hand-computed `sizeof(ss_data_t)` to `ss_init_abi()` and now
   calls `ss_bus_create_abi()` the same way gets `SS_ERR_CONFIG_MISMATCH`.

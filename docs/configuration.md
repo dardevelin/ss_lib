@@ -83,7 +83,7 @@ Enables `ss_data_set_custom()`, `ss_data_set_custom_ref()` and `ss_data_get_cust
 #define SS_ENABLE_PERFORMANCE_STATS 0  /* default: 0 */
 ```
 
-Enables per-signal timing statistics. When enabled and profiling is activated on a bus with `ss_enable_profiling(bus, 1)`, each emission on that bus records its duration.
+Enables per-signal timing statistics. When enabled and profiling is activated on a bus with `ss_enable_profiling(bus, 1)`, each emission on that bus records its duration: from after the signal is found until the last slot returns.
 
 ### Memory Statistics
 

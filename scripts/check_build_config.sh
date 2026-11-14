@@ -32,4 +32,14 @@ if [ "$work/ss_lib.o" -nt "$work/object.before" ] ||
     echo "check-build-config: an unchanged configuration rebuilt an output" >&2
     exit 1
 fi
+# A dry run with other flags must not delete or rewrite anything
+cp -p "$work/.build-config" "$work/stamp.before"
+"${MAKE:-make}" --no-print-directory -n "$work/build_config_probe" lib \
+    FEATURES=-DSS_ENABLE_THREAD_SAFETY=1 BUILD_DIR="$work" > /dev/null
+for f in ss_lib.o libss_lib.a build_config_probe; do
+    [ -f "$work/$f" ] || { echo "check-build-config: make -n deleted $f" >&2; exit 1; }
+done
+cmp -s "$work/.build-config" "$work/stamp.before" ||
+    { echo "check-build-config: make -n rewrote .build-config" >&2; exit 1; }
+
 echo "Changed flags rebuild the library and its callers"

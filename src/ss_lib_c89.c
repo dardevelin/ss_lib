@@ -748,7 +748,10 @@ SS_INLINE ss_error_t emit_locked(ss_bus_t* bus, const char* name, const ss_data_
     ss_signal_t* sig = signal_find(bus, name);
     ss_slot_t* slot;
 #if SS_ENABLE_PERFORMANCE_STATS
-    uint64_t start_time = bus->profiling_enabled ? get_time_ns() : 0;
+    /* Read once: a slot may switch profiling on or off, and an emission
+     * is recorded only if it was timed from its start */
+    const int profiled = bus->profiling_enabled;
+    uint64_t start_time = profiled ? get_time_ns() : 0;
 #endif
 
     if (!sig) return SS_ERR_NOT_FOUND;
@@ -765,7 +768,7 @@ SS_INLINE ss_error_t emit_locked(ss_bus_t* bus, const char* name, const ss_data_
     sig->emitting--;
 
 #if SS_ENABLE_PERFORMANCE_STATS
-    if (bus->profiling_enabled) {
+    if (profiled) {
         uint64_t elapsed = get_time_ns() - start_time;
         ss_perf_stats_t* ps = &sig->perf_stats;
         ps->total_emissions++;
@@ -992,6 +995,13 @@ ss_error_t ss_process_isr_queue(ss_bus_t* bus) {
         const char* qualified;
         /* Another consumer may have taken it since the snapshot */
         if (!ss_atomic_cas(&e->state, ISR_READY, ISR_READING)) continue;
+        /* ...and an ISR may have reused it for a newer event (a slot can
+         * drain the queue and queue more): that one waits for the next
+         * call, behind the older events still in this snapshot. */
+        if ((unsigned int)ss_atomic_load(&e->seq) != seqs[i]) {
+            ss_atomic_store(&e->state, ISR_READY);
+            continue;
+        }
         strcpy(name, e->signal_name);
         data.value.i_val = e->value;
         ss_atomic_store(&e->state, ISR_FREE);
