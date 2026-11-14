@@ -19,6 +19,8 @@ make test-all         # test + test-static + test-minimal + test-c89 + test-newe
                       #   + check-standards + check-single-header + check-version
                       #   + check-install (make install into build/, use it via
                       #     pkg-config flags and find_package, uninstall)
+                      #   + check-build-config (flags changed in one BUILD_DIR
+                      #     rebuild the library and its callers)
                       #   (run before finishing)
 make test-asan        # also test-ubsan, test-tsan, test-msan (clang), test-valgrind
 make test_embedded    # embedded examples against an SS_EMBEDDED_BUILD library
@@ -31,7 +33,7 @@ make benchmark        # also benchmark-all (benchmarks/run_benchmarks.sh)
 make help
 ```
 
-Every object is compiled with one `FEATURES` variable (default: ISR, memory and perf stats on). Variants are separate `BUILD_DIR`s, e.g. `make test BUILD_DIR=build/x FEATURES="-DSS_USE_STATIC_MEMORY=1"`, `IMPL=src/ss_lib_c89.c LIB_STD=-std=c89`, `SANITIZER=address|thread|undefined|memory`. `CC` from the environment is honoured.
+Every object is compiled with one `FEATURES` variable (default: ISR, memory and perf stats on). Variants are separate `BUILD_DIR`s, e.g. `make test BUILD_DIR=build/x FEATURES="-DSS_USE_STATIC_MEMORY=1"`, `IMPL=src/ss_lib_c89.c LIB_STD=-std=c89`, `SANITIZER=address|thread|undefined|memory`. A `BUILD_DIR` reused with other flags is rebuilt: `BUILD_DIR/.build-config` records them, and new outputs built from `CFLAGS`/`LIB_CFLAGS` must be added to `CONFIG_OUTPUTS`. `CC` from the environment is honoured.
 
 **Tests** (no framework; plain `main()` + `assert()`; each test program undefines `NDEBUG` before `<assert.h>`, so the checks also run in CMake Release builds, and `make test` fails if a test program does not):
 - `tests/test_ss_lib.c`: the suite, including regression tests named after the review findings (S1, S2...). Each test does `ss_init()` ... `ss_cleanup()` because state is one global context. To run one test, comment out the other calls in `main()`, then `make tests && ./build/test_ss_lib`.
