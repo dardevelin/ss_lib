@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-11-14
+
 ### Changed
 - 2.x is no longer maintained: 2.2.5 was its last release, and fixes are
   released only as the next 3.x version. `SECURITY.md` lists 3.x as the only
@@ -508,7 +510,8 @@ public struct layouts are unchanged.
 - Signal introspection
 - Basic examples and tests
 
-[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/dardevelin/ss_lib/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/dardevelin/ss_lib/compare/v2.2.4...v3.0.0
 [2.2.4]: https://github.com/dardevelin/ss_lib/compare/v2.2.3...v2.2.4
 [2.2.3]: https://github.com/dardevelin/ss_lib/compare/v2.2.2...v2.2.3

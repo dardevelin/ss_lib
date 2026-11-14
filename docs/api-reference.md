@@ -2,7 +2,7 @@
 
 ## Overview
 
-SS_Lib provides a signal-slot mechanism for C programs. This reference covers all public functions, data types, and configuration options of version 3.0.0.
+SS_Lib provides a signal-slot mechanism for C programs. This reference covers all public functions, data types, and configuration options of version 3.0.1.
 
 All library state lives in a **bus** (`ss_bus_t`). Every function that uses that state takes the bus as its first argument; the data functions, `ss_version()`, `ss_error_string()` and `ss_free_signal_list()` take none. Buses share nothing: the same signal name on two buses names two different signals, and each bus has its own slots, deferred queue, ISR queue, namespace, error handler, slot limit, connection handles, statistics and trace stream. The library has no default bus.
 
@@ -11,8 +11,8 @@ All library state lives in a **bus** (`ss_bus_t`). Every function that uses that
 ```c
 #define SS_VERSION_MAJOR 3
 #define SS_VERSION_MINOR 0
-#define SS_VERSION_PATCH 0
-#define SS_VERSION_STRING "3.0.0"
+#define SS_VERSION_PATCH 1
+#define SS_VERSION_STRING "3.0.1"
 
 const char* ss_version(void);   /* returns SS_VERSION_STRING of the compiled library */
 ```
