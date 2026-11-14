@@ -30,12 +30,7 @@ Enhancement suggestions are welcome! Please include:
 
 ### Branches
 
-| Branch | Holds | Pull requests |
-|---|---|---|
-| `main` | 3.x; release tags `vX.Y.Z` | All changes |
-| `release/2.x` | 2.2.x security fixes (see [SECURITY.md](SECURITY.md)); maintenance tags `v2.2.Z` | Security fixes for 2.2.x |
-
-A security fix that also affects 2.2.x is made on `main` first and then applied to `release/2.x` in its own pull request, with the same regression test.
+All pull requests target `main`, and releases are tagged there. Only the latest version is maintained: older major versions get no further releases (see [SECURITY.md](SECURITY.md)). `release/2.x` holds 2.x up to its last release, 2.2.5, and takes no more changes.
 
 ### Pull Requests
 
@@ -148,8 +143,6 @@ In a minor or patch release, deprecate instead of removing, and append new enum 
    `.github/workflows/release.yml` checks that the tag matches the header and is on `main`, runs `make test-all`, and publishes the notes with the source `.tar.gz`/`.zip`, `ss_lib_single.h` and `SHA256SUMS`. A tag with a pre-release suffix (`vX.Y.Z-rc.1`) publishes a pre-release and may be on a release branch.
 6. Rerunning the workflow for an existing release replaces its assets.
 7. Update the Homebrew formula in [dardevelin/homebrew-ss-lib](https://github.com/dardevelin/homebrew-ss-lib): a pull request that sets `url` and `sha256` in `Formula/ss-lib.rb` to the new release's `.tar.gz` (its checksum is in `SHA256SUMS`). The tap's CI builds bottles for macOS and Linux and tests the source and `--HEAD` builds. When it is green, run the tap's publish workflow, `gh workflow run publish.yml -R dardevelin/homebrew-ss-lib -f pull_request=N`: it uploads the bottles to the tap's releases and commits the formula with the `bottle do` block.
-
-A maintenance release of an older major version (for example 2.2.x after 3.0.0) follows the same steps on its branch `release/MAJOR.x` instead of `main`: the pull request and the tag go to `release/2.x`. The release workflow accepts a final tag on `main` or on `release/MAJOR.x` for the tag's major version, rejects it anywhere else, and publishes a maintenance release without making it the latest release.
 
 ## Testing
 

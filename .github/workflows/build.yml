@@ -1,8 +1,8 @@
 name: Build
 
 on:
-  # main, major-version integration branches (v3) and maintenance branches
-  # (release/2.x)
+  # main, major-version integration branches (v3) and release pull request
+  # branches (release/X.Y.Z)
   push:
     branches: [ main, develop, 'v[0-9]*', 'release/*' ]
   pull_request:
