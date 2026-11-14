@@ -15,6 +15,11 @@
 #    feature flag leaves out entirely is compared between the configurations
 #    that declare it.
 #
+# 3. A library and a caller built with different enum sizes (-fshort-enums
+#    on one side only) are refused by ss_bus_create(): ss_data_t has the
+#    same size either way, but not the same member offsets, so SS_ABI_TAG
+#    carries the enum size when it is not int's.
+#
 # Add new public types and members to the probe below.
 set -eu
 
@@ -27,6 +32,9 @@ cd "$(dirname "$0")/.."
 EXTRA_CONFIGS="
 -DSS_ENABLE_CUSTOM_DATA=0
 -DSS_EMBEDDED_BUILD -DSS_ENABLE_MEMORY_STATS=1 -DSS_ENABLE_PERFORMANCE_STATS=1"
+
+SS_OK_CODE=0
+MISMATCH_CODE=$(sed -n 's/^ *SS_ERR_CONFIG_MISMATCH = \([0-9]*\).*/\1/p' include/ss_lib.h)
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
@@ -183,6 +191,38 @@ for cc in "$@"; do
         failed=1
     fi
     echo "$cc: probe built and run in $runs configurations"
+done
+
+# 3. Enum size mismatch between library and caller
+cat > "$tmp/enums.c" <<'EOF2'
+#include <stdio.h>
+#include "ss_lib.h"
+int main(void) {
+    ss_bus_t* bus = NULL;
+    ss_error_t err = ss_bus_create(&bus, 0);
+    ss_bus_destroy(bus);
+    printf("%d\n", (int)err);
+    return 0;
+}
+EOF2
+for cc in "$@"; do
+    for lib in "" -fshort-enums; do
+        $cc -std=c11 -Iinclude $lib -c src/ss_lib.c -o "$tmp/lib.o" || { failed=1; continue; }
+        for caller in "" -fshort-enums; do
+            expected=$SS_OK_CODE
+            [ "$lib" = "$caller" ] || expected=$MISMATCH_CODE
+            if $cc -std=c11 -Iinclude $caller "$tmp/enums.c" "$tmp/lib.o" -pthread \
+                   -o "$tmp/enums" && actual=$("$tmp/enums") && [ "$actual" = "$expected" ]; then
+                :
+            else
+                echo "FAIL: $cc library ${lib:-(int enums)}, caller ${caller:-(int enums)}:" \
+                     "ss_bus_create() returned ${actual:-nothing}, expected $expected" >&2
+                failed=1
+            fi
+            actual=""
+        done
+    done
+    echo "$cc: enum size mismatches between library and caller are refused"
 done
 
 [ "$failed" -eq 0 ] || { echo "ABI check failed: public layouts depend on the configuration" >&2; exit 1; }

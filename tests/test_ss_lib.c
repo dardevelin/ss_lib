@@ -1025,6 +1025,73 @@ void test_isr_queue_processing(void) {
     assert(ss_process_isr_queue(NULL) == SS_ERR_NULL_PARAM);
     printf("ISR queue processing tests passed!\n");
 }
+
+/* A slot that drains the ISR queue itself and then queues new events
+ * reuses entries the outer drain took in its snapshot: the outer drain
+ * must leave those newer events queued, not deliver them ahead of older
+ * ones (Codex v3 review, finding 3) */
+static void slot_isr_drain_and_refill(const ss_data_t* data, void* user_data) {
+    ss_bus_t* b = (ss_bus_t*)user_data;
+    int value = ss_data_get_int(data, -1);
+    assert(g_isr_count < 64);
+    g_isr_values[g_isr_count++] = value;
+    if (value == 1) {
+        assert(ss_process_isr_queue(b) == SS_OK);           /* delivers 2, 3 */
+        assert(ss_emit_from_isr(b, "isr_refill", 4) == SS_OK);
+        assert(ss_emit_from_isr(b, "isr_refill", 5) == SS_OK);
+    }
+}
+
+void test_isr_recursive_drain_order(void) {
+    printf("\n=== Testing ISR Drain From a Slot Keeps Order ===\n");
+    bus = new_bus();
+    assert(ss_signal_register(bus, "isr_refill") == SS_OK);
+    assert(ss_connect(bus, "isr_refill", slot_isr_drain_and_refill, bus) == SS_OK);
+
+    g_isr_count = 0;
+    assert(ss_emit_from_isr(bus, "isr_refill", 1) == SS_OK);
+    assert(ss_emit_from_isr(bus, "isr_refill", 2) == SS_OK);
+    assert(ss_emit_from_isr(bus, "isr_refill", 3) == SS_OK);
+    assert(ss_process_isr_queue(bus) == SS_OK);
+    assert(g_isr_count == 3);
+    assert(g_isr_values[0] == 1 && g_isr_values[1] == 2 && g_isr_values[2] == 3);
+
+    assert(ss_process_isr_queue(bus) == SS_OK);             /* 4 and 5, in order */
+    assert(g_isr_count == 5);
+    assert(g_isr_values[3] == 4 && g_isr_values[4] == 5);
+
+    ss_bus_destroy(bus);
+    printf("ISR drain order tests passed!\n");
+}
+#endif
+
+/* Profiling switched on by a slot must not record the emission already in
+ * progress: it has no start time (Codex v3 review, finding 4) */
+#if SS_ENABLE_PERFORMANCE_STATS
+static void slot_enable_profiling(const ss_data_t* data, void* user_data) {
+    (void)data;
+    assert(ss_enable_profiling((ss_bus_t*)user_data, 1) == SS_OK);
+}
+
+void test_profiling_enabled_during_emit(void) {
+    ss_perf_stats_t stats;
+    printf("\n=== Testing Profiling Enabled During an Emission ===\n");
+    bus = new_bus();
+    assert(ss_signal_register(bus, "prof") == SS_OK);
+    assert(ss_connect(bus, "prof", slot_enable_profiling, bus) == SS_OK);
+
+    assert(ss_emit_void(bus, "prof") == SS_OK);             /* started unprofiled */
+    assert(ss_get_perf_stats(bus, "prof", &stats) == SS_OK);
+    assert(stats.total_emissions == 0 && stats.total_time_ns == 0);
+
+    assert(ss_emit_void(bus, "prof") == SS_OK);             /* profiled */
+    assert(ss_get_perf_stats(bus, "prof", &stats) == SS_OK);
+    assert(stats.total_emissions == 1);
+    assert(stats.max_time_ns < 1000000000u);                /* not the uptime */
+
+    ss_bus_destroy(bus);
+    printf("Profiling start tests passed!\n");
+}
 #endif
 
 /* S9: an unregistered signal leaves nothing behind for the next one */
@@ -1466,7 +1533,11 @@ void test_abi_check(void) {
     ss_bus_t* checked = NULL;
     void* pool;
     printf("\n=== Testing ABI Check (A8) ===\n");
-    assert(SS_ABI_TAG == sizeof(ss_data_t) * 16u + SS_ABI_REVISION);
+    /* Enum size is part of the tag only when it is not int's (-fshort-enums),
+     * so ordinary builds keep 3.0.0's tag (Codex v3 review, finding 1) */
+    assert(SS_ABI_TAG == sizeof(ss_data_t) * 16u + SS_ABI_REVISION +
+           (sizeof(ss_data_type_t) == sizeof(int) ? 0u : sizeof(ss_data_type_t) * 4096u));
+    assert(ss_bus_create_abi(&checked, 0, SS_ABI_TAG ^ 4096u) == SS_ERR_CONFIG_MISMATCH);
     assert(SS_ABI_REVISION > 0 && SS_ABI_REVISION < 16);
     checked = (ss_bus_t*)&checked;
     assert(ss_bus_create_abi(&checked, 0, SS_ABI_TAG + 16u) == SS_ERR_CONFIG_MISMATCH);
@@ -2042,6 +2113,10 @@ int main(void) {
 #endif
 #if SS_ENABLE_ISR_SAFE
     test_isr_queue_processing();
+    test_isr_recursive_drain_order();
+#endif
+#if SS_ENABLE_PERFORMANCE_STATS
+    test_profiling_enabled_during_emit();
 #endif
     test_unregister_resets_signal();
     test_name_too_long_rejected();
