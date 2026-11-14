@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.5] - 2026-11-14
+
 ### Changed
 - CI: the Embedded (ARM Cortex-M) job installs the ARM compiler and newlib
   without the recommended C++ libraries, 114 MB to download instead of 602 MB,
@@ -339,7 +341,8 @@ public struct layouts are unchanged.
 - Signal introspection
 - Basic examples and tests
 
-[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v2.2.4...HEAD
+[Unreleased]: https://github.com/dardevelin/ss_lib/compare/v2.2.5...HEAD
+[2.2.5]: https://github.com/dardevelin/ss_lib/compare/v2.2.4...v2.2.5
 [2.2.4]: https://github.com/dardevelin/ss_lib/compare/v2.2.3...v2.2.4
 [2.2.3]: https://github.com/dardevelin/ss_lib/compare/v2.2.2...v2.2.3
 [2.2.2]: https://github.com/dardevelin/ss_lib/compare/v2.2.1...v2.2.2
