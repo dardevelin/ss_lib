@@ -68,6 +68,7 @@ make docs
 ```
 
 `make help` lists all targets. The Makefile honours `CC` and builds everything with one `FEATURES` variable.
+Building into the same `BUILD_DIR` with other flags (`FEATURES`, `CC`, `SANITIZER`...) rebuilds the library and every program built from it, so they always share one configuration; `make check-build-config` checks this.
 
 ## Coding Standards
 
